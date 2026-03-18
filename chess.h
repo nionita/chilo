@@ -71,6 +71,7 @@ Position parseFEN(const std::string& f) {
 int findKing(const Position& pos, Color col) {
     Piece k = col == WHITE ? W_KING : B_KING;
     for (int i = 0; i < 64; i++) if (pos.board[i] == k) return i;
+    assert(false && "King not found on board");
     return -1;
 }
 
@@ -161,7 +162,7 @@ std::vector<Move> genMoves(const Position& pos) {
                 int cap = (fr + dir)*8 + nc; 
                 if (fr + dir < 0 || fr + dir >= 8) continue; 
                 Piece tp = pos.board[cap]; 
-                if (tp != EMPTY && !sameCol(pc, tp)) { 
+                if (tp != EMPTY && !sameCol(pc, tp) && pt(tp) != 6) { 
                     if (fr + dir == promo) for (Piece pr : {W_QUEEN, W_ROOK, W_BISHOP, W_KNIGHT}) m.push_back({f, cap, pr, false, false, false}); 
                     else m.push_back({f, cap, EMPTY, false, false, false}); 
                 } 
@@ -175,7 +176,7 @@ std::vector<Move> genMoves(const Position& pos) {
                 if (to < 0 || to >= 64) continue; 
                 if (abs(R(to)-fr) + abs(F(to)-fc) != 3) continue; 
                 Piece tp = pos.board[to]; 
-                if (tp == EMPTY || !sameCol(pc, tp)) m.push_back({f, to, EMPTY, false, false, false}); 
+                if (tp == EMPTY || (!sameCol(pc, tp) && pt(tp) != 6)) m.push_back({f, to, EMPTY, false, false, false}); 
             } 
         }
         if (typ == 3 || typ == 5) { 
@@ -186,7 +187,7 @@ std::vector<Move> genMoves(const Position& pos) {
                     if (abs(R(to)-R(f)) != abs(F(to)-F(f))) break;
                     Piece tp = pos.board[to]; 
                     if (tp == EMPTY) m.push_back({f, to, EMPTY, false, false, false}); 
-                    else { if (!sameCol(pc, tp)) m.push_back({f, to, EMPTY, false, false, false}); break; } 
+                    else { if (!sameCol(pc, tp) && pt(tp) != 6) m.push_back({f, to, EMPTY, false, false, false}); break; } 
                 } 
             } 
         }
@@ -201,7 +202,7 @@ std::vector<Move> genMoves(const Position& pos) {
                     if (d == 8 && R(to) <= R(f)) break;
                     Piece tp = pos.board[to]; 
                     if (tp == EMPTY) m.push_back({f, to, EMPTY, false, false, false}); 
-                    else { if (!sameCol(pc, tp)) m.push_back({f, to, EMPTY, false, false, false}); break; } 
+                    else { if (!sameCol(pc, tp) && pt(tp) != 6) m.push_back({f, to, EMPTY, false, false, false}); break; } 
                 } 
             } 
         }
@@ -212,11 +213,12 @@ std::vector<Move> genMoves(const Position& pos) {
                 if (to < 0 || to >= 64) continue; 
                 if (abs(R(to)-fr) > 1 || abs(F(to)-fc) > 1) continue; 
                 Piece tp = pos.board[to]; 
-                if (tp == EMPTY || !sameCol(pc, tp)) m.push_back({f, to, EMPTY, false, false, false}); 
+                if (tp == EMPTY || (!sameCol(pc, tp) && pt(tp) != 6)) m.push_back({f, to, EMPTY, false, false, false}); 
             } 
             int kr = us == WHITE ? 0 : 7, ki = us == WHITE ? 0 : 2, qi = us == WHITE ? 1 : 3;
-            if (fr == kr && fc == 4 && pos.castling[ki]) if (pos.board[kr*8+5] == EMPTY && pos.board[kr*8+6] == EMPTY) if (!attacked(pos, kr*8+4, them) && !attacked(pos, kr*8+5, them) && !attacked(pos, kr*8+6, them)) m.push_back({f, kr*8+6, EMPTY, false, true, false});
-            if (fr == kr && fc == 4 && pos.castling[qi]) if (pos.board[kr*8+1] == EMPTY && pos.board[kr*8+2] == EMPTY && pos.board[kr*8+3] == EMPTY) if (!attacked(pos, kr*8+4, them) && !attacked(pos, kr*8+3, them) && !attacked(pos, kr*8+2, them)) m.push_back({f, kr*8+2, EMPTY, false, true, false});
+            Piece ourRook = us == WHITE ? W_ROOK : B_ROOK;
+            if (fr == kr && fc == 4 && pos.castling[ki] && pos.board[kr*8+7] == ourRook) if (pos.board[kr*8+5] == EMPTY && pos.board[kr*8+6] == EMPTY) if (!attacked(pos, kr*8+4, them) && !attacked(pos, kr*8+5, them) && !attacked(pos, kr*8+6, them)) m.push_back({f, kr*8+6, EMPTY, false, true, false});
+            if (fr == kr && fc == 4 && pos.castling[qi] && pos.board[kr*8+0] == ourRook) if (pos.board[kr*8+2] == EMPTY && pos.board[kr*8+3] == EMPTY) if (!attacked(pos, kr*8+4, them) && !attacked(pos, kr*8+3, them) && !attacked(pos, kr*8+2, them)) m.push_back({f, kr*8+2, EMPTY, false, true, false});
         }
     }
     return m;
@@ -226,13 +228,22 @@ void doMove(Position& pos, const Move& mv) {
     Piece pc = pos.board[mv.from], cap = pos.board[mv.to];
     pos.board[mv.to] = pc; pos.board[mv.from] = EMPTY;
     if (mv.promotion != EMPTY) pos.board[mv.to] = mv.promotion;
-    if (mv.isEnPassant) { int epR = R(mv.to); int capR = pos.sideToMove == WHITE ? epR + 1 : epR - 1; pos.board[capR*8 + F(mv.to)] = EMPTY; }
+    if (mv.isEnPassant) { 
+        int epR = R(mv.to); 
+        int capR = pos.sideToMove == WHITE ? epR - 1 : epR + 1; 
+        Piece capturedPawn = pos.board[capR*8 + F(mv.to)];
+        assert(capturedPawn == W_PAWN || capturedPawn == B_PAWN);
+        pos.board[capR*8 + F(mv.to)] = EMPTY; 
+    }
     if (mv.isCastle) { 
         int rr = R(mv.to); 
+        Piece expectedRook = (rr == 0) ? W_ROOK : B_ROOK;
         if (F(mv.to) == 6) { 
+            assert(pos.board[rr*8+7] == expectedRook);
             pos.board[rr*8+5] = pos.board[rr*8+7]; 
             pos.board[rr*8+7] = EMPTY; 
         } else if (F(mv.to) == 2) { 
+            assert(pos.board[rr*8+0] == expectedRook);
             pos.board[rr*8+3] = pos.board[rr*8+0]; 
             pos.board[rr*8+0] = EMPTY; 
         } 
@@ -250,8 +261,25 @@ void undo(Position& pos, const Move& mv, Piece cap) {
     Piece pc = pos.board[mv.to];
     if (mv.promotion != EMPTY) pc = pos.sideToMove == WHITE ? W_PAWN : B_PAWN;
     pos.board[mv.from] = pc; pos.board[mv.to] = cap;
-    if (mv.isEnPassant) { int epR = R(mv.to); int capR = pos.sideToMove == WHITE ? epR + 1 : epR - 1; pos.board[capR*8 + F(mv.to)] = pos.sideToMove == WHITE ? B_PAWN : W_PAWN; }
-    if (mv.isCastle) { int rr = R(mv.to); if (F(mv.to) == 6) { pos.board[rr*8+7] = pos.board[rr*8+5]; pos.board[rr*8+5] = EMPTY; } else if (F(mv.to) == 2) { pos.board[rr*8+0] = pos.board[rr*8+3]; pos.board[rr*8+3] = EMPTY; } }
+    if (mv.isEnPassant) { 
+        int epR = R(mv.to); 
+        int capR = pos.sideToMove == WHITE ? epR - 1 : epR + 1; 
+        Piece restoredPawn = pos.sideToMove == WHITE ? B_PAWN : W_PAWN;
+        assert(pos.board[capR*8 + F(mv.to)] == EMPTY);
+        pos.board[capR*8 + F(mv.to)] = restoredPawn; 
+    }
+    if (mv.isCastle) { 
+        int rr = R(mv.to); 
+        if (F(mv.to) == 6) { 
+            assert(pos.board[rr*8+5] == W_ROOK || pos.board[rr*8+5] == B_ROOK);
+            pos.board[rr*8+7] = pos.board[rr*8+5]; 
+            pos.board[rr*8+5] = EMPTY; 
+        } else if (F(mv.to) == 2) { 
+            assert(pos.board[rr*8+3] == W_ROOK || pos.board[rr*8+3] == B_ROOK);
+            pos.board[rr*8+0] = pos.board[rr*8+3]; 
+            pos.board[rr*8+3] = EMPTY; 
+        } 
+    }
     if (pt(pc) == 1 && cap == EMPTY) pos.enPassant = mv.isDoublePush ? mv.to : -1;
 }
 
