@@ -238,7 +238,7 @@ void doMove(Position& pos, const Move& mv) {
         } 
     }
     pos.enPassant = -1;
-    if (mv.isDoublePush) { int epR = pos.sideToMove == WHITE ? R(mv.from) - 1 : R(mv.from) + 1; pos.enPassant = epR * 8 + F(mv.from); }
+    if (mv.isDoublePush) { int epR = pos.sideToMove == WHITE ? R(mv.from) + 1 : R(mv.from) - 1; pos.enPassant = epR * 8 + F(mv.from); }
     if (pt(pc) == 1 || cap != EMPTY) pos.halfMove = 0; else pos.halfMove++;
     pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
     if (pos.sideToMove == WHITE) pos.fullMove++;
