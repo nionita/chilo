@@ -97,12 +97,14 @@ int testCastlingRights() {
     Position pW = parseFEN(posW);
     Position pB = parseFEN(posB);
     
-    auto movesW = genMoves(pW);
-    auto movesB = genMoves(pB);
+    Move movesW[MAX_MOVES];
+    Move movesB[MAX_MOVES];
+    int moveCountW = genMoves(pW, movesW);
+    int moveCountB = genMoves(pB, movesB);
     
     int castleW = 0, castleB = 0;
-    for (const auto& m : movesW) if (m.isCastle) castleW++;
-    for (const auto& m : movesB) if (m.isCastle) castleB++;
+    for (int i = 0; i < moveCountW; i++) if (movesW[i].isCastle) castleW++;
+    for (int i = 0; i < moveCountB; i++) if (movesB[i].isCastle) castleB++;
     
     std::cout << "  White castling moves: " << castleW << "\n";
     std::cout << "  Black castling moves: " << castleB << "\n";
@@ -122,10 +124,12 @@ int testCheckDetection() {
     std::string pos = "6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1";
     Position p = parseFEN(pos);
     
-    auto moves = genMoves(p);
+    Move moves[MAX_MOVES];
+    int moveCount = genMoves(p, moves);
     
     int illegalMoves = 0;
-    for (const auto& m : moves) {
+    for (int i = 0; i < moveCount; i++) {
+        const Move& m = moves[i];
         Piece cap = p.board[m.to];
         int oldHalfMove = p.halfMove;
         int oldFullMove = p.fullMove;
@@ -136,7 +140,7 @@ int testCheckDetection() {
         undo(p, m, cap, oldHalfMove, oldFullMove, oldEnPassant);
     }
     
-    std::cout << "  Total moves generated: " << moves.size() << "\n";
+    std::cout << "  Total moves generated: " << moveCount << "\n";
     std::cout << "  Illegal moves (leave king in check): " << illegalMoves << "\n";
     
     if (illegalMoves == 0) {

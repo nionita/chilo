@@ -35,7 +35,7 @@ The user has been implementing and debugging a chess perft (performance test) fu
 - ✅ Added positionsEqual() function to compare full position state
 - ✅ Added position restoration assertion in perft/perftDivide loops
 - ✅ All 5 standard perft positions now pass (depths 1-5)
-- ✅ Updated perft_report.md with findings
+- ✅ Updated engine_development_notes.md with findings
 
 ## Relevant files / directories
 
@@ -44,7 +44,7 @@ The user has been implementing and debugging a chess perft (performance test) fu
 ├── chess.h         # Main chess engine (genMoves, doMove, undo, perft, assertions)
 ├── perft.cpp       # CLI for perft testing with divide option
 ├── perft_tests.cpp # Test suite for various scenarios
-└── perft_report.md # Documentation of bugs found and fixed
+└── engine_development_notes.md # Documentation of bugs found, fixes, and performance notes
 ```
 
 ## What's next
