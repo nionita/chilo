@@ -283,6 +283,40 @@ void undo(Position& pos, const Move& mv, Piece cap) {
     if (pt(pc) == 1 && cap == EMPTY) pos.enPassant = mv.isDoublePush ? mv.to : -1;
 }
 
+uint64_t perft(Position& pos, int d);
+
+std::string moveToUCI(const Move& mv) {
+    std::string s;
+    s += char('a' + F(mv.from));
+    s += char('1' + R(mv.from));
+    s += char('a' + F(mv.to));
+    s += char('1' + R(mv.to));
+    if (mv.promotion != EMPTY) {
+        char p = mv.promotion == W_QUEEN || mv.promotion == B_QUEEN ? 'q' :
+                 mv.promotion == W_ROOK || mv.promotion == B_ROOK ? 'r' :
+                 mv.promotion == W_BISHOP || mv.promotion == B_BISHOP ? 'b' : 'n';
+        s += p;
+    }
+    return s;
+}
+
+uint64_t perftDivide(Position& pos, int d) {
+    auto moves = genMoves(pos);
+    uint64_t total = 0;
+    Color us = pos.sideToMove;
+    for (const Move& mv : moves) {
+        Piece cap = pos.board[mv.to];
+        doMove(pos, mv);
+        if (!inCheck(pos, us)) {
+            uint64_t count = perft(pos, d - 1);
+            std::cout << moveToUCI(mv) << ": " << count << "\n";
+            total += count;
+        }
+        undo(pos, mv, cap);
+    }
+    return total;
+}
+
 uint64_t perft(Position& pos, int d) {
     if (d == 0) return 1;
     auto moves = genMoves(pos);
