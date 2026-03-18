@@ -153,7 +153,10 @@ std::vector<Move> genMoves(const Position& pos) {
             int dir = us == WHITE ? 1 : -1, start = us == WHITE ? 1 : 6, promo = us == WHITE ? 7 : 0;
             int to = (fr + dir) * 8 + fc;
             if (fr + dir >= 0 && fr + dir < 8 && pos.board[to] == EMPTY) {
-                if (fr + dir == promo) for (Piece pr : {W_QUEEN, W_ROOK, W_BISHOP, W_KNIGHT}) m.push_back({f, to, pr, false, false, false});
+                if (fr + dir == promo) {
+                    Piece promos[] = {us == WHITE ? W_QUEEN : B_QUEEN, us == WHITE ? W_ROOK : B_ROOK, us == WHITE ? W_BISHOP : B_BISHOP, us == WHITE ? W_KNIGHT : B_KNIGHT};
+                    for (Piece pr : promos) m.push_back({f, to, pr, false, false, false});
+                }
                 else { m.push_back({f, to, EMPTY, false, false, false}); if (fr == start) { int t2 = (fr + 2*dir)*8 + fc; if (pos.board[t2] == EMPTY) m.push_back({f, t2, EMPTY, false, false, true}); } }
             }
             for (int dc : {-1, 1}) { 
@@ -163,7 +166,10 @@ std::vector<Move> genMoves(const Position& pos) {
                 if (fr + dir < 0 || fr + dir >= 8) continue; 
                 Piece tp = pos.board[cap]; 
                 if (tp != EMPTY && !sameCol(pc, tp) && pt(tp) != 6) { 
-                    if (fr + dir == promo) for (Piece pr : {W_QUEEN, W_ROOK, W_BISHOP, W_KNIGHT}) m.push_back({f, cap, pr, false, false, false}); 
+                    if (fr + dir == promo) {
+                        Piece promos[] = {us == WHITE ? W_QUEEN : B_QUEEN, us == WHITE ? W_ROOK : B_ROOK, us == WHITE ? W_BISHOP : B_BISHOP, us == WHITE ? W_KNIGHT : B_KNIGHT};
+                        for (Piece pr : promos) m.push_back({f, cap, pr, false, false, false});
+                    }
                     else m.push_back({f, cap, EMPTY, false, false, false}); 
                 } 
                 if (pos.enPassant != -1 && cap == pos.enPassant) m.push_back({f, cap, EMPTY, true, false, false}); 

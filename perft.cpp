@@ -7,10 +7,14 @@ int main(int argc, char* argv[]) {
     Position pos = parseFEN(argv[1]);
     int maxD = std::stoi(argv[2]);
     bool divide = argc > 3 && std::string(argv[3]) == "divide";
-    for (int d = 1; d <= maxD; d++) {
-        if (divide && d > 1) break;
-        uint64_t total = divide ? perftDivide(pos, d) : perft(pos, d);
-        std::cout << "Depth " << d << ": " << total << "\n";
+    if (divide) {
+        uint64_t total = perftDivide(pos, maxD);
+        std::cout << "Depth " << maxD << ": " << total << "\n";
+    } else {
+        for (int d = 1; d <= maxD; d++) {
+            uint64_t total = perft(pos, d);
+            std::cout << "Depth " << d << ": " << total << "\n";
+        }
     }
     return 0;
 }
