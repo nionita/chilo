@@ -127,10 +127,13 @@ int testCheckDetection() {
     int illegalMoves = 0;
     for (const auto& m : moves) {
         Piece cap = p.board[m.to];
+        int oldHalfMove = p.halfMove;
+        int oldFullMove = p.fullMove;
+        int oldEnPassant = p.enPassant;
         Color us = p.sideToMove;
         doMove(p, m);
         if (inCheck(p, us)) illegalMoves++;
-        undo(p, m, cap);
+        undo(p, m, cap, oldHalfMove, oldFullMove, oldEnPassant);
     }
     
     std::cout << "  Total moves generated: " << moves.size() << "\n";

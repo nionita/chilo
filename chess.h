@@ -29,12 +29,23 @@ bool wh(Piece p) { return p >= W_PAWN && p <= W_KING; }
 bool bl(Piece p) { return p >= B_PAWN && p <= B_KING; }
 bool sameCol(Piece a, Piece b) { return (wh(a) && wh(b)) || (bl(a) && bl(b)); }
 
+bool positionsEqual(const Position& a, const Position& b) {
+    for (int i = 0; i < 64; i++) if (a.board[i] != b.board[i]) return false;
+    if (a.sideToMove != b.sideToMove) return false;
+    for (int i = 0; i < 4; i++) if (a.castling[i] != b.castling[i]) return false;
+    if (a.enPassant != b.enPassant) return false;
+    if (a.halfMove != b.halfMove) return false;
+    if (a.fullMove != b.fullMove) return false;
+    return true;
+}
+
 Position parseFEN(const std::string& f) {
     Position p;
     for (int i = 0; i < 64; i++) p.board[i] = EMPTY;
     std::vector<std::string> p2; std::string cur;
     for (char ch : f) { if (ch == ' ') { p2.push_back(cur); cur.clear(); } else cur.push_back(ch); }
     p2.push_back(cur);
+    assert(p2.size() >= 4);  // FEN must have at least 6 fields, but we need at least 4
     int rank = 7, file = 0;
     for (char ch : p2[0]) {
         if (ch == '/') { rank--; file = 0; continue; }
@@ -76,6 +87,7 @@ int findKing(const Position& pos, Color col) {
 }
 
 bool attacked(const Position& pos, int sq, Color att) {
+    assert(sq >= 0 && sq < 64);
     int Rr = R(sq), Fc = F(sq);
     if (att == WHITE) {
         if (Rr > 0 && Fc > 0 && pos.board[(Rr-1)*8 + (Fc-1)] == W_PAWN) return true;
@@ -231,9 +243,16 @@ std::vector<Move> genMoves(const Position& pos) {
 }
 
 void doMove(Position& pos, const Move& mv) {
+    assert(mv.from >= 0 && mv.from < 64);
+    assert(mv.to >= 0 && mv.to < 64);
+    assert(pos.board[mv.from] != EMPTY);
     Piece pc = pos.board[mv.from], cap = pos.board[mv.to];
     pos.board[mv.to] = pc; pos.board[mv.from] = EMPTY;
-    if (mv.promotion != EMPTY) pos.board[mv.to] = mv.promotion;
+    if (mv.promotion != EMPTY) {
+        assert((mv.promotion >= W_PAWN && mv.promotion <= W_KING) ||
+               (mv.promotion >= B_PAWN && mv.promotion <= B_KING));
+        pos.board[mv.to] = mv.promotion;
+    }
     if (mv.isEnPassant) { 
         int epR = R(mv.to); 
         int capR = pos.sideToMove == WHITE ? epR - 1 : epR + 1; 
@@ -261,9 +280,13 @@ void doMove(Position& pos, const Move& mv) {
     if (pos.sideToMove == WHITE) pos.fullMove++;
 }
 
-void undo(Position& pos, const Move& mv, Piece cap) {
+void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int oldFullMove = 1, int oldEnPassant = -1) {
+    assert(mv.from >= 0 && mv.from < 64);
+    assert(mv.to >= 0 && mv.to < 64);
     pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
-    if (pos.sideToMove == WHITE) pos.fullMove--;
+    pos.halfMove = oldHalfMove;
+    pos.fullMove = oldFullMove;
+    pos.enPassant = oldEnPassant;
     Piece pc = pos.board[mv.to];
     if (mv.promotion != EMPTY) pc = pos.sideToMove == WHITE ? W_PAWN : B_PAWN;
     pos.board[mv.from] = pc; pos.board[mv.to] = cap;
@@ -286,7 +309,6 @@ void undo(Position& pos, const Move& mv, Piece cap) {
             pos.board[rr*8+3] = EMPTY; 
         } 
     }
-    if (pt(pc) == 1 && cap == EMPTY) pos.enPassant = mv.isDoublePush ? mv.to : -1;
 }
 
 uint64_t perft(Position& pos, int d);
@@ -310,15 +332,20 @@ uint64_t perftDivide(Position& pos, int d) {
     auto moves = genMoves(pos);
     uint64_t total = 0;
     Color us = pos.sideToMove;
+    Position startPos = pos;
     for (const Move& mv : moves) {
         Piece cap = pos.board[mv.to];
+        int oldHalfMove = pos.halfMove;
+        int oldFullMove = pos.fullMove;
+        int oldEnPassant = pos.enPassant;
         doMove(pos, mv);
         if (!inCheck(pos, us)) {
             uint64_t count = perft(pos, d - 1);
             std::cout << moveToUCI(mv) << ": " << count << "\n";
             total += count;
         }
-        undo(pos, mv, cap);
+        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant);
+        assert(positionsEqual(startPos, pos));
     }
     return total;
 }
@@ -328,11 +355,16 @@ uint64_t perft(Position& pos, int d) {
     auto moves = genMoves(pos);
     uint64_t n = 0;
     Color us = pos.sideToMove;
+    Position startPos = pos;
     for (const Move& mv : moves) {
         Piece cap = pos.board[mv.to];
+        int oldHalfMove = pos.halfMove;
+        int oldFullMove = pos.fullMove;
+        int oldEnPassant = pos.enPassant;
         doMove(pos, mv);
         if (!inCheck(pos, us)) n += perft(pos, d - 1);
-        undo(pos, mv, cap);
+        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant);
+        assert(positionsEqual(startPos, pos));
     }
     return n;
 }

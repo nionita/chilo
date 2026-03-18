@@ -107,14 +107,25 @@ Promotion moves always used WHITE pieces (W_QUEEN, W_ROOK, etc.) regardless of w
 
 ## Assertions Added
 
-Using debug compilation (`-O0 -g`), the following asserts catch bugs:
+### Input Validation
+1. **doMove**: Validates `mv.from` and `mv.to` are in range [0,63]
+2. **doMove**: Validates there is a piece at `mv.from`
+3. **doMove**: Validates promotion piece is a valid piece
+4. **attacked**: Validates `sq` parameter is in range [0,63]
+5. **undo**: Validates `mv.from` and `mv.to` are in range [0,63]
+6. **parseFEN**: Validates FEN has at least 4 fields
 
-1. **findKing**: Asserts king is found on board (line 74)
-2. **doMove en passant**: Asserts captured pawn exists at EP capture square (line 234)
-3. **doMove castling kingside**: Asserts rook exists at h1/h8 (line 240)
-4. **doMove castling queenside**: Asserts rook exists at a1/a8 (line 245)
-5. **undo en passant**: Asserts square is empty before restoring pawn (line 273)
-6. **undo castling**: Asserts rook exists before moving back (lines 279, 283)
+### Position Restoration
+7. **positionsEqual**: Compares full position state (board, sideToMove, castling, enPassant, halfMove, fullMove)
+8. **perft/perftDivide**: Asserts position is restored exactly after doMove/undo pair
+
+### Bug Fix from Assertions
+The position equality assertion revealed that `undo()` was not restoring:
+- `halfMove` counter
+- `fullMove` counter  
+- `enPassant` square
+
+Fixed by passing original values to undo and restoring them.
 
 ## Test Results (All Passing)
 
@@ -136,5 +147,6 @@ Additional verification:
 - All 5 standard perft positions pass correctly at depths 1-4 (position 4 passes to depth 5)
 - perftDivide feature implemented to help debug move generation
 - UCI move format implemented for perftDivide output
-- All assertions working correctly in debug builds
 - **Bug #11 fixed**: Black pawn promotions now work correctly
+- **Comprehensive assertions** added for input validation and position restoration
+- **Position equality assertion** catches any doMove/undo bugs automatically
