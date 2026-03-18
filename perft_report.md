@@ -13,6 +13,7 @@
 - `<fen>`: FEN position string
 - `<depth>`: search depth
 - `divide` (optional): shows perft divide output (move: count for each child)
+- Summary lines now include elapsed wall-clock time and nodes per second (NPS)
 
 ### New Feature: perftDivide
 Added `perftDivide()` function that shows individual move counts at depth D-1:
@@ -24,10 +25,23 @@ g1f3: 1
 g1h3: 1
 a2a3: 1
 ...
-Depth 1: 20
+Depth 1: 20 (2.2727e-05 s, 880010 nps)
 ```
 
 This helps identify which specific moves cause issues when perft counts are wrong.
+
+### Performance Measurement
+Perft runs are now timed in the CLI using `std::chrono::steady_clock`.
+
+- Normal mode prints one summary line per depth with node count, elapsed time, and NPS
+- Divide mode keeps the per-move breakdown and adds timing/NPS to the final total line
+
+Example normal-mode output:
+```bash
+$ ./perft "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" 2
+Depth 1: 20 (6.903e-06 s, 2897291 nps)
+Depth 2: 400 (8.4055e-05 s, 4758788 nps)
+```
 
 ### Test Results (All Standard Positions Pass)
 
@@ -141,11 +155,13 @@ Additional verification:
 - Promotion moves generated correctly (a7a8q, a7a8r, etc.)
 - En passant moves working
 - perftDivide shows correct move counts for all move types
+- CLI reports elapsed time and nodes per second for each completed perft run
 
 ## Summary
 
 - All 5 standard perft positions pass correctly at depths 1-4 (position 4 passes to depth 5)
 - perftDivide feature implemented to help debug move generation
+- Perft CLI now reports elapsed time and NPS for each requested depth
 - UCI move format implemented for perftDivide output
 - **Bug #11 fixed**: Black pawn promotions now work correctly
 - **Comprehensive assertions** added for input validation and position restoration
