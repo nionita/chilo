@@ -20,9 +20,7 @@ constexpr int MAX_MOVES = 256;
 struct Move { int from, to; Piece promotion; bool isEnPassant, isCastle, isDoublePush; };
 
 struct Position {
-#ifdef CHESS_VALIDATE_STATE
-    Piece board[64];
-#endif
+    Piece pieceAtSquare[64];
     Color sideToMove;
     bool castling[4];
     int enPassant;
@@ -56,19 +54,7 @@ int pieceTypeIndex(Piece p) { assert(p != EMPTY); return pt(p) - 1; }
 
 Piece pieceAt(const Position& pos, int sq) {
     assert(sq >= 0 && sq < 64);
-    uint64_t bit = bitAt(sq);
-    if ((pos.occupancyAll & bit) == 0) return EMPTY;
-    static constexpr Piece pieces[2][PIECE_TYPE_COUNT] = {
-        {W_PAWN, W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN, W_KING},
-        {B_PAWN, B_KNIGHT, B_BISHOP, B_ROOK, B_QUEEN, B_KING}
-    };
-    for (int color = 0; color < 2; color++) {
-        for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
-            if (pos.pieceBitboards[color][type] & bit) return pieces[color][type];
-        }
-    }
-    assert(false);
-    return EMPTY;
+    return pos.pieceAtSquare[sq];
 }
 
 bool hasPiece(const Position& pos, int sq, Piece pc) {
@@ -142,9 +128,7 @@ int popMsb(uint64_t bits);
 int firstBlocker(uint64_t rayMask, uint64_t occ, bool forward);
 
 void initPosition(Position& p) {
-#ifdef CHESS_VALIDATE_STATE
-    for (int i = 0; i < 64; i++) p.board[i] = EMPTY;
-#endif
+    for (int i = 0; i < 64; i++) p.pieceAtSquare[i] = EMPTY;
     for (int c = 0; c < 2; c++) {
         p.kingSq[c] = -1;
         p.occupancy[c] = 0;
@@ -161,9 +145,7 @@ void addPiece(Position& pos, int sq, Piece pc) {
     assert(pieceAt(pos, sq) == EMPTY);
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
-#ifdef CHESS_VALIDATE_STATE
-    pos.board[sq] = pc;
-#endif
+    pos.pieceAtSquare[sq] = pc;
     pos.pieceBitboards[color][type] |= bitAt(sq);
     pos.occupancy[color] |= bitAt(sq);
     pos.occupancyAll |= bitAt(sq);
@@ -179,9 +161,7 @@ void removePiece(Position& pos, int sq) {
     pos.pieceBitboards[color][type] &= ~bitAt(sq);
     pos.occupancy[color] &= ~bitAt(sq);
     pos.occupancyAll &= ~bitAt(sq);
-#ifdef CHESS_VALIDATE_STATE
-    pos.board[sq] = EMPTY;
-#endif
+    pos.pieceAtSquare[sq] = EMPTY;
     if (type == 5) pos.kingSq[color] = -1;
 }
 
@@ -195,10 +175,8 @@ void movePiece(Position& pos, int from, int to) {
     int type = pieceTypeIndex(pc);
     uint64_t fromBit = bitAt(from);
     uint64_t toBit = bitAt(to);
-#ifdef CHESS_VALIDATE_STATE
-    pos.board[to] = pc;
-    pos.board[from] = EMPTY;
-#endif
+    pos.pieceAtSquare[to] = pc;
+    pos.pieceAtSquare[from] = EMPTY;
     pos.pieceBitboards[color][type] ^= fromBit | toBit;
     pos.occupancy[color] ^= fromBit | toBit;
     pos.occupancyAll ^= fromBit | toBit;
@@ -206,11 +184,10 @@ void movePiece(Position& pos, int from, int to) {
 }
 
 bool bitboardsConsistent(const Position& pos) {
-#ifdef CHESS_VALIDATE_STATE
     uint64_t expectedPieces[2][PIECE_TYPE_COUNT] = {};
     uint64_t expectedOcc[2] = {};
     for (int sq = 0; sq < 64; sq++) {
-        Piece pc = pos.board[sq];
+        Piece pc = pos.pieceAtSquare[sq];
         if (pc == EMPTY) continue;
         Color color = pieceColor(pc);
         int type = pieceTypeIndex(pc);
@@ -228,16 +205,6 @@ bool bitboardsConsistent(const Position& pos) {
         if (combined != pos.occupancy[color]) return false;
     }
     return pos.occupancyAll == (pos.occupancy[WHITE] | pos.occupancy[BLACK]);
-#else
-    uint64_t combined = 0;
-    for (int color = 0; color < 2; color++) {
-        uint64_t byColor = 0;
-        for (int type = 0; type < PIECE_TYPE_COUNT; type++) byColor |= pos.pieceBitboards[color][type];
-        if (byColor != pos.occupancy[color]) return false;
-        combined |= byColor;
-    }
-    return combined == pos.occupancyAll && (pos.occupancy[WHITE] & pos.occupancy[BLACK]) == 0;
-#endif
 }
 
 bool representationConsistent(const Position& pos) {
@@ -253,9 +220,7 @@ bool representationConsistent(const Position& pos) {
 }
 
 bool positionsEqual(const Position& a, const Position& b) {
-#ifdef CHESS_VALIDATE_STATE
-    for (int i = 0; i < 64; i++) if (a.board[i] != b.board[i]) return false;
-#endif
+    for (int i = 0; i < 64; i++) if (a.pieceAtSquare[i] != b.pieceAtSquare[i]) return false;
     if (a.sideToMove != b.sideToMove) return false;
     for (int i = 0; i < 4; i++) if (a.castling[i] != b.castling[i]) return false;
     if (a.enPassant != b.enPassant) return false;

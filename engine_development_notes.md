@@ -128,6 +128,8 @@ On the reference benchmark FEN
 `rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8`
 at depth 5, that change improved performance from roughly `8.20 s` / `10.97M nps` to `4.21923 s` / `21.316989M nps`.
 
+The next profiling-guided refinement adds a maintained `pieceAtSquare[64]` cache in all builds. Bitboards remain authoritative for attack detection and move generation, but move making, undo, and perft capture bookkeeping no longer identify square contents by scanning all piece bitboards. Validation now checks that this cache, the occupancy masks, and the piece bitboards stay in sync. On the same reference FEN at depth 5, that change improved performance again to `3.27296 s` / `27.480038M nps`.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path
@@ -154,7 +156,7 @@ Reference perft totals currently match for the standard positions already exerci
 
 All five current reference perft positions now match through their exercised depths.
 
-The recent ray-table and pawn-table cleanup preserved correctness, but it did not improve benchmark speed in its current form. Moving normal builds to a board-less runtime also preserved correctness but initially pushed the benchmark down to roughly 10.97M NPS on the current reference FEN. The first profiling-guided fix recovered that loss and more by simplifying slider attack detection, which reinforces that future tuning should be measurement-driven rather than assuming more abstraction is automatically faster in this codebase.
+The recent ray-table and pawn-table cleanup preserved correctness, but it did not improve benchmark speed in its current form. Moving normal builds to a board-less runtime also preserved correctness but initially pushed the benchmark down to roughly 10.97M NPS on the current reference FEN. The first profiling-guided fix recovered that loss and more by simplifying slider attack detection, and the next measured step keeps the bitboard generator while reintroducing a cheap square cache for move-state queries. That reinforces that future tuning should be measurement-driven rather than assuming more abstraction is automatically faster in this codebase.
 
 ## Recommended Workflow
 
