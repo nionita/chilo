@@ -117,7 +117,16 @@ Status: further advanced. Piece-list storage and maintenance were removed from r
 
 ### Recommended next implementation step
 
-The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, the transitional slow reference generators are gone, and normal builds now run without stored square-array state. The next implementation step should be a performance-focused pass that measures and selectively reworks the current bitboard helpers, since the representation migration is functionally complete enough and current NPS has regressed.
+The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, the transitional slow reference generators are gone, and normal builds now run without stored square-array state.
+
+The next useful work is still performance-focused, but the first profiling-driven recovery step is now implemented. `gprof` showed the old `rayAttacked()` wrapper fanout consuming about half of sampled runtime, so the slider portion of `attacked()` was rewritten to:
+
+- precompute rook-or-queen and bishop-or-queen attacker unions once per call
+- replace eight `rayAttacked()` calls with two direct helpers for rook-like and bishop-like directions
+
+On the reference benchmark FEN
+`rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8`
+at depth 5, that change improved performance from roughly `8.20 s` / `10.97M nps` to `4.21923 s` / `21.316989M nps`.
 
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
@@ -145,7 +154,7 @@ Reference perft totals currently match for the standard positions already exerci
 
 All five current reference perft positions now match through their exercised depths.
 
-The recent ray-table and pawn-table cleanup preserved correctness, but it did not improve benchmark speed in its current form. Moving normal builds to a board-less runtime also preserved correctness but pushed the benchmark further down to roughly 10.97M NPS on the current reference FEN. Future work should therefore treat performance tuning as a separate measurement-driven pass rather than assuming more bitboard abstraction is automatically faster in this codebase.
+The recent ray-table and pawn-table cleanup preserved correctness, but it did not improve benchmark speed in its current form. Moving normal builds to a board-less runtime also preserved correctness but initially pushed the benchmark down to roughly 10.97M NPS on the current reference FEN. The first profiling-guided fix recovered that loss and more by simplifying slider attack detection, which reinforces that future tuning should be measurement-driven rather than assuming more abstraction is automatically faster in this codebase.
 
 ## Recommended Workflow
 

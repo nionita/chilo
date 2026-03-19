@@ -345,12 +345,27 @@ Position parseFEN(const std::string& f) {
     return p;
 }
 
-bool rayAttacked(const Position& pos, int sq, Color att, int rayDir, bool forward, Piece sliderA, Piece sliderB) {
+bool rookLikeAttacked(const Position& pos, int sq, uint64_t attackers) {
     const AttackTables& tables = attackTables();
-    uint64_t attackers =
-        pos.pieceBitboards[att][pieceTypeIndex(att == WHITE ? sliderA : static_cast<Piece>(sliderA + 6))] |
-        pos.pieceBitboards[att][pieceTypeIndex(att == WHITE ? sliderB : static_cast<Piece>(sliderB + 6))];
-    int blocker = firstBlocker(tables.rays[rayDir][sq], pos.occupancyAll, forward);
+    int blocker = firstBlocker(tables.rays[0][sq], pos.occupancyAll, true);
+    if (blocker != -1 && (attackers & bitAt(blocker)) != 0) return true;
+    blocker = firstBlocker(tables.rays[1][sq], pos.occupancyAll, false);
+    if (blocker != -1 && (attackers & bitAt(blocker)) != 0) return true;
+    blocker = firstBlocker(tables.rays[2][sq], pos.occupancyAll, true);
+    if (blocker != -1 && (attackers & bitAt(blocker)) != 0) return true;
+    blocker = firstBlocker(tables.rays[3][sq], pos.occupancyAll, false);
+    return blocker != -1 && (attackers & bitAt(blocker)) != 0;
+}
+
+bool bishopLikeAttacked(const Position& pos, int sq, uint64_t attackers) {
+    const AttackTables& tables = attackTables();
+    int blocker = firstBlocker(tables.rays[4][sq], pos.occupancyAll, true);
+    if (blocker != -1 && (attackers & bitAt(blocker)) != 0) return true;
+    blocker = firstBlocker(tables.rays[5][sq], pos.occupancyAll, true);
+    if (blocker != -1 && (attackers & bitAt(blocker)) != 0) return true;
+    blocker = firstBlocker(tables.rays[6][sq], pos.occupancyAll, false);
+    if (blocker != -1 && (attackers & bitAt(blocker)) != 0) return true;
+    blocker = firstBlocker(tables.rays[7][sq], pos.occupancyAll, false);
     return blocker != -1 && (attackers & bitAt(blocker)) != 0;
 }
 
@@ -373,14 +388,13 @@ bool attacked(const Position& pos, int sq, Color att) {
     }
 
     if (!result) {
-        result = rayAttacked(pos, sq, att, 0, true, W_ROOK, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 1, false, W_ROOK, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 2, true, W_ROOK, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 3, false, W_ROOK, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 4, true, W_BISHOP, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 5, true, W_BISHOP, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 6, false, W_BISHOP, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 7, false, W_BISHOP, W_QUEEN);
+        int rookType = pieceTypeIndex(att == WHITE ? W_ROOK : B_ROOK);
+        int bishopType = pieceTypeIndex(att == WHITE ? W_BISHOP : B_BISHOP);
+        int queenType = pieceTypeIndex(att == WHITE ? W_QUEEN : B_QUEEN);
+        uint64_t rookQueenAttackers = pos.pieceBitboards[att][rookType] | pos.pieceBitboards[att][queenType];
+        uint64_t bishopQueenAttackers = pos.pieceBitboards[att][bishopType] | pos.pieceBitboards[att][queenType];
+        result = rookLikeAttacked(pos, sq, rookQueenAttackers) ||
+                 bishopLikeAttacked(pos, sq, bishopQueenAttackers);
     }
 
     return result;
