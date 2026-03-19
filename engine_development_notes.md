@@ -51,6 +51,7 @@ Depth 2: 400 (0.000157677 s, 9424329 nps)
 2. `undo()` originally failed to restore `halfMove`, `fullMove`, and `enPassant`.
 3. Perft legality checking originally used the wrong side after `doMove()`.
 4. Multiple move-generation issues were fixed around FEN parsing, pawn direction, en passant, castling path checks, rook presence for castling, and king-capture prevention.
+5. Queenside castling originally checked only `c` and `d` for emptiness; it now correctly requires `b`, `c`, and `d` to be empty while only `e`, `d`, and `c` must be attack-free.
 
 ### Validation work
 
@@ -66,6 +67,7 @@ The current version improves that by:
 
 - caching king squares in `Position`
 - keeping piece-lists plus square-to-list indices
+- tightening piece-list storage to realistic per-side maxima for each piece type
 - generating moves into a fixed stack buffer instead of allocating `std::vector<Move>` at every node
 - iterating the active side's actual pieces instead of scanning all 64 squares
 
@@ -87,12 +89,13 @@ Reference perft totals currently match for the standard positions already exerci
 - kiwipete through depth 4
 - position 3 through depth 5
 - position 4 through depth 4
+- mirrored position 4 through depth 5
 
 One known issue remains:
 
-- position 5 at depth 5 is still high by `12,283` nodes (`89,953,477` vs expected `89,941,194`)
+- position 5 at depth 5 is still high by `4,049` nodes (`89,945,243` vs expected `89,941,194`)
 
-That discrepancy predates the performance refactor and still needs separate investigation.
+The queenside-castling fix reduced the gap substantially, but a separate move-generation or legality bug is still present.
 
 ## Recommended Workflow
 

@@ -14,7 +14,7 @@ enum Piece { EMPTY, W_PAWN, W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN, W_KING,
 enum Color { WHITE, BLACK };
 
 constexpr int PIECE_TYPE_COUNT = 6;
-constexpr int MAX_PIECES_PER_TYPE = 16;
+constexpr int MAX_PIECES_PER_TYPE = 10;
 constexpr int MAX_MOVES = 256;
 
 struct Move { int from, to; Piece promotion; bool isEnPassant, isCastle, isDoublePush; };
@@ -47,6 +47,11 @@ bool bl(Piece p) { return p >= B_PAWN && p <= B_KING; }
 bool sameCol(Piece a, Piece b) { return (wh(a) && wh(b)) || (bl(a) && bl(b)); }
 Color pieceColor(Piece p) { assert(p != EMPTY); return wh(p) ? WHITE : BLACK; }
 int pieceTypeIndex(Piece p) { assert(p != EMPTY); return pt(p) - 1; }
+int maxPiecesForType(int type) {
+    static constexpr int limits[PIECE_TYPE_COUNT] = {8, 10, 10, 10, 9, 1};
+    assert(type >= 0 && type < PIECE_TYPE_COUNT);
+    return limits[type];
+}
 
 void initPosition(Position& p) {
     for (int i = 0; i < 64; i++) {
@@ -69,7 +74,7 @@ void addPiece(Position& pos, int sq, Piece pc) {
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
     int& count = pos.pieceCount[color][type];
-    assert(count < MAX_PIECES_PER_TYPE);
+    assert(count < maxPiecesForType(type));
     pos.board[sq] = pc;
     pos.pieceSquares[color][type][count] = sq;
     pos.squareToListIndex[sq] = count;
@@ -140,7 +145,7 @@ bool pieceListsConsistent(const Position& pos) {
                 Piece expected = pos.board[sq];
                 if (expected == EMPTY || pieceColor(expected) != color || pieceTypeIndex(expected) != type) return false;
             }
-            for (int i = pos.pieceCount[color][type]; i < MAX_PIECES_PER_TYPE; i++) {
+            for (int i = pos.pieceCount[color][type]; i < maxPiecesForType(type); i++) {
                 if (pos.pieceSquares[color][type][i] != -1) return false;
             }
         }
@@ -407,7 +412,7 @@ void genKingMoves(const Position& pos, Color us, Move* moves, int& count) {
         }
     }
     if (fr == kr && fc == 4 && pos.castling[qi] && pos.board[kr * 8 + 0] == ourRook) {
-        if (pos.board[kr * 8 + 2] == EMPTY && pos.board[kr * 8 + 3] == EMPTY) {
+        if (pos.board[kr * 8 + 1] == EMPTY && pos.board[kr * 8 + 2] == EMPTY && pos.board[kr * 8 + 3] == EMPTY) {
             if (!attacked(pos, kr * 8 + 4, them) && !attacked(pos, kr * 8 + 3, them) && !attacked(pos, kr * 8 + 2, them)) {
                 pushMove(moves, count, from, kr * 8 + 2, EMPTY, false, true, false);
             }
