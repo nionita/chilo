@@ -26,9 +26,6 @@ struct Position {
     int enPassant;
     int halfMove, fullMove;
     int kingSq[2];
-    int pieceCount[2][PIECE_TYPE_COUNT];
-    int pieceSquares[2][PIECE_TYPE_COUNT][MAX_PIECES_PER_TYPE];
-    int squareToListIndex[64];
     uint64_t pieceBitboards[2][PIECE_TYPE_COUNT];
     uint64_t occupancy[2];
     uint64_t occupancyAll;
@@ -54,11 +51,6 @@ bool bl(Piece p) { return p >= B_PAWN && p <= B_KING; }
 bool sameCol(Piece a, Piece b) { return (wh(a) && wh(b)) || (bl(a) && bl(b)); }
 Color pieceColor(Piece p) { assert(p != EMPTY); return wh(p) ? WHITE : BLACK; }
 int pieceTypeIndex(Piece p) { assert(p != EMPTY); return pt(p) - 1; }
-int maxPiecesForType(int type) {
-    static constexpr int limits[PIECE_TYPE_COUNT] = {8, 10, 10, 10, 9, 1};
-    assert(type >= 0 && type < PIECE_TYPE_COUNT);
-    return limits[type];
-}
 
 struct AttackTables {
     uint64_t knight[64];
@@ -96,17 +88,12 @@ const AttackTables& attackTables() {
 }
 
 void initPosition(Position& p) {
-    for (int i = 0; i < 64; i++) {
-        p.board[i] = EMPTY;
-        p.squareToListIndex[i] = -1;
-    }
+    for (int i = 0; i < 64; i++) p.board[i] = EMPTY;
     for (int c = 0; c < 2; c++) {
         p.kingSq[c] = -1;
         p.occupancy[c] = 0;
         for (int t = 0; t < PIECE_TYPE_COUNT; t++) {
-            p.pieceCount[c][t] = 0;
             p.pieceBitboards[c][t] = 0;
-            for (int i = 0; i < MAX_PIECES_PER_TYPE; i++) p.pieceSquares[c][t][i] = -1;
         }
     }
     p.occupancyAll = 0;
@@ -118,16 +105,11 @@ void addPiece(Position& pos, int sq, Piece pc) {
     assert(pos.board[sq] == EMPTY);
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
-    int& count = pos.pieceCount[color][type];
-    assert(count < maxPiecesForType(type));
     pos.board[sq] = pc;
-    pos.pieceSquares[color][type][count] = sq;
-    pos.squareToListIndex[sq] = count;
     pos.pieceBitboards[color][type] |= bitAt(sq);
     pos.occupancy[color] |= bitAt(sq);
     pos.occupancyAll |= bitAt(sq);
     if (type == 5) pos.kingSq[color] = sq;
-    count++;
 }
 
 void removePiece(Position& pos, int sq) {
@@ -136,19 +118,10 @@ void removePiece(Position& pos, int sq) {
     assert(pc != EMPTY);
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
-    int idx = pos.squareToListIndex[sq];
-    int& count = pos.pieceCount[color][type];
-    assert(idx >= 0 && idx < count);
-    int lastSq = pos.pieceSquares[color][type][count - 1];
-    pos.pieceSquares[color][type][idx] = lastSq;
-    if (lastSq != sq) pos.squareToListIndex[lastSq] = idx;
-    pos.pieceSquares[color][type][count - 1] = -1;
-    pos.squareToListIndex[sq] = -1;
     pos.pieceBitboards[color][type] &= ~bitAt(sq);
     pos.occupancy[color] &= ~bitAt(sq);
     pos.occupancyAll &= ~bitAt(sq);
     pos.board[sq] = EMPTY;
-    count--;
     if (type == 5) pos.kingSq[color] = -1;
 }
 
@@ -160,15 +133,10 @@ void movePiece(Position& pos, int from, int to) {
     assert(pos.board[to] == EMPTY);
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
-    int idx = pos.squareToListIndex[from];
-    assert(idx >= 0 && idx < pos.pieceCount[color][type]);
     uint64_t fromBit = bitAt(from);
     uint64_t toBit = bitAt(to);
     pos.board[to] = pc;
     pos.board[from] = EMPTY;
-    pos.pieceSquares[color][type][idx] = to;
-    pos.squareToListIndex[to] = idx;
-    pos.squareToListIndex[from] = -1;
     pos.pieceBitboards[color][type] ^= fromBit | toBit;
     pos.occupancy[color] ^= fromBit | toBit;
     pos.occupancyAll ^= fromBit | toBit;
@@ -199,38 +167,16 @@ bool bitboardsConsistent(const Position& pos) {
     return pos.occupancyAll == (pos.occupancy[WHITE] | pos.occupancy[BLACK]);
 }
 
-bool pieceListsConsistent(const Position& pos) {
-    for (int sq = 0; sq < 64; sq++) {
-        Piece pc = pos.board[sq];
-        if (pc == EMPTY) {
-            if (pos.squareToListIndex[sq] != -1) return false;
-            continue;
-        }
-        Color color = pieceColor(pc);
-        int type = pieceTypeIndex(pc);
-        int idx = pos.squareToListIndex[sq];
-        if (idx < 0 || idx >= pos.pieceCount[color][type]) return false;
-        if (pos.pieceSquares[color][type][idx] != sq) return false;
-        if (type == 5 && pos.kingSq[color] != sq) return false;
-    }
+bool representationConsistent(const Position& pos) {
+    if (!bitboardsConsistent(pos)) return false;
     for (int color = 0; color < 2; color++) {
-        if (pos.kingSq[color] < 0 || pos.kingSq[color] >= 64) return false;
-        if (pos.board[pos.kingSq[color]] != (color == WHITE ? W_KING : B_KING)) return false;
-        for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
-            bool seen[64] = {};
-            for (int i = 0; i < pos.pieceCount[color][type]; i++) {
-                int sq = pos.pieceSquares[color][type][i];
-                if (sq < 0 || sq >= 64 || seen[sq]) return false;
-                seen[sq] = true;
-                Piece expected = pos.board[sq];
-                if (expected == EMPTY || pieceColor(expected) != color || pieceTypeIndex(expected) != type) return false;
-            }
-            for (int i = pos.pieceCount[color][type]; i < maxPiecesForType(type); i++) {
-                if (pos.pieceSquares[color][type][i] != -1) return false;
-            }
-        }
+        int kingSq = pos.kingSq[color];
+        if (kingSq < 0 || kingSq >= 64) return false;
+        Piece king = color == WHITE ? W_KING : B_KING;
+        if (pos.board[kingSq] != king) return false;
+        if (pos.pieceBitboards[color][pieceTypeIndex(king)] != bitAt(kingSq)) return false;
     }
-    return bitboardsConsistent(pos);
+    return true;
 }
 
 bool positionsEqual(const Position& a, const Position& b) {
@@ -244,17 +190,11 @@ bool positionsEqual(const Position& a, const Position& b) {
     for (int color = 0; color < 2; color++) {
         if (a.occupancy[color] != b.occupancy[color]) return false;
         for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
-            if (a.pieceCount[color][type] != b.pieceCount[color][type]) return false;
             if (a.pieceBitboards[color][type] != b.pieceBitboards[color][type]) return false;
-            bool seenA[64] = {};
-            bool seenB[64] = {};
-            for (int i = 0; i < a.pieceCount[color][type]; i++) seenA[a.pieceSquares[color][type][i]] = true;
-            for (int i = 0; i < b.pieceCount[color][type]; i++) seenB[b.pieceSquares[color][type][i]] = true;
-            for (int sq = 0; sq < 64; sq++) if (seenA[sq] != seenB[sq]) return false;
         }
     }
     if (a.occupancyAll != b.occupancyAll) return false;
-    return pieceListsConsistent(a) && pieceListsConsistent(b);
+    return representationConsistent(a) && representationConsistent(b);
 }
 
 Position parseFEN(const std::string& f) {
@@ -593,26 +533,37 @@ void genKingMovesSlow(const Position& pos, Color us, Move* moves, int& count) {
 int genMovesSlow(const Position& pos, Move* moves) {
     int count = 0;
     Color us = pos.sideToMove;
-
-    int pawnType = pieceTypeIndex(us == WHITE ? W_PAWN : B_PAWN);
-    for (int i = 0; i < pos.pieceCount[us][pawnType]; i++) genPawnMovesSlow(pos, us, pos.pieceSquares[us][pawnType][i], moves, count);
-
-    int knightType = pieceTypeIndex(us == WHITE ? W_KNIGHT : B_KNIGHT);
-    for (int i = 0; i < pos.pieceCount[us][knightType]; i++) genKnightMovesSlow(pos, pos.pieceSquares[us][knightType][i], moves, count);
-
-    int bishopType = pieceTypeIndex(us == WHITE ? W_BISHOP : B_BISHOP);
-    for (int i = 0; i < pos.pieceCount[us][bishopType]; i++) genBishopMovesSlow(pos, pos.pieceSquares[us][bishopType][i], moves, count);
-
-    int rookType = pieceTypeIndex(us == WHITE ? W_ROOK : B_ROOK);
-    for (int i = 0; i < pos.pieceCount[us][rookType]; i++) genRookMovesSlow(pos, pos.pieceSquares[us][rookType][i], moves, count);
-
-    int queenType = pieceTypeIndex(us == WHITE ? W_QUEEN : B_QUEEN);
-    for (int i = 0; i < pos.pieceCount[us][queenType]; i++) {
-        int sq = pos.pieceSquares[us][queenType][i];
-        genBishopMovesSlow(pos, sq, moves, count);
-        genRookMovesSlow(pos, sq, moves, count);
+    for (int sq = 0; sq < 64; sq++) {
+        Piece pc = pos.board[sq];
+        if (pc == EMPTY || pieceColor(pc) != us) continue;
+        switch (pc) {
+            case W_PAWN:
+            case B_PAWN:
+                genPawnMovesSlow(pos, us, sq, moves, count);
+                break;
+            case W_KNIGHT:
+            case B_KNIGHT:
+                genKnightMovesSlow(pos, sq, moves, count);
+                break;
+            case W_BISHOP:
+            case B_BISHOP:
+                genBishopMovesSlow(pos, sq, moves, count);
+                break;
+            case W_ROOK:
+            case B_ROOK:
+                genRookMovesSlow(pos, sq, moves, count);
+                break;
+            case W_QUEEN:
+            case B_QUEEN:
+                genBishopMovesSlow(pos, sq, moves, count);
+                genRookMovesSlow(pos, sq, moves, count);
+                break;
+            case W_KING:
+            case B_KING:
+            case EMPTY:
+                break;
+        }
     }
-
     genKingMovesSlow(pos, us, moves, count);
     return count;
 }

@@ -66,12 +66,12 @@ The initial representation scanned all 64 squares for move generation and found 
 The current version improves that by:
 
 - caching king squares in `Position`
-- keeping piece-lists plus square-to-list indices
-- tightening piece-list storage to realistic per-side maxima for each piece type
 - generating moves into a fixed stack buffer instead of allocating `std::vector<Move>` at every node
-- iterating the active side's actual pieces instead of scanning all 64 squares
+- maintaining parallel bitboards and occupancy masks
+- using bitboards for attack detection and move generation
+- keeping `board[64]` as helper/debug state while removing transitional piece-list maintenance
 
-This keeps the simple board-array model while removing several obvious hot-path costs.
+This keeps move making and debugging simple while shifting the hot path onto bitboards.
 
 ## Bitboard Migration Plan
 
@@ -111,9 +111,11 @@ Status: implemented, with validation-build move-set comparison against the old g
 - decide whether `board[64]` remains as debug/helper state or becomes validation-only
 - remove piece-list maintenance if bitboards fully replace it
 
+Status: partially implemented. Piece-list storage and maintenance were removed from runtime state, while `board[64]` remains as permanent helper/debug state. Validation still keeps a board-scan reference generator.
+
 ### Recommended next implementation step
 
-The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place. The next implementation step should be representation cleanup: remove piece-list dependence from hot paths and decide whether `board[64]` remains permanent helper state or becomes validation/debug-only state.
+The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, and piece-list maintenance has now been removed. The next implementation step should be deciding whether `board[64]` should remain permanent helper state or become validation-only, and whether the slow reference generator should still be kept once confidence is high enough.
 
 ## Test Status
 
