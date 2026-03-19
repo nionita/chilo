@@ -197,6 +197,29 @@ bool positionsEqual(const Position& a, const Position& b) {
     return representationConsistent(a) && representationConsistent(b);
 }
 
+uint8_t packCastling(const Position& pos) {
+    return (pos.castling[0] ? 1 : 0) |
+           (pos.castling[1] ? 2 : 0) |
+           (pos.castling[2] ? 4 : 0) |
+           (pos.castling[3] ? 8 : 0);
+}
+
+void restoreCastling(Position& pos, uint8_t rights) {
+    pos.castling[0] = rights & 1;
+    pos.castling[1] = rights & 2;
+    pos.castling[2] = rights & 4;
+    pos.castling[3] = rights & 8;
+}
+
+void clearCastlingForSquare(Position& pos, int sq) {
+    switch (sq) {
+        case 0: pos.castling[1] = false; break;
+        case 7: pos.castling[0] = false; break;
+        case 56: pos.castling[3] = false; break;
+        case 63: pos.castling[2] = false; break;
+    }
+}
+
 Position parseFEN(const std::string& f) {
     Position p;
     initPosition(p);
@@ -461,13 +484,26 @@ void doMove(Position& pos, const Move& mv) {
     Piece pc = pos.board[mv.from];
     Piece cap = pos.board[mv.to];
 
-    if (cap != EMPTY) removePiece(pos, mv.to);
+    if (cap != EMPTY) {
+        clearCastlingForSquare(pos, mv.to);
+        removePiece(pos, mv.to);
+    }
     if (mv.isEnPassant) {
         int epR = R(mv.to);
         int capR = pos.sideToMove == WHITE ? epR - 1 : epR + 1;
         int capSq = capR * 8 + F(mv.to);
         assert(pos.board[capSq] == W_PAWN || pos.board[capSq] == B_PAWN);
         removePiece(pos, capSq);
+    }
+
+    if (pc == W_KING) {
+        pos.castling[0] = false;
+        pos.castling[1] = false;
+    } else if (pc == B_KING) {
+        pos.castling[2] = false;
+        pos.castling[3] = false;
+    } else if (pc == W_ROOK || pc == B_ROOK) {
+        clearCastlingForSquare(pos, mv.from);
     }
 
     movePiece(pos, mv.from, mv.to);
@@ -504,7 +540,8 @@ void doMove(Position& pos, const Move& mv) {
 #endif
 }
 
-void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int oldFullMove = 1, int oldEnPassant = -1) {
+void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int oldFullMove = 1,
+          int oldEnPassant = -1, uint8_t oldCastling = 0) {
     assert(mv.from >= 0 && mv.from < 64);
     assert(mv.to >= 0 && mv.to < 64);
 
@@ -512,6 +549,7 @@ void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int old
     pos.halfMove = oldHalfMove;
     pos.fullMove = oldFullMove;
     pos.enPassant = oldEnPassant;
+    restoreCastling(pos, oldCastling);
 
     if (mv.isCastle) {
         int rr = R(mv.to);
@@ -578,13 +616,14 @@ uint64_t perftDivide(Position& pos, int d) {
         int oldHalfMove = pos.halfMove;
         int oldFullMove = pos.fullMove;
         int oldEnPassant = pos.enPassant;
+        uint8_t oldCastling = packCastling(pos);
         doMove(pos, mv);
         if (!inCheck(pos, us)) {
             uint64_t count = perft(pos, d - 1);
             std::cout << moveToUCI(mv) << ": " << count << "\n";
             total += count;
         }
-        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant);
+        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
 #ifdef CHESS_VALIDATE_STATE
         assert(positionsEqual(startPos, pos));
 #endif
@@ -607,9 +646,10 @@ uint64_t perft(Position& pos, int d) {
         int oldHalfMove = pos.halfMove;
         int oldFullMove = pos.fullMove;
         int oldEnPassant = pos.enPassant;
+        uint8_t oldCastling = packCastling(pos);
         doMove(pos, mv);
         if (!inCheck(pos, us)) n += perft(pos, d - 1);
-        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant);
+        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
 #ifdef CHESS_VALIDATE_STATE
         assert(positionsEqual(startPos, pos));
 #endif
