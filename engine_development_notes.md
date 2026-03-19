@@ -70,6 +70,7 @@ The current version improves that by:
 - maintaining parallel bitboards and occupancy masks
 - using bitboards for attack detection and move generation
 - using occupancy and piece masks instead of square-array reads for more hot-path attack and move-generation checks
+- precomputing slider rays and pawn push/promotion data to reduce repeated inner-loop square arithmetic
 - keeping `board[64]` as helper/debug state while removing transitional piece-list maintenance
 
 This keeps move making and debugging simple while shifting the hot path onto bitboards.
@@ -116,7 +117,7 @@ Status: further advanced. Piece-list storage and maintenance were removed from r
 
 ### Recommended next implementation step
 
-The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, the transitional slow reference generators are gone, and hot-path attack/move generation now leans more heavily on occupancy and piece masks. The next implementation step should be either a larger board-less runtime refactor or deeper bitboard-specific optimizations for sliders and pawns.
+The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, the transitional slow reference generators are gone, and hot-path attack/move generation now leans more heavily on occupancy, piece masks, precomputed rays, and pawn tables. The next implementation step should be either a larger board-less runtime refactor or a later performance-focused pass that measures and selectively reworks the bitboard helpers that still regress NPS.
 
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
@@ -143,6 +144,8 @@ Reference perft totals currently match for the standard positions already exerci
 - mirrored position 4 through depth 5
 
 All five current reference perft positions now match through their exercised depths.
+
+The recent ray-table and pawn-table cleanup preserved correctness, but it did not improve benchmark speed in its current form. That means future work should treat performance tuning as a separate measurement-driven pass rather than assuming more bitboard abstraction is automatically faster in this codebase.
 
 ## Recommended Workflow
 

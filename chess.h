@@ -56,14 +56,27 @@ struct AttackTables {
     uint64_t knight[64];
     uint64_t king[64];
     uint64_t pawnAttackers[2][64];
+    uint64_t rays[8][64];
+    int pawnPush[2][64];
+    int pawnDoublePush[2][64];
+    bool promotion[2][64];
 };
 
 AttackTables makeAttackTables() {
     AttackTables t = {};
+    for (int color = 0; color < 2; color++) {
+        for (int sq = 0; sq < 64; sq++) {
+            t.pawnPush[color][sq] = -1;
+            t.pawnDoublePush[color][sq] = -1;
+            t.promotion[color][sq] = false;
+        }
+    }
     int knightDr[] = {-2, -2, -1, -1, 1, 1, 2, 2};
     int knightDf[] = {-1, 1, -2, 2, -2, 2, -1, 1};
     int kingDr[] = {-1, -1, -1, 0, 0, 1, 1, 1};
     int kingDf[] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    int rayDr[] = {1, -1, 0, 0, 1, 1, -1, -1};
+    int rayDf[] = {0, 0, 1, -1, 1, -1, 1, -1};
     for (int sq = 0; sq < 64; sq++) {
         int r = R(sq), f = F(sq);
         for (int i = 0; i < 8; i++) {
@@ -78,6 +91,20 @@ AttackTables makeAttackTables() {
         if (r > 0 && f < 7) t.pawnAttackers[WHITE][sq] |= bitAt((r - 1) * 8 + (f + 1));
         if (r < 7 && f > 0) t.pawnAttackers[BLACK][sq] |= bitAt((r + 1) * 8 + (f - 1));
         if (r < 7 && f < 7) t.pawnAttackers[BLACK][sq] |= bitAt((r + 1) * 8 + (f + 1));
+        for (int dir = 0; dir < 8; dir++) {
+            int nr = r + rayDr[dir], nf = f + rayDf[dir];
+            while (nr >= 0 && nr < 8 && nf >= 0 && nf < 8) {
+                t.rays[dir][sq] |= bitAt(nr * 8 + nf);
+                nr += rayDr[dir];
+                nf += rayDf[dir];
+            }
+        }
+        if (r < 7) t.pawnPush[WHITE][sq] = (r + 1) * 8 + f;
+        if (r == 1) t.pawnDoublePush[WHITE][sq] = (r + 2) * 8 + f;
+        if (r > 0) t.pawnPush[BLACK][sq] = (r - 1) * 8 + f;
+        if (r == 6) t.pawnDoublePush[BLACK][sq] = (r - 2) * 8 + f;
+        t.promotion[WHITE][sq] = r == 7;
+        t.promotion[BLACK][sq] = r == 0;
     }
     return t;
 }
@@ -86,6 +113,10 @@ const AttackTables& attackTables() {
     static const AttackTables tables = makeAttackTables();
     return tables;
 }
+
+int popLsb(uint64_t& bits);
+int popMsb(uint64_t bits);
+int firstBlocker(uint64_t rayMask, uint64_t occ, bool forward);
 
 void initPosition(Position& p) {
     for (int i = 0; i < 64; i++) p.board[i] = EMPTY;
@@ -270,19 +301,13 @@ Position parseFEN(const std::string& f) {
     return p;
 }
 
-bool rayAttacked(const Position& pos, int sq, Color att, int dr, int df, Piece sliderA, Piece sliderB) {
-    int r = R(sq) + dr, f = F(sq) + df;
+bool rayAttacked(const Position& pos, int sq, Color att, int rayDir, bool forward, Piece sliderA, Piece sliderB) {
+    const AttackTables& tables = attackTables();
     uint64_t attackers =
         pos.pieceBitboards[att][pieceTypeIndex(att == WHITE ? sliderA : static_cast<Piece>(sliderA + 6))] |
         pos.pieceBitboards[att][pieceTypeIndex(att == WHITE ? sliderB : static_cast<Piece>(sliderB + 6))];
-    while (r >= 0 && r < 8 && f >= 0 && f < 8) {
-        int target = r * 8 + f;
-        uint64_t targetBit = bitAt(target);
-        if (pos.occupancyAll & targetBit) return (attackers & targetBit) != 0;
-        r += dr;
-        f += df;
-    }
-    return false;
+    int blocker = firstBlocker(tables.rays[rayDir][sq], pos.occupancyAll, forward);
+    return blocker != -1 && (attackers & bitAt(blocker)) != 0;
 }
 
 bool attacked(const Position& pos, int sq, Color att) {
@@ -304,14 +329,14 @@ bool attacked(const Position& pos, int sq, Color att) {
     }
 
     if (!result) {
-        result = rayAttacked(pos, sq, att, -1, -1, W_BISHOP, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, -1, 1, W_BISHOP, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 1, -1, W_BISHOP, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 1, 1, W_BISHOP, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, -1, 0, W_ROOK, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 1, 0, W_ROOK, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 0, -1, W_ROOK, W_QUEEN) ||
-                 rayAttacked(pos, sq, att, 0, 1, W_ROOK, W_QUEEN);
+        result = rayAttacked(pos, sq, att, 0, true, W_ROOK, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 1, false, W_ROOK, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 2, true, W_ROOK, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 3, false, W_ROOK, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 4, true, W_BISHOP, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 5, true, W_BISHOP, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 6, false, W_BISHOP, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 7, false, W_BISHOP, W_QUEEN);
     }
 
     return result;
@@ -335,44 +360,49 @@ int popLsb(uint64_t& bits) {
     return sq;
 }
 
+int popMsb(uint64_t bits) {
+    assert(bits != 0);
+    return 63 - __builtin_clzll(bits);
+}
+
+int firstBlocker(uint64_t rayMask, uint64_t occ, bool forward) {
+    uint64_t blockers = rayMask & occ;
+    if (blockers == 0) return -1;
+    return forward ? popLsb(blockers) : popMsb(blockers);
+}
+
 void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
     uint64_t pawns = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_PAWN : B_PAWN)];
+    const AttackTables& tables = attackTables();
     uint64_t occAll = pos.occupancyAll;
     Color them = us == WHITE ? BLACK : WHITE;
     uint64_t enemyNonKingOcc = pos.occupancy[them] &
                                ~pos.pieceBitboards[them][pieceTypeIndex(them == WHITE ? W_KING : B_KING)];
-    int dir = us == WHITE ? 1 : -1;
-    int start = us == WHITE ? 1 : 6;
-    int promo = us == WHITE ? 7 : 0;
     while (pawns) {
         int from = popLsb(pawns);
-        int fr = R(from), fc = F(from);
-        int nextRank = fr + dir;
-        if (nextRank >= 0 && nextRank < 8) {
-            int to = nextRank * 8 + fc;
-            if ((occAll & bitAt(to)) == 0) {
-                if (nextRank == promo) {
-                    Piece promos[] = {
-                        us == WHITE ? W_QUEEN : B_QUEEN,
-                        us == WHITE ? W_ROOK : B_ROOK,
-                        us == WHITE ? W_BISHOP : B_BISHOP,
-                        us == WHITE ? W_KNIGHT : B_KNIGHT
-                    };
-                    for (Piece pr : promos) pushMove(moves, count, from, to, pr, false, false, false);
-                } else {
-                    pushMove(moves, count, from, to, EMPTY, false, false, false);
-                    if (fr == start) {
-                        int t2 = (fr + 2 * dir) * 8 + fc;
-                        if ((occAll & bitAt(t2)) == 0) pushMove(moves, count, from, t2, EMPTY, false, false, true);
-                    }
+        int to = tables.pawnPush[us][from];
+        if (to != -1 && (occAll & bitAt(to)) == 0) {
+            if (tables.promotion[us][to]) {
+                Piece promos[] = {
+                    us == WHITE ? W_QUEEN : B_QUEEN,
+                    us == WHITE ? W_ROOK : B_ROOK,
+                    us == WHITE ? W_BISHOP : B_BISHOP,
+                    us == WHITE ? W_KNIGHT : B_KNIGHT
+                };
+                for (Piece pr : promos) pushMove(moves, count, from, to, pr, false, false, false);
+            } else {
+                pushMove(moves, count, from, to, EMPTY, false, false, false);
+                int t2 = tables.pawnDoublePush[us][from];
+                if (t2 != -1 && (occAll & bitAt(t2)) == 0) {
+                    pushMove(moves, count, from, t2, EMPTY, false, false, true);
                 }
             }
         }
-        uint64_t attacks = attackTables().pawnAttackers[us == WHITE ? BLACK : WHITE][from];
+        uint64_t attacks = tables.pawnAttackers[us == WHITE ? BLACK : WHITE][from];
         while (attacks) {
             int cap = popLsb(attacks);
             if (enemyNonKingOcc & bitAt(cap)) {
-                if (R(cap) == promo) {
+                if (tables.promotion[us][cap]) {
                     Piece promos[] = {
                         us == WHITE ? W_QUEEN : B_QUEEN,
                         us == WHITE ? W_ROOK : B_ROOK,
@@ -406,30 +436,22 @@ void genKnightMoves(const Position& pos, Color us, Move* moves, int& count) {
     }
 }
 
-void genSlidingMoves(const Position& pos, uint64_t pieces, const int* dirs, int dirCount, Move* moves, int& count) {
+void genSlidingMoves(const Position& pos, uint64_t pieces, const int* rayDirs, const bool* rayForward, int dirCount, Move* moves, int& count) {
+    const AttackTables& tables = attackTables();
     Color us = pos.sideToMove;
     Color them = us == WHITE ? BLACK : WHITE;
     uint64_t enemyNonKingOcc = pos.occupancy[them] &
                                ~pos.pieceBitboards[them][pieceTypeIndex(them == WHITE ? W_KING : B_KING)];
     while (pieces) {
         int from = popLsb(pieces);
-        int fr = R(from), fc = F(from);
         for (int i = 0; i < dirCount; i++) {
-            int d = dirs[i];
-            for (int to = from + d; ; to += d) {
-                if (to < 0 || to >= 64) break;
-                if ((d == -9 || d == 9 || d == -7 || d == 7) && std::abs(R(to) - fr) != std::abs(F(to) - fc)) break;
-                if (d == -1 && F(to) >= F(from)) break;
-                if (d == 1 && F(to) <= F(from)) break;
-                if (d == -8 && R(to) >= R(from)) break;
-                if (d == 8 && R(to) <= R(from)) break;
-                uint64_t toBit = bitAt(to);
-                if ((pos.occupancyAll & toBit) == 0) {
-                    pushMove(moves, count, from, to, EMPTY, false, false, false);
-                    continue;
-                }
-                if (enemyNonKingOcc & toBit) pushMove(moves, count, from, to, EMPTY, false, false, false);
-                break;
+            uint64_t ray = tables.rays[rayDirs[i]][from];
+            int blocker = firstBlocker(ray, pos.occupancyAll, rayForward[i]);
+            uint64_t quietTargets = ray;
+            if (blocker != -1) quietTargets &= ~(bitAt(blocker) | tables.rays[rayDirs[i]][blocker]);
+            while (quietTargets) pushMove(moves, count, from, popLsb(quietTargets), EMPTY, false, false, false);
+            if (blocker != -1 && (enemyNonKingOcc & bitAt(blocker))) {
+                pushMove(moves, count, from, blocker, EMPTY, false, false, false);
             }
         }
     }
@@ -470,16 +492,18 @@ int genMoves(const Position& pos, Move* moves) {
     genPawnMoves(pos, us, moves, count);
     genKnightMoves(pos, us, moves, count);
 
-    int bishopDirs[] = {-9, -7, 7, 9};
-    int rookDirs[] = {-8, -1, 1, 8};
+    int bishopDirs[] = {4, 5, 6, 7};
+    bool bishopForward[] = {true, true, false, false};
+    int rookDirs[] = {0, 1, 2, 3};
+    bool rookForward[] = {true, false, true, false};
     uint64_t bishops = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_BISHOP : B_BISHOP)];
     uint64_t rooks = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_ROOK : B_ROOK)];
     uint64_t queens = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_QUEEN : B_QUEEN)];
 
-    genSlidingMoves(pos, bishops, bishopDirs, 4, moves, count);
-    genSlidingMoves(pos, rooks, rookDirs, 4, moves, count);
-    genSlidingMoves(pos, queens, bishopDirs, 4, moves, count);
-    genSlidingMoves(pos, queens, rookDirs, 4, moves, count);
+    genSlidingMoves(pos, bishops, bishopDirs, bishopForward, 4, moves, count);
+    genSlidingMoves(pos, rooks, rookDirs, rookForward, 4, moves, count);
+    genSlidingMoves(pos, queens, bishopDirs, bishopForward, 4, moves, count);
+    genSlidingMoves(pos, queens, rookDirs, rookForward, 4, moves, count);
 
     genKingMoves(pos, us, moves, count);
 
