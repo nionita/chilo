@@ -73,6 +73,44 @@ The current version improves that by:
 
 This keeps the simple board-array model while removing several obvious hot-path costs.
 
+## Bitboard Migration Plan
+
+Bitboards are the next major representation upgrade, but the migration should stay staged so the current board-array path remains available for debugging while correctness is preserved.
+
+### Stage 1: Parallel bitboard state
+
+- add 12 piece bitboards plus white, black, and combined occupancy bitboards to `Position`
+- maintain them in `parseFEN()`, `addPiece()`, `removePiece()`, and `movePiece()`
+- validate that board array, piece-lists, king squares, and bitboards describe the same position
+- keep `attacked()` and `genMoves()` unchanged
+
+Status: implemented.
+
+### Stage 2: Bitboards as first-class move state
+
+- ensure `doMove()` and `undo()` are validated explicitly against the new bitboard state for all move types
+- use validation builds to catch any representation drift before attack generation changes
+
+### Stage 3: Bitboard attack detection
+
+- rewrite `attacked()` around bitboards and precomputed king/knight/pawn attack masks
+- keep slider attacks simple at first, using occupancy-aware stepping rather than advanced tables
+
+### Stage 4: Bitboard move generation
+
+- migrate `genMoves()` piece class by piece class to bit iteration
+- keep the existing `Move` type and fixed move buffer interface
+- remove dependence on piece-lists only after perft parity is stable
+
+### Stage 5: Representation cleanup
+
+- decide whether `board[64]` remains as debug/helper state or becomes validation-only
+- remove piece-list maintenance if bitboards fully replace it
+
+### Recommended first implementation step
+
+The safest first step was to add parallel bitboards without changing move generation. That is now in place. The next implementation step should be to rewrite `attacked()` to use the new bitboard representation while keeping the rest of move generation unchanged.
+
 ## Test Status
 
 Current regression checks in `perft_tests` pass for:

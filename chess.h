@@ -29,10 +29,17 @@ struct Position {
     int pieceCount[2][PIECE_TYPE_COUNT];
     int pieceSquares[2][PIECE_TYPE_COUNT][MAX_PIECES_PER_TYPE];
     int squareToListIndex[64];
+    uint64_t pieceBitboards[2][PIECE_TYPE_COUNT];
+    uint64_t occupancy[2];
+    uint64_t occupancyAll;
 };
 
 int R(int s) { return s >> 3; }
 int F(int s) { return s & 7; }
+uint64_t bitAt(int sq) {
+    assert(sq >= 0 && sq < 64);
+    return 1ULL << sq;
+}
 int pt(Piece p) {
     if (p == EMPTY) return 0;
     if (p == W_PAWN || p == B_PAWN) return 1;
@@ -60,11 +67,14 @@ void initPosition(Position& p) {
     }
     for (int c = 0; c < 2; c++) {
         p.kingSq[c] = -1;
+        p.occupancy[c] = 0;
         for (int t = 0; t < PIECE_TYPE_COUNT; t++) {
             p.pieceCount[c][t] = 0;
+            p.pieceBitboards[c][t] = 0;
             for (int i = 0; i < MAX_PIECES_PER_TYPE; i++) p.pieceSquares[c][t][i] = -1;
         }
     }
+    p.occupancyAll = 0;
 }
 
 void addPiece(Position& pos, int sq, Piece pc) {
@@ -78,6 +88,9 @@ void addPiece(Position& pos, int sq, Piece pc) {
     pos.board[sq] = pc;
     pos.pieceSquares[color][type][count] = sq;
     pos.squareToListIndex[sq] = count;
+    pos.pieceBitboards[color][type] |= bitAt(sq);
+    pos.occupancy[color] |= bitAt(sq);
+    pos.occupancyAll |= bitAt(sq);
     if (type == 5) pos.kingSq[color] = sq;
     count++;
 }
@@ -96,6 +109,9 @@ void removePiece(Position& pos, int sq) {
     if (lastSq != sq) pos.squareToListIndex[lastSq] = idx;
     pos.pieceSquares[color][type][count - 1] = -1;
     pos.squareToListIndex[sq] = -1;
+    pos.pieceBitboards[color][type] &= ~bitAt(sq);
+    pos.occupancy[color] &= ~bitAt(sq);
+    pos.occupancyAll &= ~bitAt(sq);
     pos.board[sq] = EMPTY;
     count--;
     if (type == 5) pos.kingSq[color] = -1;
@@ -111,12 +127,41 @@ void movePiece(Position& pos, int from, int to) {
     int type = pieceTypeIndex(pc);
     int idx = pos.squareToListIndex[from];
     assert(idx >= 0 && idx < pos.pieceCount[color][type]);
+    uint64_t fromBit = bitAt(from);
+    uint64_t toBit = bitAt(to);
     pos.board[to] = pc;
     pos.board[from] = EMPTY;
     pos.pieceSquares[color][type][idx] = to;
     pos.squareToListIndex[to] = idx;
     pos.squareToListIndex[from] = -1;
+    pos.pieceBitboards[color][type] ^= fromBit | toBit;
+    pos.occupancy[color] ^= fromBit | toBit;
+    pos.occupancyAll ^= fromBit | toBit;
     if (type == 5) pos.kingSq[color] = to;
+}
+
+bool bitboardsConsistent(const Position& pos) {
+    uint64_t expectedPieces[2][PIECE_TYPE_COUNT] = {};
+    uint64_t expectedOcc[2] = {};
+    for (int sq = 0; sq < 64; sq++) {
+        Piece pc = pos.board[sq];
+        if (pc == EMPTY) continue;
+        Color color = pieceColor(pc);
+        int type = pieceTypeIndex(pc);
+        uint64_t bit = bitAt(sq);
+        expectedPieces[color][type] |= bit;
+        expectedOcc[color] |= bit;
+    }
+    for (int color = 0; color < 2; color++) {
+        uint64_t combined = 0;
+        for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
+            if (pos.pieceBitboards[color][type] != expectedPieces[color][type]) return false;
+            combined |= pos.pieceBitboards[color][type];
+        }
+        if (pos.occupancy[color] != expectedOcc[color]) return false;
+        if (combined != pos.occupancy[color]) return false;
+    }
+    return pos.occupancyAll == (pos.occupancy[WHITE] | pos.occupancy[BLACK]);
 }
 
 bool pieceListsConsistent(const Position& pos) {
@@ -150,7 +195,7 @@ bool pieceListsConsistent(const Position& pos) {
             }
         }
     }
-    return true;
+    return bitboardsConsistent(pos);
 }
 
 bool positionsEqual(const Position& a, const Position& b) {
@@ -162,8 +207,10 @@ bool positionsEqual(const Position& a, const Position& b) {
     if (a.fullMove != b.fullMove) return false;
     if (a.kingSq[WHITE] != b.kingSq[WHITE] || a.kingSq[BLACK] != b.kingSq[BLACK]) return false;
     for (int color = 0; color < 2; color++) {
+        if (a.occupancy[color] != b.occupancy[color]) return false;
         for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
             if (a.pieceCount[color][type] != b.pieceCount[color][type]) return false;
+            if (a.pieceBitboards[color][type] != b.pieceBitboards[color][type]) return false;
             bool seenA[64] = {};
             bool seenB[64] = {};
             for (int i = 0; i < a.pieceCount[color][type]; i++) seenA[a.pieceSquares[color][type][i]] = true;
@@ -171,6 +218,7 @@ bool positionsEqual(const Position& a, const Position& b) {
             for (int sq = 0; sq < 64; sq++) if (seenA[sq] != seenB[sq]) return false;
         }
     }
+    if (a.occupancyAll != b.occupancyAll) return false;
     return pieceListsConsistent(a) && pieceListsConsistent(b);
 }
 
