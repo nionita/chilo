@@ -18,6 +18,13 @@ constexpr int MAX_PIECES_PER_TYPE = 10;
 constexpr int MAX_MOVES = 256;
 
 struct Move { int from, to; Piece promotion; bool isEnPassant, isCastle, isDoublePush; };
+struct UndoState {
+    Piece captured;
+    uint8_t castling;
+    int enPassant;
+    int halfMove;
+    int fullMove;
+};
 
 struct Position {
     Piece pieceAtSquare[64];
@@ -533,15 +540,19 @@ int genMoves(const Position& pos, Move* moves) {
     return count;
 }
 
-void doMove(Position& pos, const Move& mv) {
+void doMove(Position& pos, const Move& mv, UndoState& undo) {
     assert(mv.from >= 0 && mv.from < 64);
     assert(mv.to >= 0 && mv.to < 64);
     assert(pieceAt(pos, mv.from) != EMPTY);
 
     Piece pc = pieceAt(pos, mv.from);
-    Piece cap = pieceAt(pos, mv.to);
+    undo.captured = pieceAt(pos, mv.to);
+    undo.halfMove = pos.halfMove;
+    undo.fullMove = pos.fullMove;
+    undo.enPassant = pos.enPassant;
+    undo.castling = packCastling(pos);
 
-    if (cap != EMPTY) {
+    if (undo.captured != EMPTY) {
         clearCastlingForSquare(pos, mv.to);
         removePiece(pos, mv.to);
     }
@@ -588,7 +599,7 @@ void doMove(Position& pos, const Move& mv) {
         int epR = pos.sideToMove == WHITE ? R(mv.from) + 1 : R(mv.from) - 1;
         pos.enPassant = epR * 8 + F(mv.from);
     }
-    if (pt(pc) == 1 || cap != EMPTY || mv.isEnPassant) pos.halfMove = 0;
+    if (pt(pc) == 1 || undo.captured != EMPTY || mv.isEnPassant) pos.halfMove = 0;
     else pos.halfMove++;
     pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
     if (pos.sideToMove == WHITE) pos.fullMove++;
@@ -597,16 +608,15 @@ void doMove(Position& pos, const Move& mv) {
 #endif
 }
 
-void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int oldFullMove = 1,
-          int oldEnPassant = -1, uint8_t oldCastling = 0) {
+void undo(Position& pos, const Move& mv, const UndoState& undo) {
     assert(mv.from >= 0 && mv.from < 64);
     assert(mv.to >= 0 && mv.to < 64);
 
     pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
-    pos.halfMove = oldHalfMove;
-    pos.fullMove = oldFullMove;
-    pos.enPassant = oldEnPassant;
-    restoreCastling(pos, oldCastling);
+    pos.halfMove = undo.halfMove;
+    pos.fullMove = undo.fullMove;
+    pos.enPassant = undo.enPassant;
+    restoreCastling(pos, undo.castling);
 
     if (mv.isCastle) {
         int rr = R(mv.to);
@@ -633,9 +643,9 @@ void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int old
         Piece restoredPawn = pos.sideToMove == WHITE ? B_PAWN : W_PAWN;
         assert(pieceAt(pos, capSq) == EMPTY);
         addPiece(pos, capSq, restoredPawn);
-    } else if (cap != EMPTY) {
+    } else if (undo.captured != EMPTY) {
         assert(pieceAt(pos, mv.to) == EMPTY);
-        addPiece(pos, mv.to, cap);
+        addPiece(pos, mv.to, undo.captured);
     }
 #ifdef CHESS_VALIDATE_STATE
     assert(representationConsistent(pos));
@@ -669,18 +679,14 @@ uint64_t perftDivide(Position& pos, int d) {
 #endif
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pieceAt(pos, mv.to);
-        int oldHalfMove = pos.halfMove;
-        int oldFullMove = pos.fullMove;
-        int oldEnPassant = pos.enPassant;
-        uint8_t oldCastling = packCastling(pos);
-        doMove(pos, mv);
+        UndoState undoState;
+        doMove(pos, mv, undoState);
         if (!inCheck(pos, us)) {
             uint64_t count = perft(pos, d - 1);
             std::cout << moveToUCI(mv) << ": " << count << "\n";
             total += count;
         }
-        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(pos, mv, undoState);
 #ifdef CHESS_VALIDATE_STATE
         assert(positionsEqual(startPos, pos));
 #endif
@@ -699,14 +705,10 @@ uint64_t perft(Position& pos, int d) {
 #endif
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pieceAt(pos, mv.to);
-        int oldHalfMove = pos.halfMove;
-        int oldFullMove = pos.fullMove;
-        int oldEnPassant = pos.enPassant;
-        uint8_t oldCastling = packCastling(pos);
-        doMove(pos, mv);
+        UndoState undoState;
+        doMove(pos, mv, undoState);
         if (!inCheck(pos, us)) n += perft(pos, d - 1);
-        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(pos, mv, undoState);
 #ifdef CHESS_VALIDATE_STATE
         assert(positionsEqual(startPos, pos));
 #endif

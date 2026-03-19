@@ -130,15 +130,11 @@ int testCheckDetection() {
     int illegalMoves = 0;
     for (int i = 0; i < moveCount; i++) {
         const Move& m = moves[i];
-        Piece cap = pieceAt(p, m.to);
-        int oldHalfMove = p.halfMove;
-        int oldFullMove = p.fullMove;
-        int oldEnPassant = p.enPassant;
-        uint8_t oldCastling = packCastling(p);
+        UndoState undoState;
         Color us = p.sideToMove;
-        doMove(p, m);
+        doMove(p, m, undoState);
         if (inCheck(p, us)) illegalMoves++;
-        undo(p, m, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(p, m, undoState);
     }
     
     std::cout << "  Total moves generated: " << moveCount << "\n";
@@ -160,49 +156,37 @@ int testCastlingRightsUpdates() {
     {
         Position p = parseFEN("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         Move kingMove{4, 5, EMPTY, false, false, false};
-        Piece cap = pieceAt(p, kingMove.to);
-        int oldHalfMove = p.halfMove;
-        int oldFullMove = p.fullMove;
-        int oldEnPassant = p.enPassant;
-        uint8_t oldCastling = packCastling(p);
-        doMove(p, kingMove);
+        UndoState undoState;
+        doMove(p, kingMove, undoState);
         if (p.castling[0] || p.castling[1] || !p.castling[2] || !p.castling[3]) {
             std::cout << "  FAIL (white king move did not clear only white castling rights)\n";
             return 1;
         }
-        undo(p, kingMove, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(p, kingMove, undoState);
     }
 
     {
         Position p = parseFEN("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         Move rookMove{7, 5, EMPTY, false, false, false};
-        Piece cap = pieceAt(p, rookMove.to);
-        int oldHalfMove = p.halfMove;
-        int oldFullMove = p.fullMove;
-        int oldEnPassant = p.enPassant;
-        uint8_t oldCastling = packCastling(p);
-        doMove(p, rookMove);
+        UndoState undoState;
+        doMove(p, rookMove, undoState);
         if (p.castling[0] || !p.castling[1] || !p.castling[2] || !p.castling[3]) {
             std::cout << "  FAIL (h1 rook move did not clear only white kingside castling)\n";
             return 1;
         }
-        undo(p, rookMove, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(p, rookMove, undoState);
     }
 
     {
         Position p = parseFEN("r3k2r/8/8/8/7b/8/8/R3K2R b KQkq - 0 1");
         Move captureRook{31, 7, EMPTY, false, false, false};
-        Piece cap = pieceAt(p, captureRook.to);
-        int oldHalfMove = p.halfMove;
-        int oldFullMove = p.fullMove;
-        int oldEnPassant = p.enPassant;
-        uint8_t oldCastling = packCastling(p);
-        doMove(p, captureRook);
+        UndoState undoState;
+        doMove(p, captureRook, undoState);
         if (p.castling[0] || !p.castling[1] || !p.castling[2] || !p.castling[3]) {
             std::cout << "  FAIL (capture on h1 did not clear white kingside castling)\n";
             return 1;
         }
-        undo(p, captureRook, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(p, captureRook, undoState);
     }
 
     std::cout << "  PASS\n";

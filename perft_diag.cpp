@@ -30,14 +30,10 @@ bool findLegalMove(Position& pos, const std::string& uci, Move& outMove) {
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
         if (moveToUCI(mv) != uci) continue;
-        Piece cap = pieceAt(pos, mv.to);
-        int oldHalfMove = pos.halfMove;
-        int oldFullMove = pos.fullMove;
-        int oldEnPassant = pos.enPassant;
-        uint8_t oldCastling = packCastling(pos);
-        doMove(pos, mv);
+        UndoState undoState;
+        doMove(pos, mv, undoState);
         bool legal = !inCheck(pos, us);
-        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(pos, mv, undoState);
         if (legal) {
             outMove = mv;
             return true;
@@ -53,14 +49,10 @@ std::vector<std::string> legalMoveList(Position& pos) {
     std::vector<std::string> legal;
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pieceAt(pos, mv.to);
-        int oldHalfMove = pos.halfMove;
-        int oldFullMove = pos.fullMove;
-        int oldEnPassant = pos.enPassant;
-        uint8_t oldCastling = packCastling(pos);
-        doMove(pos, mv);
+        UndoState undoState;
+        doMove(pos, mv, undoState);
         bool legalMove = !inCheck(pos, us);
-        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(pos, mv, undoState);
         if (legalMove) legal.push_back(moveToUCI(mv));
     }
     std::sort(legal.begin(), legal.end());
@@ -77,7 +69,8 @@ bool applyPath(Position& pos, const std::vector<std::string>& path) {
             std::cerr << "\n";
             return false;
         }
-        doMove(pos, mv);
+        UndoState undoState;
+        doMove(pos, mv, undoState);
     }
     return true;
 }
@@ -89,17 +82,13 @@ std::vector<DivideEntry> computeDivide(Position& pos, int depth) {
     Color us = pos.sideToMove;
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pieceAt(pos, mv.to);
-        int oldHalfMove = pos.halfMove;
-        int oldFullMove = pos.fullMove;
-        int oldEnPassant = pos.enPassant;
-        uint8_t oldCastling = packCastling(pos);
-        doMove(pos, mv);
+        UndoState undoState;
+        doMove(pos, mv, undoState);
         if (!inCheck(pos, us)) {
             uint64_t nodes = perft(pos, depth - 1);
             entries.push_back({moveToUCI(mv), nodes});
         }
-        undo(pos, mv, cap, oldHalfMove, oldFullMove, oldEnPassant, oldCastling);
+        undo(pos, mv, undoState);
     }
     std::sort(entries.begin(), entries.end(), [](const DivideEntry& a, const DivideEntry& b) {
         return a.uci < b.uci;

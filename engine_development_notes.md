@@ -130,6 +130,8 @@ at depth 5, that change improved performance from roughly `8.20 s` / `10.97M nps
 
 The next profiling-guided refinement adds a maintained `pieceAtSquare[64]` cache in all builds. Bitboards remain authoritative for attack detection and move generation, but move making, undo, and perft capture bookkeeping no longer identify square contents by scanning all piece bitboards. Validation now checks that this cache, the occupancy masks, and the piece bitboards stay in sync. On the same reference FEN at depth 5, that change improved performance again to `3.27296 s` / `27.480038M nps`.
 
+The next cleanup pass moved pre-move restoration data into a compact `UndoState` filled by `doMove()` and consumed by `undo()`. That simplified callers in perft, diagnostics, and tests, and removed repeated caller-side save/restore boilerplate. It preserved correctness, but on the same reference FEN at depth 5 it was effectively neutral to slightly slower at `3.31075 s` / `27.166374M nps`, so this change should be treated as an API/maintenance improvement rather than a confirmed speed win.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path
