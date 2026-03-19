@@ -4,8 +4,11 @@ This project is a small chess perft driver used to validate move generation, deb
 
 ## Current Structure
 
-- `chess.h`: position representation, move generation, attack detection, move execution/undo, perft
+- `chess.h`: active engine path only, including attack detection, move generation, move execution/undo, and perft
+- `chess_position.h`: stable position/types layer, FEN parsing, UCI formatting, and representation validation
+- `chess_tables.h`: stable precomputed attack-table layer, including magic constants and slider lookup setup
 - `perft.cpp`: CLI for running perft and perft divide
+- `perft_diag.cpp`: subtree divide helper for debugging against external references
 - `perft_tests.cpp`: lightweight regression test program
 - `Makefile`: build targets for optimized, debug, and validation builds
 - `README.md`: build and usage guide
@@ -74,6 +77,16 @@ The current version improves that by:
 - keeping `board[64]` only as a validation/debug mirror while normal builds run from bitboards and metadata
 
 This keeps move making and debugging simple while shifting the hot path onto bitboards.
+
+### Source layout cleanup
+
+After the bitboard and magic-bitboard work stabilized, the engine was split so future work does not need to keep all stable code in context:
+
+- `chess_position.h` now holds the low-churn representation layer and helper utilities
+- `chess_tables.h` now holds the large, low-churn attack-table and magic-bitboard setup
+- `chess.h` now keeps the code that is still most likely to change: `attacked()`, move generation, `doMove()` / `undo()`, and perft
+
+This is a maintenance refactor only. It preserves the single public include surface (`#include "chess.h"`) while reducing the amount of unrelated stable code that needs to be read during future optimization/debug sessions.
 
 ## Bitboard Migration Plan
 
