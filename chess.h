@@ -20,7 +20,9 @@ constexpr int MAX_MOVES = 256;
 struct Move { int from, to; Piece promotion; bool isEnPassant, isCastle, isDoublePush; };
 
 struct Position {
+#ifdef CHESS_VALIDATE_STATE
     Piece board[64];
+#endif
     Color sideToMove;
     bool castling[4];
     int enPassant;
@@ -51,6 +53,27 @@ bool bl(Piece p) { return p >= B_PAWN && p <= B_KING; }
 bool sameCol(Piece a, Piece b) { return (wh(a) && wh(b)) || (bl(a) && bl(b)); }
 Color pieceColor(Piece p) { assert(p != EMPTY); return wh(p) ? WHITE : BLACK; }
 int pieceTypeIndex(Piece p) { assert(p != EMPTY); return pt(p) - 1; }
+
+Piece pieceAt(const Position& pos, int sq) {
+    assert(sq >= 0 && sq < 64);
+    uint64_t bit = bitAt(sq);
+    if ((pos.occupancyAll & bit) == 0) return EMPTY;
+    static constexpr Piece pieces[2][PIECE_TYPE_COUNT] = {
+        {W_PAWN, W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN, W_KING},
+        {B_PAWN, B_KNIGHT, B_BISHOP, B_ROOK, B_QUEEN, B_KING}
+    };
+    for (int color = 0; color < 2; color++) {
+        for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
+            if (pos.pieceBitboards[color][type] & bit) return pieces[color][type];
+        }
+    }
+    assert(false);
+    return EMPTY;
+}
+
+bool hasPiece(const Position& pos, int sq, Piece pc) {
+    return pieceAt(pos, sq) == pc;
+}
 
 struct AttackTables {
     uint64_t knight[64];
@@ -119,7 +142,9 @@ int popMsb(uint64_t bits);
 int firstBlocker(uint64_t rayMask, uint64_t occ, bool forward);
 
 void initPosition(Position& p) {
+#ifdef CHESS_VALIDATE_STATE
     for (int i = 0; i < 64; i++) p.board[i] = EMPTY;
+#endif
     for (int c = 0; c < 2; c++) {
         p.kingSq[c] = -1;
         p.occupancy[c] = 0;
@@ -133,10 +158,12 @@ void initPosition(Position& p) {
 void addPiece(Position& pos, int sq, Piece pc) {
     assert(sq >= 0 && sq < 64);
     assert(pc != EMPTY);
-    assert(pos.board[sq] == EMPTY);
+    assert(pieceAt(pos, sq) == EMPTY);
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
+#ifdef CHESS_VALIDATE_STATE
     pos.board[sq] = pc;
+#endif
     pos.pieceBitboards[color][type] |= bitAt(sq);
     pos.occupancy[color] |= bitAt(sq);
     pos.occupancyAll |= bitAt(sq);
@@ -145,29 +172,33 @@ void addPiece(Position& pos, int sq, Piece pc) {
 
 void removePiece(Position& pos, int sq) {
     assert(sq >= 0 && sq < 64);
-    Piece pc = pos.board[sq];
+    Piece pc = pieceAt(pos, sq);
     assert(pc != EMPTY);
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
     pos.pieceBitboards[color][type] &= ~bitAt(sq);
     pos.occupancy[color] &= ~bitAt(sq);
     pos.occupancyAll &= ~bitAt(sq);
+#ifdef CHESS_VALIDATE_STATE
     pos.board[sq] = EMPTY;
+#endif
     if (type == 5) pos.kingSq[color] = -1;
 }
 
 void movePiece(Position& pos, int from, int to) {
     assert(from >= 0 && from < 64);
     assert(to >= 0 && to < 64);
-    Piece pc = pos.board[from];
+    Piece pc = pieceAt(pos, from);
     assert(pc != EMPTY);
-    assert(pos.board[to] == EMPTY);
+    assert(pieceAt(pos, to) == EMPTY);
     Color color = pieceColor(pc);
     int type = pieceTypeIndex(pc);
     uint64_t fromBit = bitAt(from);
     uint64_t toBit = bitAt(to);
+#ifdef CHESS_VALIDATE_STATE
     pos.board[to] = pc;
     pos.board[from] = EMPTY;
+#endif
     pos.pieceBitboards[color][type] ^= fromBit | toBit;
     pos.occupancy[color] ^= fromBit | toBit;
     pos.occupancyAll ^= fromBit | toBit;
@@ -175,6 +206,7 @@ void movePiece(Position& pos, int from, int to) {
 }
 
 bool bitboardsConsistent(const Position& pos) {
+#ifdef CHESS_VALIDATE_STATE
     uint64_t expectedPieces[2][PIECE_TYPE_COUNT] = {};
     uint64_t expectedOcc[2] = {};
     for (int sq = 0; sq < 64; sq++) {
@@ -196,6 +228,16 @@ bool bitboardsConsistent(const Position& pos) {
         if (combined != pos.occupancy[color]) return false;
     }
     return pos.occupancyAll == (pos.occupancy[WHITE] | pos.occupancy[BLACK]);
+#else
+    uint64_t combined = 0;
+    for (int color = 0; color < 2; color++) {
+        uint64_t byColor = 0;
+        for (int type = 0; type < PIECE_TYPE_COUNT; type++) byColor |= pos.pieceBitboards[color][type];
+        if (byColor != pos.occupancy[color]) return false;
+        combined |= byColor;
+    }
+    return combined == pos.occupancyAll && (pos.occupancy[WHITE] & pos.occupancy[BLACK]) == 0;
+#endif
 }
 
 bool representationConsistent(const Position& pos) {
@@ -204,14 +246,16 @@ bool representationConsistent(const Position& pos) {
         int kingSq = pos.kingSq[color];
         if (kingSq < 0 || kingSq >= 64) return false;
         Piece king = color == WHITE ? W_KING : B_KING;
-        if (pos.board[kingSq] != king) return false;
+        if (pieceAt(pos, kingSq) != king) return false;
         if (pos.pieceBitboards[color][pieceTypeIndex(king)] != bitAt(kingSq)) return false;
     }
     return true;
 }
 
 bool positionsEqual(const Position& a, const Position& b) {
+#ifdef CHESS_VALIDATE_STATE
     for (int i = 0; i < 64; i++) if (a.board[i] != b.board[i]) return false;
+#endif
     if (a.sideToMove != b.sideToMove) return false;
     for (int i = 0; i < 4; i++) if (a.castling[i] != b.castling[i]) return false;
     if (a.enPassant != b.enPassant) return false;
@@ -513,10 +557,10 @@ int genMoves(const Position& pos, Move* moves) {
 void doMove(Position& pos, const Move& mv) {
     assert(mv.from >= 0 && mv.from < 64);
     assert(mv.to >= 0 && mv.to < 64);
-    assert(pos.board[mv.from] != EMPTY);
+    assert(pieceAt(pos, mv.from) != EMPTY);
 
-    Piece pc = pos.board[mv.from];
-    Piece cap = pos.board[mv.to];
+    Piece pc = pieceAt(pos, mv.from);
+    Piece cap = pieceAt(pos, mv.to);
 
     if (cap != EMPTY) {
         clearCastlingForSquare(pos, mv.to);
@@ -526,7 +570,7 @@ void doMove(Position& pos, const Move& mv) {
         int epR = R(mv.to);
         int capR = pos.sideToMove == WHITE ? epR - 1 : epR + 1;
         int capSq = capR * 8 + F(mv.to);
-        assert(pos.board[capSq] == W_PAWN || pos.board[capSq] == B_PAWN);
+        assert(hasPiece(pos, capSq, W_PAWN) || hasPiece(pos, capSq, B_PAWN));
         removePiece(pos, capSq);
     }
 
@@ -552,10 +596,10 @@ void doMove(Position& pos, const Move& mv) {
     if (mv.isCastle) {
         int rr = R(mv.to);
         if (F(mv.to) == 6) {
-            assert(pos.board[rr * 8 + 7] == (rr == 0 ? W_ROOK : B_ROOK));
+            assert(hasPiece(pos, rr * 8 + 7, rr == 0 ? W_ROOK : B_ROOK));
             movePiece(pos, rr * 8 + 7, rr * 8 + 5);
         } else if (F(mv.to) == 2) {
-            assert(pos.board[rr * 8 + 0] == (rr == 0 ? W_ROOK : B_ROOK));
+            assert(hasPiece(pos, rr * 8 + 0, rr == 0 ? W_ROOK : B_ROOK));
             movePiece(pos, rr * 8 + 0, rr * 8 + 3);
         }
     }
@@ -588,10 +632,10 @@ void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int old
     if (mv.isCastle) {
         int rr = R(mv.to);
         if (F(mv.to) == 6) {
-            assert(pos.board[rr * 8 + 5] == W_ROOK || pos.board[rr * 8 + 5] == B_ROOK);
+            assert(hasPiece(pos, rr * 8 + 5, W_ROOK) || hasPiece(pos, rr * 8 + 5, B_ROOK));
             movePiece(pos, rr * 8 + 5, rr * 8 + 7);
         } else if (F(mv.to) == 2) {
-            assert(pos.board[rr * 8 + 3] == W_ROOK || pos.board[rr * 8 + 3] == B_ROOK);
+            assert(hasPiece(pos, rr * 8 + 3, W_ROOK) || hasPiece(pos, rr * 8 + 3, B_ROOK));
             movePiece(pos, rr * 8 + 3, rr * 8 + 0);
         }
     }
@@ -608,10 +652,10 @@ void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int old
         int capR = pos.sideToMove == WHITE ? epR - 1 : epR + 1;
         int capSq = capR * 8 + F(mv.to);
         Piece restoredPawn = pos.sideToMove == WHITE ? B_PAWN : W_PAWN;
-        assert(pos.board[capSq] == EMPTY);
+        assert(pieceAt(pos, capSq) == EMPTY);
         addPiece(pos, capSq, restoredPawn);
     } else if (cap != EMPTY) {
-        assert(pos.board[mv.to] == EMPTY);
+        assert(pieceAt(pos, mv.to) == EMPTY);
         addPiece(pos, mv.to, cap);
     }
 #ifdef CHESS_VALIDATE_STATE
@@ -646,7 +690,7 @@ uint64_t perftDivide(Position& pos, int d) {
 #endif
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pos.board[mv.to];
+        Piece cap = pieceAt(pos, mv.to);
         int oldHalfMove = pos.halfMove;
         int oldFullMove = pos.fullMove;
         int oldEnPassant = pos.enPassant;
@@ -676,7 +720,7 @@ uint64_t perft(Position& pos, int d) {
 #endif
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pos.board[mv.to];
+        Piece cap = pieceAt(pos, mv.to);
         int oldHalfMove = pos.halfMove;
         int oldFullMove = pos.fullMove;
         int oldEnPassant = pos.enPassant;

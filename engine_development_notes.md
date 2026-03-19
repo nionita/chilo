@@ -71,7 +71,7 @@ The current version improves that by:
 - using bitboards for attack detection and move generation
 - using occupancy and piece masks instead of square-array reads for more hot-path attack and move-generation checks
 - precomputing slider rays and pawn push/promotion data to reduce repeated inner-loop square arithmetic
-- keeping `board[64]` as helper/debug state while removing transitional piece-list maintenance
+- keeping `board[64]` only as a validation/debug mirror while normal builds run from bitboards and metadata
 
 This keeps move making and debugging simple while shifting the hot path onto bitboards.
 
@@ -113,11 +113,11 @@ Status: implemented. Transitional move-set comparison against the old generator 
 - decide whether `board[64]` remains as debug/helper state or becomes validation-only
 - remove piece-list maintenance if bitboards fully replace it
 
-Status: further advanced. Piece-list storage and maintenance were removed from runtime state, `board[64]` remains as permanent helper/debug state, and validation now focuses on representation integrity and exact undo restoration instead of duplicate attack and move generators.
+Status: further advanced. Piece-list storage and maintenance were removed from runtime state, and `board[64]` is now retained only in validation builds as a mirrored debug representation while normal builds run board-less. Validation still focuses on representation integrity and exact undo restoration.
 
 ### Recommended next implementation step
 
-The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, the transitional slow reference generators are gone, and hot-path attack/move generation now leans more heavily on occupancy, piece masks, precomputed rays, and pawn tables. The next implementation step should be either a larger board-less runtime refactor or a later performance-focused pass that measures and selectively reworks the bitboard helpers that still regress NPS.
+The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, the transitional slow reference generators are gone, and normal builds now run without stored square-array state. The next implementation step should be a performance-focused pass that measures and selectively reworks the current bitboard helpers, since the representation migration is functionally complete enough and current NPS has regressed.
 
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
@@ -145,7 +145,7 @@ Reference perft totals currently match for the standard positions already exerci
 
 All five current reference perft positions now match through their exercised depths.
 
-The recent ray-table and pawn-table cleanup preserved correctness, but it did not improve benchmark speed in its current form. That means future work should treat performance tuning as a separate measurement-driven pass rather than assuming more bitboard abstraction is automatically faster in this codebase.
+The recent ray-table and pawn-table cleanup preserved correctness, but it did not improve benchmark speed in its current form. Moving normal builds to a board-less runtime also preserved correctness but pushed the benchmark further down to roughly 10.97M NPS on the current reference FEN. Future work should therefore treat performance tuning as a separate measurement-driven pass rather than assuming more bitboard abstraction is automatically faster in this codebase.
 
 ## Recommended Workflow
 

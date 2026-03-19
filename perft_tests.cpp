@@ -130,7 +130,7 @@ int testCheckDetection() {
     int illegalMoves = 0;
     for (int i = 0; i < moveCount; i++) {
         const Move& m = moves[i];
-        Piece cap = p.board[m.to];
+        Piece cap = pieceAt(p, m.to);
         int oldHalfMove = p.halfMove;
         int oldFullMove = p.fullMove;
         int oldEnPassant = p.enPassant;
@@ -160,7 +160,7 @@ int testCastlingRightsUpdates() {
     {
         Position p = parseFEN("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         Move kingMove{4, 5, EMPTY, false, false, false};
-        Piece cap = p.board[kingMove.to];
+        Piece cap = pieceAt(p, kingMove.to);
         int oldHalfMove = p.halfMove;
         int oldFullMove = p.fullMove;
         int oldEnPassant = p.enPassant;
@@ -176,7 +176,7 @@ int testCastlingRightsUpdates() {
     {
         Position p = parseFEN("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         Move rookMove{7, 5, EMPTY, false, false, false};
-        Piece cap = p.board[rookMove.to];
+        Piece cap = pieceAt(p, rookMove.to);
         int oldHalfMove = p.halfMove;
         int oldFullMove = p.fullMove;
         int oldEnPassant = p.enPassant;
@@ -192,7 +192,7 @@ int testCastlingRightsUpdates() {
     {
         Position p = parseFEN("r3k2r/8/8/8/7b/8/8/R3K2R b KQkq - 0 1");
         Move captureRook{31, 7, EMPTY, false, false, false};
-        Piece cap = p.board[captureRook.to];
+        Piece cap = pieceAt(p, captureRook.to);
         int oldHalfMove = p.halfMove;
         int oldFullMove = p.fullMove;
         int oldEnPassant = p.enPassant;

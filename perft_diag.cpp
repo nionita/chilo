@@ -30,7 +30,7 @@ bool findLegalMove(Position& pos, const std::string& uci, Move& outMove) {
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
         if (moveToUCI(mv) != uci) continue;
-        Piece cap = pos.board[mv.to];
+        Piece cap = pieceAt(pos, mv.to);
         int oldHalfMove = pos.halfMove;
         int oldFullMove = pos.fullMove;
         int oldEnPassant = pos.enPassant;
@@ -53,7 +53,7 @@ std::vector<std::string> legalMoveList(Position& pos) {
     std::vector<std::string> legal;
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pos.board[mv.to];
+        Piece cap = pieceAt(pos, mv.to);
         int oldHalfMove = pos.halfMove;
         int oldFullMove = pos.fullMove;
         int oldEnPassant = pos.enPassant;
@@ -89,7 +89,7 @@ std::vector<DivideEntry> computeDivide(Position& pos, int depth) {
     Color us = pos.sideToMove;
     for (int i = 0; i < moveCount; i++) {
         const Move& mv = moves[i];
-        Piece cap = pos.board[mv.to];
+        Piece cap = pieceAt(pos, mv.to);
         int oldHalfMove = pos.halfMove;
         int oldFullMove = pos.fullMove;
         int oldEnPassant = pos.enPassant;
