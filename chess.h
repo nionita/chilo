@@ -401,6 +401,12 @@ int firstBlocker(uint64_t rayMask, uint64_t occ, bool forward) {
     return forward ? popLsb(blockers) : popMsb(blockers);
 }
 
+int popRaySquare(uint64_t& ray, bool forward) {
+    int sq = forward ? popLsb(ray) : popMsb(ray);
+    ray &= ~bitAt(sq);
+    return sq;
+}
+
 void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
     uint64_t pawns = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_PAWN : B_PAWN)];
     const AttackTables& tables = attackTables();
@@ -466,8 +472,21 @@ void genKnightMoves(const Position& pos, Color us, Move* moves, int& count) {
     }
 }
 
-void genSlidingMoves(const Position& pos, uint64_t pieces, const int* rayDirs, const bool* rayForward, int dirCount, Move* moves, int& count) {
+void emitSlidingDirection(const Position& pos, int from, int rayDir, bool forward, uint64_t enemyNonKingOcc, Move* moves, int& count) {
     const AttackTables& tables = attackTables();
+    uint64_t ray = tables.rays[rayDir][from];
+    int blocker = firstBlocker(ray, pos.occupancyAll, forward);
+    while (ray) {
+        int to = popRaySquare(ray, forward);
+        if (to == blocker) break;
+        pushMove(moves, count, from, to, EMPTY, false, false, false);
+    }
+    if (blocker != -1 && (enemyNonKingOcc & bitAt(blocker))) {
+        pushMove(moves, count, from, blocker, EMPTY, false, false, false);
+    }
+}
+
+void genSlidingMoves(const Position& pos, uint64_t pieces, const int* rayDirs, const bool* rayForward, int dirCount, Move* moves, int& count) {
     Color us = pos.sideToMove;
     Color them = us == WHITE ? BLACK : WHITE;
     uint64_t enemyNonKingOcc = pos.occupancy[them] &
@@ -475,14 +494,7 @@ void genSlidingMoves(const Position& pos, uint64_t pieces, const int* rayDirs, c
     while (pieces) {
         int from = popLsb(pieces);
         for (int i = 0; i < dirCount; i++) {
-            uint64_t ray = tables.rays[rayDirs[i]][from];
-            int blocker = firstBlocker(ray, pos.occupancyAll, rayForward[i]);
-            uint64_t quietTargets = ray;
-            if (blocker != -1) quietTargets &= ~(bitAt(blocker) | tables.rays[rayDirs[i]][blocker]);
-            while (quietTargets) pushMove(moves, count, from, popLsb(quietTargets), EMPTY, false, false, false);
-            if (blocker != -1 && (enemyNonKingOcc & bitAt(blocker))) {
-                pushMove(moves, count, from, blocker, EMPTY, false, false, false);
-            }
+            emitSlidingDirection(pos, from, rayDirs[i], rayForward[i], enemyNonKingOcc, moves, count);
         }
     }
 }

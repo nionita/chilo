@@ -132,6 +132,8 @@ The next profiling-guided refinement adds a maintained `pieceAtSquare[64]` cache
 
 The next cleanup pass moved pre-move restoration data into a compact `UndoState` filled by `doMove()` and consumed by `undo()`. That simplified callers in perft, diagnostics, and tests, and removed repeated caller-side save/restore boilerplate. It preserved correctness, but on the same reference FEN at depth 5 it was effectively neutral to slightly slower at `3.31075 s` / `27.166374M nps`, so this change should be treated as an API/maintenance improvement rather than a confirmed speed win.
 
+The next measured pass targeted sliding move generation by replacing the old generic ray-masking path with direct directional emission. It preserved correctness, but it regressed the same reference FEN benchmark to `3.50684 s` / `25.647377M nps`, so that approach is not a speed win in its current form and should not be treated as the preferred slider path without another profiling pass.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path
