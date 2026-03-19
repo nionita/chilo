@@ -104,6 +104,8 @@ Status: implemented, with validation-build parity checks against the old square-
 - keep the existing `Move` type and fixed move buffer interface
 - remove dependence on piece-lists only after perft parity is stable
 
+Status: implemented, with validation-build move-set comparison against the old generator.
+
 ### Stage 5: Representation cleanup
 
 - decide whether `board[64]` remains as debug/helper state or becomes validation-only
@@ -111,7 +113,7 @@ Status: implemented, with validation-build parity checks against the old square-
 
 ### Recommended next implementation step
 
-The safest first step was to add parallel bitboards without changing move generation. That is now in place. The next implementation step should be to migrate `genMoves()` piece class by piece class to bit iteration while keeping the current `Move` type and fixed move buffer unchanged.
+The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place. The next implementation step should be representation cleanup: remove piece-list dependence from hot paths and decide whether `board[64]` remains permanent helper state or becomes validation/debug-only state.
 
 ## Test Status
 

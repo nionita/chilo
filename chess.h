@@ -431,7 +431,41 @@ void pushMove(Move* moves, int& count, int from, int to, Piece promotion, bool i
     moves[count++] = {from, to, promotion, isEnPassant, isCastle, isDoublePush};
 }
 
-void genPawnMoves(const Position& pos, Color us, int from, Move* moves, int& count) {
+int popLsb(uint64_t& bits) {
+    assert(bits != 0);
+    int sq = __builtin_ctzll(bits);
+    bits &= bits - 1;
+    return sq;
+}
+
+#ifdef CHESS_VALIDATE_STATE
+bool movesEqual(const Move& a, const Move& b) {
+    return a.from == b.from &&
+           a.to == b.to &&
+           a.promotion == b.promotion &&
+           a.isEnPassant == b.isEnPassant &&
+           a.isCastle == b.isCastle &&
+           a.isDoublePush == b.isDoublePush;
+}
+
+void validateMoveSet(const Move* fastMoves, int fastCount, const Move* slowMoves, int slowCount) {
+    assert(fastCount == slowCount);
+    bool matchedSlow[MAX_MOVES] = {};
+    for (int i = 0; i < fastCount; i++) {
+        int found = -1;
+        for (int j = 0; j < slowCount; j++) {
+            if (!matchedSlow[j] && movesEqual(fastMoves[i], slowMoves[j])) {
+                found = j;
+                break;
+            }
+        }
+        assert(found != -1);
+        matchedSlow[found] = true;
+    }
+}
+#endif
+
+void genPawnMovesSlow(const Position& pos, Color us, int from, Move* moves, int& count) {
     int fr = R(from), fc = F(from);
     int dir = us == WHITE ? 1 : -1;
     int start = us == WHITE ? 1 : 6;
@@ -479,7 +513,7 @@ void genPawnMoves(const Position& pos, Color us, int from, Move* moves, int& cou
     }
 }
 
-void genKnightMoves(const Position& pos, int from, Move* moves, int& count) {
+void genKnightMovesSlow(const Position& pos, int from, Move* moves, int& count) {
     int fr = R(from), fc = F(from);
     int nm[] = {-17, -15, -10, -6, 6, 10, 15, 17};
     for (int d : nm) {
@@ -491,7 +525,7 @@ void genKnightMoves(const Position& pos, int from, Move* moves, int& count) {
     }
 }
 
-void genBishopMoves(const Position& pos, int from, Move* moves, int& count) {
+void genBishopMovesSlow(const Position& pos, int from, Move* moves, int& count) {
     int bd[] = {-9, -7, 7, 9};
     for (int d : bd) {
         for (int to = from + d; ; to += d) {
@@ -507,7 +541,7 @@ void genBishopMoves(const Position& pos, int from, Move* moves, int& count) {
     }
 }
 
-void genRookMoves(const Position& pos, int from, Move* moves, int& count) {
+void genRookMovesSlow(const Position& pos, int from, Move* moves, int& count) {
     int rd[] = {-8, -1, 1, 8};
     for (int d : rd) {
         for (int to = from + d; ; to += d) {
@@ -526,7 +560,7 @@ void genRookMoves(const Position& pos, int from, Move* moves, int& count) {
     }
 }
 
-void genKingMoves(const Position& pos, Color us, Move* moves, int& count) {
+void genKingMovesSlow(const Position& pos, Color us, Move* moves, int& count) {
     int from = pos.kingSq[us];
     int fr = R(from), fc = F(from);
     int kd[] = {-9, -8, -7, -1, 1, 7, 8, 9};
@@ -556,30 +590,175 @@ void genKingMoves(const Position& pos, Color us, Move* moves, int& count) {
     }
 }
 
-int genMoves(const Position& pos, Move* moves) {
+int genMovesSlow(const Position& pos, Move* moves) {
     int count = 0;
     Color us = pos.sideToMove;
 
     int pawnType = pieceTypeIndex(us == WHITE ? W_PAWN : B_PAWN);
-    for (int i = 0; i < pos.pieceCount[us][pawnType]; i++) genPawnMoves(pos, us, pos.pieceSquares[us][pawnType][i], moves, count);
+    for (int i = 0; i < pos.pieceCount[us][pawnType]; i++) genPawnMovesSlow(pos, us, pos.pieceSquares[us][pawnType][i], moves, count);
 
     int knightType = pieceTypeIndex(us == WHITE ? W_KNIGHT : B_KNIGHT);
-    for (int i = 0; i < pos.pieceCount[us][knightType]; i++) genKnightMoves(pos, pos.pieceSquares[us][knightType][i], moves, count);
+    for (int i = 0; i < pos.pieceCount[us][knightType]; i++) genKnightMovesSlow(pos, pos.pieceSquares[us][knightType][i], moves, count);
 
     int bishopType = pieceTypeIndex(us == WHITE ? W_BISHOP : B_BISHOP);
-    for (int i = 0; i < pos.pieceCount[us][bishopType]; i++) genBishopMoves(pos, pos.pieceSquares[us][bishopType][i], moves, count);
+    for (int i = 0; i < pos.pieceCount[us][bishopType]; i++) genBishopMovesSlow(pos, pos.pieceSquares[us][bishopType][i], moves, count);
 
     int rookType = pieceTypeIndex(us == WHITE ? W_ROOK : B_ROOK);
-    for (int i = 0; i < pos.pieceCount[us][rookType]; i++) genRookMoves(pos, pos.pieceSquares[us][rookType][i], moves, count);
+    for (int i = 0; i < pos.pieceCount[us][rookType]; i++) genRookMovesSlow(pos, pos.pieceSquares[us][rookType][i], moves, count);
 
     int queenType = pieceTypeIndex(us == WHITE ? W_QUEEN : B_QUEEN);
     for (int i = 0; i < pos.pieceCount[us][queenType]; i++) {
         int sq = pos.pieceSquares[us][queenType][i];
-        genBishopMoves(pos, sq, moves, count);
-        genRookMoves(pos, sq, moves, count);
+        genBishopMovesSlow(pos, sq, moves, count);
+        genRookMovesSlow(pos, sq, moves, count);
     }
 
+    genKingMovesSlow(pos, us, moves, count);
+    return count;
+}
+
+void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
+    uint64_t pawns = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_PAWN : B_PAWN)];
+    int dir = us == WHITE ? 1 : -1;
+    int start = us == WHITE ? 1 : 6;
+    int promo = us == WHITE ? 7 : 0;
+    while (pawns) {
+        int from = popLsb(pawns);
+        int fr = R(from), fc = F(from);
+        int nextRank = fr + dir;
+        if (nextRank >= 0 && nextRank < 8) {
+            int to = nextRank * 8 + fc;
+            if (pos.board[to] == EMPTY) {
+                if (nextRank == promo) {
+                    Piece promos[] = {
+                        us == WHITE ? W_QUEEN : B_QUEEN,
+                        us == WHITE ? W_ROOK : B_ROOK,
+                        us == WHITE ? W_BISHOP : B_BISHOP,
+                        us == WHITE ? W_KNIGHT : B_KNIGHT
+                    };
+                    for (Piece pr : promos) pushMove(moves, count, from, to, pr, false, false, false);
+                } else {
+                    pushMove(moves, count, from, to, EMPTY, false, false, false);
+                    if (fr == start) {
+                        int t2 = (fr + 2 * dir) * 8 + fc;
+                        if (pos.board[t2] == EMPTY) pushMove(moves, count, from, t2, EMPTY, false, false, true);
+                    }
+                }
+            }
+        }
+        uint64_t attacks = attackTables().pawnAttackers[us == WHITE ? BLACK : WHITE][from];
+        while (attacks) {
+            int cap = popLsb(attacks);
+            Piece tp = pos.board[cap];
+            if (tp != EMPTY && !sameCol(pos.board[from], tp) && pt(tp) != 6) {
+                if (R(cap) == promo) {
+                    Piece promos[] = {
+                        us == WHITE ? W_QUEEN : B_QUEEN,
+                        us == WHITE ? W_ROOK : B_ROOK,
+                        us == WHITE ? W_BISHOP : B_BISHOP,
+                        us == WHITE ? W_KNIGHT : B_KNIGHT
+                    };
+                    for (Piece pr : promos) pushMove(moves, count, from, cap, pr, false, false, false);
+                } else {
+                    pushMove(moves, count, from, cap, EMPTY, false, false, false);
+                }
+            }
+            if (pos.enPassant != -1 && cap == pos.enPassant) pushMove(moves, count, from, cap, EMPTY, true, false, false);
+        }
+    }
+}
+
+void genKnightMoves(const Position& pos, Color us, Move* moves, int& count) {
+    uint64_t pieces = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_KNIGHT : B_KNIGHT)];
+    uint64_t ownOcc = pos.occupancy[us];
+    while (pieces) {
+        int from = popLsb(pieces);
+        uint64_t targets = attackTables().knight[from] & ~ownOcc;
+        while (targets) {
+            int to = popLsb(targets);
+            Piece tp = pos.board[to];
+            if (tp == EMPTY || pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
+        }
+    }
+}
+
+void genSlidingMoves(const Position& pos, uint64_t pieces, const int* dirs, int dirCount, Move* moves, int& count) {
+    while (pieces) {
+        int from = popLsb(pieces);
+        int fr = R(from), fc = F(from);
+        for (int i = 0; i < dirCount; i++) {
+            int d = dirs[i];
+            for (int to = from + d; ; to += d) {
+                if (to < 0 || to >= 64) break;
+                if ((d == -9 || d == 9 || d == -7 || d == 7) && std::abs(R(to) - fr) != std::abs(F(to) - fc)) break;
+                if (d == -1 && F(to) >= F(from)) break;
+                if (d == 1 && F(to) <= F(from)) break;
+                if (d == -8 && R(to) >= R(from)) break;
+                if (d == 8 && R(to) <= R(from)) break;
+                Piece tp = pos.board[to];
+                if (tp == EMPTY) pushMove(moves, count, from, to, EMPTY, false, false, false);
+                else {
+                    if (!sameCol(pos.board[from], tp) && pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void genKingMoves(const Position& pos, Color us, Move* moves, int& count) {
+    int from = pos.kingSq[us];
+    uint64_t targets = attackTables().king[from] & ~pos.occupancy[us];
+    while (targets) {
+        int to = popLsb(targets);
+        Piece tp = pos.board[to];
+        if (tp == EMPTY || pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
+    }
+    int fr = R(from), fc = F(from);
+    Color them = us == WHITE ? BLACK : WHITE;
+    int kr = us == WHITE ? 0 : 7, ki = us == WHITE ? 0 : 2, qi = us == WHITE ? 1 : 3;
+    Piece ourRook = us == WHITE ? W_ROOK : B_ROOK;
+    if (fr == kr && fc == 4 && pos.castling[ki] && pos.board[kr * 8 + 7] == ourRook) {
+        if (pos.board[kr * 8 + 5] == EMPTY && pos.board[kr * 8 + 6] == EMPTY) {
+            if (!attacked(pos, kr * 8 + 4, them) && !attacked(pos, kr * 8 + 5, them) && !attacked(pos, kr * 8 + 6, them)) {
+                pushMove(moves, count, from, kr * 8 + 6, EMPTY, false, true, false);
+            }
+        }
+    }
+    if (fr == kr && fc == 4 && pos.castling[qi] && pos.board[kr * 8 + 0] == ourRook) {
+        if (pos.board[kr * 8 + 1] == EMPTY && pos.board[kr * 8 + 2] == EMPTY && pos.board[kr * 8 + 3] == EMPTY) {
+            if (!attacked(pos, kr * 8 + 4, them) && !attacked(pos, kr * 8 + 3, them) && !attacked(pos, kr * 8 + 2, them)) {
+                pushMove(moves, count, from, kr * 8 + 2, EMPTY, false, true, false);
+            }
+        }
+    }
+}
+
+int genMoves(const Position& pos, Move* moves) {
+    int count = 0;
+    Color us = pos.sideToMove;
+
+    genPawnMoves(pos, us, moves, count);
+    genKnightMoves(pos, us, moves, count);
+
+    int bishopDirs[] = {-9, -7, 7, 9};
+    int rookDirs[] = {-8, -1, 1, 8};
+    uint64_t bishops = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_BISHOP : B_BISHOP)];
+    uint64_t rooks = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_ROOK : B_ROOK)];
+    uint64_t queens = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_QUEEN : B_QUEEN)];
+
+    genSlidingMoves(pos, bishops, bishopDirs, 4, moves, count);
+    genSlidingMoves(pos, rooks, rookDirs, 4, moves, count);
+    genSlidingMoves(pos, queens, bishopDirs, 4, moves, count);
+    genSlidingMoves(pos, queens, rookDirs, 4, moves, count);
+
     genKingMoves(pos, us, moves, count);
+
+#ifdef CHESS_VALIDATE_STATE
+    Move slowMoves[MAX_MOVES];
+    int slowCount = genMovesSlow(pos, slowMoves);
+    validateMoveSet(moves, count, slowMoves, slowCount);
+#endif
     return count;
 }
 
