@@ -1,6 +1,9 @@
 perft
+perft_diag
 perft_tests
 perft_debug
+perft_diag_debug
 perft_validate
+perft_diag_validate
 perft_tests_debug
 perft_tests_validate

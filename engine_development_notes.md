@@ -69,6 +69,7 @@ The current version improves that by:
 - generating moves into a fixed stack buffer instead of allocating `std::vector<Move>` at every node
 - maintaining parallel bitboards and occupancy masks
 - using bitboards for attack detection and move generation
+- using occupancy and piece masks instead of square-array reads for more hot-path attack and move-generation checks
 - keeping `board[64]` as helper/debug state while removing transitional piece-list maintenance
 
 This keeps move making and debugging simple while shifting the hot path onto bitboards.
@@ -115,7 +116,13 @@ Status: further advanced. Piece-list storage and maintenance were removed from r
 
 ### Recommended next implementation step
 
-The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, and the transitional slow reference generators are gone. The next implementation step should be either reducing remaining `board[64]` reliance inside hot paths or isolating the remaining position-5 depth-5 discrepancy.
+The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, the transitional slow reference generators are gone, and hot-path attack/move generation now leans more heavily on occupancy and piece masks. The next implementation step should be either a larger board-less runtime refactor or deeper bitboard-specific optimizations for sliders and pawns.
+
+To support that investigation, the project now includes a separate `perft_diag` helper that can:
+
+- print sorted divide counts at the root or at any descendant reached by a legal UCI move path
+- validate that each requested path move is legal before descending
+- make it practical to compare one subtree at a time against an external trusted reference
 
 ## Test Status
 
@@ -135,11 +142,7 @@ Reference perft totals currently match for the standard positions already exerci
 - position 4 through depth 4
 - mirrored position 4 through depth 5
 
-One known issue remains:
-
-- position 5 at depth 5 is still high by `4,049` nodes (`89,945,243` vs expected `89,941,194`)
-
-The queenside-castling fix reduced the gap substantially, but a separate move-generation or legality bug is still present.
+All five current reference perft positions now match through their exercised depths.
 
 ## Recommended Workflow
 

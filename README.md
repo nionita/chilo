@@ -6,6 +6,7 @@ Small chess perft driver and test suite used to validate move generation and mea
 
 - `chess.h`: chess position, move generation, move execution/undo, perft
 - `perft.cpp`: CLI entry point for running perft
+- `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `perft_tests.cpp`: regression-style test program
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
@@ -25,6 +26,7 @@ make
 This builds:
 
 - `perft`
+- `perft_diag`
 - `perft_tests`
 
 These targets use:
@@ -45,6 +47,7 @@ make debug
 This builds:
 
 - `perft_debug`
+- `perft_diag_debug`
 - `perft_tests_debug`
 
 These targets use:
@@ -65,6 +68,7 @@ make validate
 This builds:
 
 - `perft_validate`
+- `perft_diag_validate`
 - `perft_tests_validate`
 
 These targets use:
@@ -96,6 +100,24 @@ The output includes:
 - elapsed time
 - nodes per second
 
+### Divide diagnostics
+
+Use the diagnostic helper to print sorted divide counts at any node reachable by a legal UCI move path:
+
+```bash
+./perft_diag "<fen>" <depth> [move1,move2,...]
+```
+
+Examples:
+
+```bash
+./perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2
+./perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2 c4f7
+./perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2 c4f7,e8f7
+```
+
+This is intended for isolating a bad subtree by comparing one branch at a time against a trusted reference.
+
 ### Tests
 
 Run the optimized test binary:
@@ -113,7 +135,7 @@ Run the validation test binary:
 ## Common Targets
 
 ```bash
-make                 # optimized perft + tests
+make                 # optimized perft + diagnostics + tests
 make debug           # debug binaries
 make validate        # debug binaries with full state validation
 make clean           # remove build artifacts

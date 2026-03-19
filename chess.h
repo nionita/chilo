@@ -272,14 +272,13 @@ Position parseFEN(const std::string& f) {
 
 bool rayAttacked(const Position& pos, int sq, Color att, int dr, int df, Piece sliderA, Piece sliderB) {
     int r = R(sq) + dr, f = F(sq) + df;
-    Piece attSliderA = att == WHITE ? sliderA : static_cast<Piece>(sliderA + 6);
-    Piece attSliderB = att == WHITE ? sliderB : static_cast<Piece>(sliderB + 6);
+    uint64_t attackers =
+        pos.pieceBitboards[att][pieceTypeIndex(att == WHITE ? sliderA : static_cast<Piece>(sliderA + 6))] |
+        pos.pieceBitboards[att][pieceTypeIndex(att == WHITE ? sliderB : static_cast<Piece>(sliderB + 6))];
     while (r >= 0 && r < 8 && f >= 0 && f < 8) {
         int target = r * 8 + f;
-        if (pos.occupancyAll & bitAt(target)) {
-            Piece pc = pos.board[target];
-            return pc == attSliderA || pc == attSliderB;
-        }
+        uint64_t targetBit = bitAt(target);
+        if (pos.occupancyAll & targetBit) return (attackers & targetBit) != 0;
         r += dr;
         f += df;
     }
@@ -338,6 +337,10 @@ int popLsb(uint64_t& bits) {
 
 void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
     uint64_t pawns = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_PAWN : B_PAWN)];
+    uint64_t occAll = pos.occupancyAll;
+    Color them = us == WHITE ? BLACK : WHITE;
+    uint64_t enemyNonKingOcc = pos.occupancy[them] &
+                               ~pos.pieceBitboards[them][pieceTypeIndex(them == WHITE ? W_KING : B_KING)];
     int dir = us == WHITE ? 1 : -1;
     int start = us == WHITE ? 1 : 6;
     int promo = us == WHITE ? 7 : 0;
@@ -347,7 +350,7 @@ void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
         int nextRank = fr + dir;
         if (nextRank >= 0 && nextRank < 8) {
             int to = nextRank * 8 + fc;
-            if (pos.board[to] == EMPTY) {
+            if ((occAll & bitAt(to)) == 0) {
                 if (nextRank == promo) {
                     Piece promos[] = {
                         us == WHITE ? W_QUEEN : B_QUEEN,
@@ -360,7 +363,7 @@ void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
                     pushMove(moves, count, from, to, EMPTY, false, false, false);
                     if (fr == start) {
                         int t2 = (fr + 2 * dir) * 8 + fc;
-                        if (pos.board[t2] == EMPTY) pushMove(moves, count, from, t2, EMPTY, false, false, true);
+                        if ((occAll & bitAt(t2)) == 0) pushMove(moves, count, from, t2, EMPTY, false, false, true);
                     }
                 }
             }
@@ -368,8 +371,7 @@ void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
         uint64_t attacks = attackTables().pawnAttackers[us == WHITE ? BLACK : WHITE][from];
         while (attacks) {
             int cap = popLsb(attacks);
-            Piece tp = pos.board[cap];
-            if (tp != EMPTY && !sameCol(pos.board[from], tp) && pt(tp) != 6) {
+            if (enemyNonKingOcc & bitAt(cap)) {
                 if (R(cap) == promo) {
                     Piece promos[] = {
                         us == WHITE ? W_QUEEN : B_QUEEN,
@@ -390,18 +392,25 @@ void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
 void genKnightMoves(const Position& pos, Color us, Move* moves, int& count) {
     uint64_t pieces = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_KNIGHT : B_KNIGHT)];
     uint64_t ownOcc = pos.occupancy[us];
+    Color them = us == WHITE ? BLACK : WHITE;
+    uint64_t occAll = pos.occupancyAll;
+    uint64_t enemyNonKingOcc = pos.occupancy[them] &
+                               ~pos.pieceBitboards[them][pieceTypeIndex(them == WHITE ? W_KING : B_KING)];
     while (pieces) {
         int from = popLsb(pieces);
-        uint64_t targets = attackTables().knight[from] & ~ownOcc;
-        while (targets) {
-            int to = popLsb(targets);
-            Piece tp = pos.board[to];
-            if (tp == EMPTY || pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
-        }
+        uint64_t attacks = attackTables().knight[from] & ~ownOcc;
+        uint64_t quietTargets = attacks & ~occAll;
+        uint64_t captureTargets = attacks & enemyNonKingOcc;
+        while (quietTargets) pushMove(moves, count, from, popLsb(quietTargets), EMPTY, false, false, false);
+        while (captureTargets) pushMove(moves, count, from, popLsb(captureTargets), EMPTY, false, false, false);
     }
 }
 
 void genSlidingMoves(const Position& pos, uint64_t pieces, const int* dirs, int dirCount, Move* moves, int& count) {
+    Color us = pos.sideToMove;
+    Color them = us == WHITE ? BLACK : WHITE;
+    uint64_t enemyNonKingOcc = pos.occupancy[them] &
+                               ~pos.pieceBitboards[them][pieceTypeIndex(them == WHITE ? W_KING : B_KING)];
     while (pieces) {
         int from = popLsb(pieces);
         int fr = R(from), fc = F(from);
@@ -414,12 +423,13 @@ void genSlidingMoves(const Position& pos, uint64_t pieces, const int* dirs, int 
                 if (d == 1 && F(to) <= F(from)) break;
                 if (d == -8 && R(to) >= R(from)) break;
                 if (d == 8 && R(to) <= R(from)) break;
-                Piece tp = pos.board[to];
-                if (tp == EMPTY) pushMove(moves, count, from, to, EMPTY, false, false, false);
-                else {
-                    if (!sameCol(pos.board[from], tp) && pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
-                    break;
+                uint64_t toBit = bitAt(to);
+                if ((pos.occupancyAll & toBit) == 0) {
+                    pushMove(moves, count, from, to, EMPTY, false, false, false);
+                    continue;
                 }
+                if (enemyNonKingOcc & toBit) pushMove(moves, count, from, to, EMPTY, false, false, false);
+                break;
             }
         }
     }
@@ -427,25 +437,25 @@ void genSlidingMoves(const Position& pos, uint64_t pieces, const int* dirs, int 
 
 void genKingMoves(const Position& pos, Color us, Move* moves, int& count) {
     int from = pos.kingSq[us];
-    uint64_t targets = attackTables().king[from] & ~pos.occupancy[us];
-    while (targets) {
-        int to = popLsb(targets);
-        Piece tp = pos.board[to];
-        if (tp == EMPTY || pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
-    }
-    int fr = R(from), fc = F(from);
     Color them = us == WHITE ? BLACK : WHITE;
+    uint64_t attacks = attackTables().king[from] & ~pos.occupancy[us];
+    uint64_t quietTargets = attacks & ~pos.occupancyAll;
+    uint64_t captureTargets = attacks & (pos.occupancy[them] &
+                                         ~pos.pieceBitboards[them][pieceTypeIndex(them == WHITE ? W_KING : B_KING)]);
+    while (quietTargets) pushMove(moves, count, from, popLsb(quietTargets), EMPTY, false, false, false);
+    while (captureTargets) pushMove(moves, count, from, popLsb(captureTargets), EMPTY, false, false, false);
+    int fr = R(from), fc = F(from);
     int kr = us == WHITE ? 0 : 7, ki = us == WHITE ? 0 : 2, qi = us == WHITE ? 1 : 3;
-    Piece ourRook = us == WHITE ? W_ROOK : B_ROOK;
-    if (fr == kr && fc == 4 && pos.castling[ki] && pos.board[kr * 8 + 7] == ourRook) {
-        if (pos.board[kr * 8 + 5] == EMPTY && pos.board[kr * 8 + 6] == EMPTY) {
+    uint64_t rookBitboard = pos.pieceBitboards[us][pieceTypeIndex(us == WHITE ? W_ROOK : B_ROOK)];
+    if (fr == kr && fc == 4 && pos.castling[ki] && (rookBitboard & bitAt(kr * 8 + 7))) {
+        if ((pos.occupancyAll & (bitAt(kr * 8 + 5) | bitAt(kr * 8 + 6))) == 0) {
             if (!attacked(pos, kr * 8 + 4, them) && !attacked(pos, kr * 8 + 5, them) && !attacked(pos, kr * 8 + 6, them)) {
                 pushMove(moves, count, from, kr * 8 + 6, EMPTY, false, true, false);
             }
         }
     }
-    if (fr == kr && fc == 4 && pos.castling[qi] && pos.board[kr * 8 + 0] == ourRook) {
-        if (pos.board[kr * 8 + 1] == EMPTY && pos.board[kr * 8 + 2] == EMPTY && pos.board[kr * 8 + 3] == EMPTY) {
+    if (fr == kr && fc == 4 && pos.castling[qi] && (rookBitboard & bitAt(kr * 8 + 0))) {
+        if ((pos.occupancyAll & (bitAt(kr * 8 + 1) | bitAt(kr * 8 + 2) | bitAt(kr * 8 + 3))) == 0) {
             if (!attacked(pos, kr * 8 + 4, them) && !attacked(pos, kr * 8 + 3, them) && !attacked(pos, kr * 8 + 2, them)) {
                 pushMove(moves, count, from, kr * 8 + 2, EMPTY, false, true, false);
             }
