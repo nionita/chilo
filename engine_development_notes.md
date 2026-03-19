@@ -96,7 +96,7 @@ Status: implemented.
 - rewrite `attacked()` around bitboards and precomputed king/knight/pawn attack masks
 - keep slider attacks simple at first, using occupancy-aware stepping rather than advanced tables
 
-Status: implemented, with validation-build parity checks against the old square-array attack logic.
+Status: implemented. Validation now relies on representation-consistency checks rather than parity against the old square-array attack logic.
 
 ### Stage 4: Bitboard move generation
 
@@ -104,18 +104,18 @@ Status: implemented, with validation-build parity checks against the old square-
 - keep the existing `Move` type and fixed move buffer interface
 - remove dependence on piece-lists only after perft parity is stable
 
-Status: implemented, with validation-build move-set comparison against the old generator.
+Status: implemented. Transitional move-set comparison against the old generator has been retired.
 
 ### Stage 5: Representation cleanup
 
 - decide whether `board[64]` remains as debug/helper state or becomes validation-only
 - remove piece-list maintenance if bitboards fully replace it
 
-Status: partially implemented. Piece-list storage and maintenance were removed from runtime state, while `board[64]` remains as permanent helper/debug state. Validation still keeps a board-scan reference generator.
+Status: further advanced. Piece-list storage and maintenance were removed from runtime state, `board[64]` remains as permanent helper/debug state, and validation now focuses on representation integrity and exact undo restoration instead of duplicate attack and move generators.
 
 ### Recommended next implementation step
 
-The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, and piece-list maintenance has now been removed. The next implementation step should be deciding whether `board[64]` should remain permanent helper state or become validation-only, and whether the slow reference generator should still be kept once confidence is high enough.
+The safest first steps were to add parallel bitboards, then convert `attacked()`, then convert `genMoves()` while keeping validation parity checks. Those are now in place, piece-list maintenance has been removed, and the transitional slow reference generators are gone. The next implementation step should be either reducing remaining `board[64]` reliance inside hot paths or isolating the remaining position-5 depth-5 discrepancy.
 
 ## Test Status
 

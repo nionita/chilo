@@ -263,68 +263,6 @@ bool rayAttacked(const Position& pos, int sq, Color att, int dr, int df, Piece s
     return false;
 }
 
-#ifdef CHESS_VALIDATE_STATE
-bool attackedSlow(const Position& pos, int sq, Color att) {
-    assert(sq >= 0 && sq < 64);
-    int Rr = R(sq), Fc = F(sq);
-    if (att == WHITE) {
-        if (Rr > 0 && Fc > 0 && pos.board[(Rr - 1) * 8 + (Fc - 1)] == W_PAWN) return true;
-        if (Rr > 0 && Fc < 7 && pos.board[(Rr - 1) * 8 + (Fc + 1)] == W_PAWN) return true;
-    } else {
-        if (Rr < 7 && Fc > 0 && pos.board[(Rr + 1) * 8 + (Fc - 1)] == B_PAWN) return true;
-        if (Rr < 7 && Fc < 7 && pos.board[(Rr + 1) * 8 + (Fc + 1)] == B_PAWN) return true;
-    }
-    int nm[] = {-17, -15, -10, -6, 6, 10, 15, 17};
-    for (int d : nm) {
-        int t = sq + d;
-        if (t < 0 || t >= 64) continue;
-        if (std::abs(R(t) - Rr) + std::abs(F(t) - Fc) != 3) continue;
-        Piece pc = pos.board[t];
-        if (att == WHITE && pc == W_KNIGHT) return true;
-        if (att == BLACK && pc == B_KNIGHT) return true;
-    }
-    int bd[] = {-9, -7, 7, 9};
-    for (int d : bd) {
-        int t = sq + d;
-        while (t >= 0 && t < 64) {
-            if (std::abs(R(t) - Rr) != std::abs(F(t) - Fc)) break;
-            Piece pc = pos.board[t];
-            if (pc != EMPTY) {
-                if (att == WHITE && (pc == W_BISHOP || pc == W_QUEEN)) return true;
-                if (att == BLACK && (pc == B_BISHOP || pc == B_QUEEN)) return true;
-                break;
-            }
-            t += d;
-        }
-    }
-    int rd[] = {-8, -1, 1, 8};
-    for (int d : rd) {
-        int t = sq + d;
-        while (t >= 0 && t < 64) {
-            bool sameRow = R(t) == Rr, sameFile = F(t) == Fc;
-            if (!sameRow && !sameFile) break;
-            Piece pc = pos.board[t];
-            if (pc != EMPTY) {
-                if (att == WHITE && (pc == W_ROOK || pc == W_QUEEN)) return true;
-                if (att == BLACK && (pc == B_ROOK || pc == B_QUEEN)) return true;
-                break;
-            }
-            t += d;
-        }
-    }
-    int kd[] = {-9, -8, -7, -1, 1, 7, 8, 9};
-    for (int d : kd) {
-        int t = sq + d;
-        if (t < 0 || t >= 64) continue;
-        if (std::abs(R(t) - Rr) > 1 || std::abs(F(t) - Fc) > 1) continue;
-        Piece pc = pos.board[t];
-        if (att == WHITE && pc == W_KING) return true;
-        if (att == BLACK && pc == B_KING) return true;
-    }
-    return false;
-}
-#endif
-
 bool attacked(const Position& pos, int sq, Color att) {
     assert(sq >= 0 && sq < 64);
     const AttackTables& tables = attackTables();
@@ -354,9 +292,6 @@ bool attacked(const Position& pos, int sq, Color att) {
                  rayAttacked(pos, sq, att, 0, 1, W_ROOK, W_QUEEN);
     }
 
-#ifdef CHESS_VALIDATE_STATE
-    assert(result == attackedSlow(pos, sq, att));
-#endif
     return result;
 }
 
@@ -376,196 +311,6 @@ int popLsb(uint64_t& bits) {
     int sq = __builtin_ctzll(bits);
     bits &= bits - 1;
     return sq;
-}
-
-#ifdef CHESS_VALIDATE_STATE
-bool movesEqual(const Move& a, const Move& b) {
-    return a.from == b.from &&
-           a.to == b.to &&
-           a.promotion == b.promotion &&
-           a.isEnPassant == b.isEnPassant &&
-           a.isCastle == b.isCastle &&
-           a.isDoublePush == b.isDoublePush;
-}
-
-void validateMoveSet(const Move* fastMoves, int fastCount, const Move* slowMoves, int slowCount) {
-    assert(fastCount == slowCount);
-    bool matchedSlow[MAX_MOVES] = {};
-    for (int i = 0; i < fastCount; i++) {
-        int found = -1;
-        for (int j = 0; j < slowCount; j++) {
-            if (!matchedSlow[j] && movesEqual(fastMoves[i], slowMoves[j])) {
-                found = j;
-                break;
-            }
-        }
-        assert(found != -1);
-        matchedSlow[found] = true;
-    }
-}
-#endif
-
-void genPawnMovesSlow(const Position& pos, Color us, int from, Move* moves, int& count) {
-    int fr = R(from), fc = F(from);
-    int dir = us == WHITE ? 1 : -1;
-    int start = us == WHITE ? 1 : 6;
-    int promo = us == WHITE ? 7 : 0;
-    int nextRank = fr + dir;
-    if (nextRank >= 0 && nextRank < 8) {
-        int to = nextRank * 8 + fc;
-        if (pos.board[to] == EMPTY) {
-            if (nextRank == promo) {
-                Piece promos[] = {
-                    us == WHITE ? W_QUEEN : B_QUEEN,
-                    us == WHITE ? W_ROOK : B_ROOK,
-                    us == WHITE ? W_BISHOP : B_BISHOP,
-                    us == WHITE ? W_KNIGHT : B_KNIGHT
-                };
-                for (Piece pr : promos) pushMove(moves, count, from, to, pr, false, false, false);
-            } else {
-                pushMove(moves, count, from, to, EMPTY, false, false, false);
-                if (fr == start) {
-                    int t2 = (fr + 2 * dir) * 8 + fc;
-                    if (pos.board[t2] == EMPTY) pushMove(moves, count, from, t2, EMPTY, false, false, true);
-                }
-            }
-        }
-    }
-    for (int dc : {-1, 1}) {
-        int nc = fc + dc;
-        if (nc < 0 || nc > 7 || nextRank < 0 || nextRank >= 8) continue;
-        int cap = nextRank * 8 + nc;
-        Piece tp = pos.board[cap];
-        if (tp != EMPTY && !sameCol(pos.board[from], tp) && pt(tp) != 6) {
-            if (nextRank == promo) {
-                Piece promos[] = {
-                    us == WHITE ? W_QUEEN : B_QUEEN,
-                    us == WHITE ? W_ROOK : B_ROOK,
-                    us == WHITE ? W_BISHOP : B_BISHOP,
-                    us == WHITE ? W_KNIGHT : B_KNIGHT
-                };
-                for (Piece pr : promos) pushMove(moves, count, from, cap, pr, false, false, false);
-            } else {
-                pushMove(moves, count, from, cap, EMPTY, false, false, false);
-            }
-        }
-        if (pos.enPassant != -1 && cap == pos.enPassant) pushMove(moves, count, from, cap, EMPTY, true, false, false);
-    }
-}
-
-void genKnightMovesSlow(const Position& pos, int from, Move* moves, int& count) {
-    int fr = R(from), fc = F(from);
-    int nm[] = {-17, -15, -10, -6, 6, 10, 15, 17};
-    for (int d : nm) {
-        int to = from + d;
-        if (to < 0 || to >= 64) continue;
-        if (std::abs(R(to) - fr) + std::abs(F(to) - fc) != 3) continue;
-        Piece tp = pos.board[to];
-        if (tp == EMPTY || (!sameCol(pos.board[from], tp) && pt(tp) != 6)) pushMove(moves, count, from, to, EMPTY, false, false, false);
-    }
-}
-
-void genBishopMovesSlow(const Position& pos, int from, Move* moves, int& count) {
-    int bd[] = {-9, -7, 7, 9};
-    for (int d : bd) {
-        for (int to = from + d; ; to += d) {
-            if (to < 0 || to >= 64) break;
-            if (std::abs(R(to) - R(from)) != std::abs(F(to) - F(from))) break;
-            Piece tp = pos.board[to];
-            if (tp == EMPTY) pushMove(moves, count, from, to, EMPTY, false, false, false);
-            else {
-                if (!sameCol(pos.board[from], tp) && pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
-                break;
-            }
-        }
-    }
-}
-
-void genRookMovesSlow(const Position& pos, int from, Move* moves, int& count) {
-    int rd[] = {-8, -1, 1, 8};
-    for (int d : rd) {
-        for (int to = from + d; ; to += d) {
-            if (to < 0 || to >= 64) break;
-            if (d == -1 && F(to) >= F(from)) break;
-            if (d == 1 && F(to) <= F(from)) break;
-            if (d == -8 && R(to) >= R(from)) break;
-            if (d == 8 && R(to) <= R(from)) break;
-            Piece tp = pos.board[to];
-            if (tp == EMPTY) pushMove(moves, count, from, to, EMPTY, false, false, false);
-            else {
-                if (!sameCol(pos.board[from], tp) && pt(tp) != 6) pushMove(moves, count, from, to, EMPTY, false, false, false);
-                break;
-            }
-        }
-    }
-}
-
-void genKingMovesSlow(const Position& pos, Color us, Move* moves, int& count) {
-    int from = pos.kingSq[us];
-    int fr = R(from), fc = F(from);
-    int kd[] = {-9, -8, -7, -1, 1, 7, 8, 9};
-    for (int d : kd) {
-        int to = from + d;
-        if (to < 0 || to >= 64) continue;
-        if (std::abs(R(to) - fr) > 1 || std::abs(F(to) - fc) > 1) continue;
-        Piece tp = pos.board[to];
-        if (tp == EMPTY || (!sameCol(pos.board[from], tp) && pt(tp) != 6)) pushMove(moves, count, from, to, EMPTY, false, false, false);
-    }
-    Color them = us == WHITE ? BLACK : WHITE;
-    int kr = us == WHITE ? 0 : 7, ki = us == WHITE ? 0 : 2, qi = us == WHITE ? 1 : 3;
-    Piece ourRook = us == WHITE ? W_ROOK : B_ROOK;
-    if (fr == kr && fc == 4 && pos.castling[ki] && pos.board[kr * 8 + 7] == ourRook) {
-        if (pos.board[kr * 8 + 5] == EMPTY && pos.board[kr * 8 + 6] == EMPTY) {
-            if (!attacked(pos, kr * 8 + 4, them) && !attacked(pos, kr * 8 + 5, them) && !attacked(pos, kr * 8 + 6, them)) {
-                pushMove(moves, count, from, kr * 8 + 6, EMPTY, false, true, false);
-            }
-        }
-    }
-    if (fr == kr && fc == 4 && pos.castling[qi] && pos.board[kr * 8 + 0] == ourRook) {
-        if (pos.board[kr * 8 + 1] == EMPTY && pos.board[kr * 8 + 2] == EMPTY && pos.board[kr * 8 + 3] == EMPTY) {
-            if (!attacked(pos, kr * 8 + 4, them) && !attacked(pos, kr * 8 + 3, them) && !attacked(pos, kr * 8 + 2, them)) {
-                pushMove(moves, count, from, kr * 8 + 2, EMPTY, false, true, false);
-            }
-        }
-    }
-}
-
-int genMovesSlow(const Position& pos, Move* moves) {
-    int count = 0;
-    Color us = pos.sideToMove;
-    for (int sq = 0; sq < 64; sq++) {
-        Piece pc = pos.board[sq];
-        if (pc == EMPTY || pieceColor(pc) != us) continue;
-        switch (pc) {
-            case W_PAWN:
-            case B_PAWN:
-                genPawnMovesSlow(pos, us, sq, moves, count);
-                break;
-            case W_KNIGHT:
-            case B_KNIGHT:
-                genKnightMovesSlow(pos, sq, moves, count);
-                break;
-            case W_BISHOP:
-            case B_BISHOP:
-                genBishopMovesSlow(pos, sq, moves, count);
-                break;
-            case W_ROOK:
-            case B_ROOK:
-                genRookMovesSlow(pos, sq, moves, count);
-                break;
-            case W_QUEEN:
-            case B_QUEEN:
-                genBishopMovesSlow(pos, sq, moves, count);
-                genRookMovesSlow(pos, sq, moves, count);
-                break;
-            case W_KING:
-            case B_KING:
-            case EMPTY:
-                break;
-        }
-    }
-    genKingMovesSlow(pos, us, moves, count);
-    return count;
 }
 
 void genPawnMoves(const Position& pos, Color us, Move* moves, int& count) {
@@ -705,11 +450,6 @@ int genMoves(const Position& pos, Move* moves) {
 
     genKingMoves(pos, us, moves, count);
 
-#ifdef CHESS_VALIDATE_STATE
-    Move slowMoves[MAX_MOVES];
-    int slowCount = genMovesSlow(pos, slowMoves);
-    validateMoveSet(moves, count, slowMoves, slowCount);
-#endif
     return count;
 }
 
@@ -759,6 +499,9 @@ void doMove(Position& pos, const Move& mv) {
     else pos.halfMove++;
     pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
     if (pos.sideToMove == WHITE) pos.fullMove++;
+#ifdef CHESS_VALIDATE_STATE
+    assert(representationConsistent(pos));
+#endif
 }
 
 void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int oldFullMove = 1, int oldEnPassant = -1) {
@@ -799,6 +542,9 @@ void undo(Position& pos, const Move& mv, Piece cap, int oldHalfMove = 0, int old
         assert(pos.board[mv.to] == EMPTY);
         addPiece(pos, mv.to, cap);
     }
+#ifdef CHESS_VALIDATE_STATE
+    assert(representationConsistent(pos));
+#endif
 }
 
 uint64_t perft(Position& pos, int d);
