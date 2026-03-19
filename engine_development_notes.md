@@ -134,6 +134,8 @@ The next cleanup pass moved pre-move restoration data into a compact `UndoState`
 
 The next measured pass targeted sliding move generation by replacing the old generic ray-masking path with direct directional emission. It preserved correctness, but it regressed the same reference FEN benchmark to `3.50684 s` / `25.647377M nps`, so that approach is not a speed win in its current form and should not be treated as the preferred slider path without another profiling pass.
 
+The next slider pass replaced both ray-based slider attack detection and slider move generation with magic-bitboard lookups using checked-in precomputed magic constants. The runtime tables are built once from those committed constants during static initialization. On the same reference FEN at depth 5, that change improved performance to `2.69737 s` / `33.344056M nps`, making it clearly faster than both the ray-scan path and the best recent pre-magic baseline.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path
