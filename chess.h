@@ -60,6 +60,41 @@ int maxPiecesForType(int type) {
     return limits[type];
 }
 
+struct AttackTables {
+    uint64_t knight[64];
+    uint64_t king[64];
+    uint64_t pawnAttackers[2][64];
+};
+
+AttackTables makeAttackTables() {
+    AttackTables t = {};
+    int knightDr[] = {-2, -2, -1, -1, 1, 1, 2, 2};
+    int knightDf[] = {-1, 1, -2, 2, -2, 2, -1, 1};
+    int kingDr[] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    int kingDf[] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    for (int sq = 0; sq < 64; sq++) {
+        int r = R(sq), f = F(sq);
+        for (int i = 0; i < 8; i++) {
+            int nr = r + knightDr[i], nf = f + knightDf[i];
+            if (nr >= 0 && nr < 8 && nf >= 0 && nf < 8) t.knight[sq] |= bitAt(nr * 8 + nf);
+        }
+        for (int i = 0; i < 8; i++) {
+            int nr = r + kingDr[i], nf = f + kingDf[i];
+            if (nr >= 0 && nr < 8 && nf >= 0 && nf < 8) t.king[sq] |= bitAt(nr * 8 + nf);
+        }
+        if (r > 0 && f > 0) t.pawnAttackers[WHITE][sq] |= bitAt((r - 1) * 8 + (f - 1));
+        if (r > 0 && f < 7) t.pawnAttackers[WHITE][sq] |= bitAt((r - 1) * 8 + (f + 1));
+        if (r < 7 && f > 0) t.pawnAttackers[BLACK][sq] |= bitAt((r + 1) * 8 + (f - 1));
+        if (r < 7 && f < 7) t.pawnAttackers[BLACK][sq] |= bitAt((r + 1) * 8 + (f + 1));
+    }
+    return t;
+}
+
+const AttackTables& attackTables() {
+    static const AttackTables tables = makeAttackTables();
+    return tables;
+}
+
 void initPosition(Position& p) {
     for (int i = 0; i < 64; i++) {
         p.board[i] = EMPTY;
@@ -272,7 +307,24 @@ Position parseFEN(const std::string& f) {
     return p;
 }
 
-bool attacked(const Position& pos, int sq, Color att) {
+bool rayAttacked(const Position& pos, int sq, Color att, int dr, int df, Piece sliderA, Piece sliderB) {
+    int r = R(sq) + dr, f = F(sq) + df;
+    Piece attSliderA = att == WHITE ? sliderA : static_cast<Piece>(sliderA + 6);
+    Piece attSliderB = att == WHITE ? sliderB : static_cast<Piece>(sliderB + 6);
+    while (r >= 0 && r < 8 && f >= 0 && f < 8) {
+        int target = r * 8 + f;
+        if (pos.occupancyAll & bitAt(target)) {
+            Piece pc = pos.board[target];
+            return pc == attSliderA || pc == attSliderB;
+        }
+        r += dr;
+        f += df;
+    }
+    return false;
+}
+
+#ifdef CHESS_VALIDATE_STATE
+bool attackedSlow(const Position& pos, int sq, Color att) {
     assert(sq >= 0 && sq < 64);
     int Rr = R(sq), Fc = F(sq);
     if (att == WHITE) {
@@ -330,6 +382,42 @@ bool attacked(const Position& pos, int sq, Color att) {
         if (att == BLACK && pc == B_KING) return true;
     }
     return false;
+}
+#endif
+
+bool attacked(const Position& pos, int sq, Color att) {
+    assert(sq >= 0 && sq < 64);
+    const AttackTables& tables = attackTables();
+    bool result = false;
+
+    int pawnType = pieceTypeIndex(att == WHITE ? W_PAWN : B_PAWN);
+    if (pos.pieceBitboards[att][pawnType] & tables.pawnAttackers[att][sq]) result = true;
+
+    if (!result) {
+        int knightType = pieceTypeIndex(att == WHITE ? W_KNIGHT : B_KNIGHT);
+        if (pos.pieceBitboards[att][knightType] & tables.knight[sq]) result = true;
+    }
+
+    if (!result) {
+        int kingType = pieceTypeIndex(att == WHITE ? W_KING : B_KING);
+        if (pos.pieceBitboards[att][kingType] & tables.king[sq]) result = true;
+    }
+
+    if (!result) {
+        result = rayAttacked(pos, sq, att, -1, -1, W_BISHOP, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, -1, 1, W_BISHOP, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 1, -1, W_BISHOP, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 1, 1, W_BISHOP, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, -1, 0, W_ROOK, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 1, 0, W_ROOK, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 0, -1, W_ROOK, W_QUEEN) ||
+                 rayAttacked(pos, sq, att, 0, 1, W_ROOK, W_QUEEN);
+    }
+
+#ifdef CHESS_VALIDATE_STATE
+    assert(result == attackedSlow(pos, sq, att));
+#endif
+    return result;
 }
 
 bool inCheck(const Position& pos, Color col) {

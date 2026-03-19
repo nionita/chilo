@@ -96,6 +96,8 @@ Status: implemented.
 - rewrite `attacked()` around bitboards and precomputed king/knight/pawn attack masks
 - keep slider attacks simple at first, using occupancy-aware stepping rather than advanced tables
 
+Status: implemented, with validation-build parity checks against the old square-array attack logic.
+
 ### Stage 4: Bitboard move generation
 
 - migrate `genMoves()` piece class by piece class to bit iteration
@@ -107,9 +109,9 @@ Status: implemented.
 - decide whether `board[64]` remains as debug/helper state or becomes validation-only
 - remove piece-list maintenance if bitboards fully replace it
 
-### Recommended first implementation step
+### Recommended next implementation step
 
-The safest first step was to add parallel bitboards without changing move generation. That is now in place. The next implementation step should be to rewrite `attacked()` to use the new bitboard representation while keeping the rest of move generation unchanged.
+The safest first step was to add parallel bitboards without changing move generation. That is now in place. The next implementation step should be to migrate `genMoves()` piece class by piece class to bit iteration while keeping the current `Move` type and fixed move buffer unchanged.
 
 ## Test Status
 
