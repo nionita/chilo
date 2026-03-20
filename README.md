@@ -24,6 +24,13 @@ Small chess engine project with:
 
 The project uses `g++` and `make`.
 
+Windows x64 cross-compilation from Linux uses the MinGW-w64 POSIX toolchain:
+
+```bash
+sudo apt update
+sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
+```
+
 ### Optimized build
 
 Build the fast binaries used for normal perft runs:
@@ -90,6 +97,24 @@ These targets use:
 - `-DCHESS_VALIDATE_STATE`
 
 Use this only for deep correctness debugging. It is much slower because it verifies that `doMove()` and `undo()` restore the complete position state after each recursive move.
+
+### Windows x64 cross-build
+
+Build Windows 64-bit release binaries from Linux:
+
+```bash
+make windows64
+```
+
+This builds:
+
+- `perft.exe`
+- `perft_diag.exe`
+- `perft_tests.exe`
+- `chilo.exe`
+
+These targets use the MinGW-w64 POSIX cross-compiler and try to produce self-contained `.exe` files.
+They are also stripped at link time to keep the shipped binaries smaller.
 
 ## Run
 
@@ -200,6 +225,7 @@ If no custom positions are provided, the script uses the current default set:
 make                 # optimized perft + diagnostics + tests
 make debug           # debug binaries
 make validate        # debug binaries with full state validation
+make windows64       # Windows x64 release binaries (.exe) via MinGW-w64
 make clean           # remove build artifacts
 ```
 
@@ -210,3 +236,4 @@ make clean           # remove build artifacts
 - Use `perft_debug` for ordinary debugging.
 - Use `perft_validate` only when investigating `doMove()` / `undo()` state corruption or move-generation bugs.
 - Use `chilo` or `chilo_validate` when testing UCI integration or shallow playing strength.
+- Use `file chilo.exe` after `make windows64` if you want a quick confirmation that the output is a PE32+ Windows binary.

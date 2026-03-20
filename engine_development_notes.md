@@ -29,8 +29,18 @@ The recommended build entry point is `make`.
 - `make`: optimized `perft`, `perft_tests`, and `chilo` using `-O3 -DNDEBUG`
 - `make debug`: `perft_debug`, `perft_tests_debug`, and `chilo_debug` using `-O0 -g`
 - `make validate`: `perft_validate`, `perft_tests_validate`, and `chilo_validate` using `-O0 -g -DCHESS_VALIDATE_STATE`
+- `make windows64`: cross-compiled Windows x64 release `.exe` binaries using MinGW-w64 POSIX tools
 
 `CHESS_VALIDATE_STATE` enables an expensive full-state restoration check after every `doMove()` / `undo()` pair. It is useful for debugging but not for benchmarking.
+
+Windows x64 cross-build prerequisites on Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
+```
+
+The Windows release target links statically and strips symbols at link time so the shipped `.exe` files stay self-contained without being larger than necessary.
 
 ## CLI Features
 
@@ -234,6 +244,7 @@ The recent ray-table and pawn-table cleanup preserved correctness, but it did no
 - Use `python3 scripts/benchmark_fixed_depth.py` for repeatable fixed-depth search benchmarks between two engine binaries.
 - Use `make debug` when stepping through logic.
 - Use `make validate` only when chasing state-corruption or move-restoration bugs.
+- Use `make windows64` when you need Windows 64-bit `.exe` outputs from Linux.
 - Treat perft node-count correctness as the gate before trusting any performance result.
 - Add new engine features as `.cpp` files behind `engine.h` unless a helper is intentionally tiny and performance-critical enough to justify `inline` header placement.
 - Use `./chilo` or `./chilo_validate` for UCI testing and shallow engine behavior checks.

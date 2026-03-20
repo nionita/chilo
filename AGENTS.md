@@ -50,6 +50,8 @@ Completed goals included:
 - ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, clock-based `go` limits, `stop`, and `quit`
 - ✅ Compacted `Move` from 16 bytes to 4 bytes while keeping the existing semantics and most call sites unchanged
 - ✅ Added `scripts/benchmark_fixed_depth.py` for repeatable fixed-depth UCI benchmarks between two engine binaries
+- ✅ Added `make windows64` for MinGW-w64-based Windows x64 release builds alongside the existing Linux targets
+- ✅ Windows x64 `.exe` outputs are now stripped static builds for simpler shipping with smaller file size
 
 ## Relevant files / directories
 
@@ -108,3 +110,4 @@ Potential areas for future work:
 - Better main-search move ordering
 - Richer evaluation
 - Stronger UCI support (`setoption`, ponder, `go infinite`)
+- Windows debug/validate target parity if it becomes useful

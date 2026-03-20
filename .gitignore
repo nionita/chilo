@@ -10,5 +10,7 @@ perft_tests_validate
 chilo
 chilo_debug
 chilo_validate
+*.exe
+__pycache__/
 *.o
 *.out
