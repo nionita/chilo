@@ -180,7 +180,7 @@ Current engine behavior:
 
 - legal-move filtering on top of the existing pseudo-legal generator
 - compact 4-byte `Move` representation
-- material plus piece-square-table evaluation
+- material plus piece-square-table evaluation, with non-king PST as a small correction term
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering
 - killer/history quiet-move ordering

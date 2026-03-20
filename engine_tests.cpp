@@ -288,6 +288,8 @@ int testEvaluation() {
     Position start = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     Position whiteBetter = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
     Position blackWorseToMove = parseFEN("4k3/8/8/8/8/8/8/3QK3 b - - 0 1");
+    Position knightCentralized = parseFEN("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1");
+    Position kingsOnly = parseFEN("4k3/8/8/8/8/8/8/6K1 w - - 0 1");
 
     if (evaluate(start) != 0) {
         std::cout << "  FAIL (starting position should evaluate to 0)\n";
@@ -295,6 +297,16 @@ int testEvaluation() {
     }
     if (evaluate(whiteBetter) <= 0 || evaluate(blackWorseToMove) >= 0) {
         std::cout << "  FAIL (evaluation sign is inconsistent with side to move)\n";
+        return 1;
+    }
+    if (evaluate(knightCentralized) != 322) {
+        std::cout << "  FAIL (expected centralized knight eval of 322, got "
+                  << evaluate(knightCentralized) << ")\n";
+        return 1;
+    }
+    if (evaluate(kingsOnly) != 80) {
+        std::cout << "  FAIL (expected king PST eval of 80, got "
+                  << evaluate(kingsOnly) << ")\n";
         return 1;
     }
 

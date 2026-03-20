@@ -133,7 +133,7 @@ This is still a maintenance refactor, but it also establishes proper translation
 
 The next project step after the source split was to add a minimal engine loop without overcommitting to advanced search features. That slice now exists:
 
-- `eval.cpp` provides a cheap deterministic evaluation based on material and piece-square tables
+- `eval.cpp` provides a cheap deterministic evaluation based on material and piece-square tables, with non-king PST intentionally scaled down to a small correction term
 - `search.cpp` provides legal-move generation helpers, terminal-state detection, and iterative-deepening negamax alpha-beta search
 - `chilo.cpp` exposes the engine through a separate UCI binary so GUI integration does not interfere with the perft tools
 

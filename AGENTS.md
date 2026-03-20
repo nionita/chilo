@@ -45,7 +45,7 @@ Completed goals included:
 - ✅ Split engine implementation into translation units: `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, `perft_lib.cpp`
 - ✅ Added `engine.h` as the declarations-only engine interface
 - ✅ Updated the `Makefile` to compile and link shared engine object files
-- ✅ Added `eval.cpp` with material + piece-square-table evaluation
+- ✅ Added `eval.cpp` with material + piece-square-table evaluation, later rescaled so non-king PST stays a small correction term
 - ✅ Added `search.cpp` with legal-move helpers, terminal detection, and iterative-deepening alpha-beta
 - ✅ Added incremental Zobrist hashing to `Position` / `UndoState` for hash-based search features
 - ✅ Added a transposition table with TT-move ordering and mate-score normalization
