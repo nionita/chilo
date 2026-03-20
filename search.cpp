@@ -17,6 +17,10 @@ constexpr int LMR_DEEP_MOVE_INDEX = 8;
 constexpr int FUTILITY_MARGIN[3] = {0, 120, 320};
 constexpr std::size_t TT_SIZE = 1u << 20;
 
+#ifndef CHILO_TT_ALWAYS_OVERWRITE
+#define CHILO_TT_ALWAYS_OVERWRITE 0
+#endif
+
 enum TTFlag : uint8_t { TT_NONE, TT_EXACT, TT_LOWER, TT_UPPER };
 
 struct TTEntry {
@@ -154,12 +158,14 @@ bool probeTT(uint64_t key, int depth, int ply, int alpha, int beta, Move& bestMo
 
 void storeTT(uint64_t key, int depth, int ply, int score, TTFlag flag, const Move& bestMove) {
     TTEntry& entry = ttEntry(key);
+#if !CHILO_TT_ALWAYS_OVERWRITE
     if (entry.key != key &&
         entry.key != 0 &&
         entry.generation == g_ttGeneration &&
         entry.depth > depth) {
         return;
     }
+#endif
 
     entry.key = key;
     entry.bestMove = bestMove;
@@ -309,15 +315,16 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
               int pvLength[MAX_SEARCH_DEPTH]) {
     pvLength[ply] = 0;
     if (shouldStop()) return evaluate(pos);
+
+    Move ttMove{};
+    int ttScore = 0;
+    if (!isPv && probeTT(pos.hashKey, depth, ply, alpha, beta, ttMove, ttScore)) return ttScore;
+
     if (depth <= 0) return quiescence(pos, ply, alpha, beta, nodes);
 
     nodes++;
     const int alphaOriginal = alpha;
     const bool inCheckNow = inCheck(pos, pos.sideToMove);
-
-    Move ttMove{};
-    int ttScore = 0;
-    if (!isPv && probeTT(pos.hashKey, depth, ply, alpha, beta, ttMove, ttScore)) return ttScore;
 
     if (allowNull && !isPv && !inCheckNow && depth >= 3 && hasNonPawnMaterial(pos, pos.sideToMove)) {
         NullMoveState nullState;

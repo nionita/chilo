@@ -183,6 +183,7 @@ Current engine behavior:
 - material plus piece-square-table evaluation, with non-king PST as a small correction term
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering
+- TT probe before the quiescence handoff so deeper stored entries can skip frontier QS
 - killer/history quiet-move ordering
 - PVS, null-move pruning, LMR, and shallow futility pruning
 - quiescence search with MVV-LVA ordering in QS
@@ -220,6 +221,13 @@ If no custom positions are provided, the script uses the current default set:
 - `startpos`
 - one complex middlegame
 - one tactical position
+
+To benchmark the alternate TT replacement policy, rebuild with:
+
+```bash
+make clean
+make EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1
+```
 
 ## Common Targets
 

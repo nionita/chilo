@@ -206,6 +206,8 @@ The next representation pass compacted `Move` from 16 bytes down to 4 bytes by s
 
 The next search pass added incremental Zobrist hashing to `Position`, a fixed-size transposition table, killer/history quiet-move ordering, principal-variation search, null-move pruning, late-move reductions, and shallow futility pruning. Validation was extended with a hash round-trip test to ensure `doMove()` / `undo()` restore the hash exactly. A fixed-depth benchmark against commit `0a55c5d` on the default benchmark set showed much lower node counts and much faster time-to-depth: on `startpos` the engine time to depth 6 dropped from about `976 ms` to `10 ms`, and under `go movetime 1000` on `startpos` the completed depth improved from 5 to 13. These numbers should be interpreted as search-efficiency gains rather than NPS gains, since the newer search intentionally prunes far more nodes.
 
+The current TT/search layout now probes TT before the `depth <= 0` quiescence handoff, so a deeper stored regular-search entry can skip frontier QS entirely. The build also supports benchmarking an alternate TT replacement policy with `EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1`, which forces one-entry buckets to overwrite unconditionally instead of preserving deeper same-generation foreign entries.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path

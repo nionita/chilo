@@ -49,6 +49,7 @@ Completed goals included:
 - ✅ Added `search.cpp` with legal-move helpers, terminal detection, and iterative-deepening alpha-beta
 - ✅ Added incremental Zobrist hashing to `Position` / `UndoState` for hash-based search features
 - ✅ Added a transposition table with TT-move ordering and mate-score normalization
+- ✅ TT probe now happens before the quiescence handoff, and TT replacement policy can be benchmarked via `EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1`
 - ✅ Added killer/history move ordering, PVS, null-move pruning, LMR, and shallow futility pruning
 - ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, clock-based `go` limits, `stop`, and `quit`
 - ✅ Compacted `Move` from 16 bytes to 4 bytes while keeping the existing semantics and most call sites unchanged

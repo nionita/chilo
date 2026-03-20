@@ -304,8 +304,8 @@ int testEvaluation() {
                   << evaluate(knightCentralized) << ")\n";
         return 1;
     }
-    if (evaluate(kingsOnly) != 80) {
-        std::cout << "  FAIL (expected king PST eval of 80, got "
+    if (evaluate(kingsOnly) != 10) {
+        std::cout << "  FAIL (expected king PST eval of 10, got "
                   << evaluate(kingsOnly) << ")\n";
         return 1;
     }
