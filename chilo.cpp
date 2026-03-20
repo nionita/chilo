@@ -10,6 +10,7 @@
 namespace {
 
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const char* CHILO_VERSION = "0.1.0";
 
 struct GoCommandOptions {
     int depth = 0;
@@ -179,7 +180,15 @@ SearchLimits parseGoCommand(const std::vector<std::string>& tokens, const Positi
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 1) {
+        std::string arg = argv[1];
+        if (arg == "--version" || arg == "-v") {
+            std::cout << CHILO_VERSION << "\n";
+            return 0;
+        }
+    }
+
     Position currentPos = parseFEN(STARTPOS_FEN);
     std::thread searchThread;
     std::atomic<bool> searchRunning{false};
@@ -197,7 +206,7 @@ int main() {
 
         const std::string& command = tokens[0];
         if (command == "uci") {
-            std::cout << "id name Chilo\n";
+            std::cout << "id name Chilo " << CHILO_VERSION << "\n";
             std::cout << "id author Nicu Ionita, Codex & Kilo\n";
             std::cout << "uciok\n";
             std::cout.flush();
