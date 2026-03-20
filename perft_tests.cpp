@@ -293,6 +293,27 @@ int testSearchPrefersWinningCapture() {
     return 0;
 }
 
+int testSearchAvoidsPoisonedCapture() {
+    std::cout << "Test 12: Search Avoids Poisoned Capture Test\n";
+
+    Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
+    SearchLimits limits{1, 0, nullptr, nullptr};
+    SearchResult result = searchBestMove(p, limits);
+
+    if (!result.hasMove) {
+        std::cout << "  FAIL (expected a legal move)\n";
+        return 1;
+    }
+    if (moveToUCI(result.bestMove) != "e1h4") {
+        std::cout << "  FAIL (expected best move e1h4, got "
+                  << moveToUCI(result.bestMove) << ")\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int main() {
     std::cout << "=== Engine Regression Tests ===\n\n";
     
@@ -308,6 +329,7 @@ int main() {
     failures += testUCIMoveHelpers();
     failures += testEvaluation();
     failures += testSearchPrefersWinningCapture();
+    failures += testSearchAvoidsPoisonedCapture();
     
     std::cout << "\n=== Summary ===\n";
     if (failures == 0) std::cout << "All tests PASSED\n";

@@ -8,6 +8,7 @@ namespace {
 
 constexpr int INF_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
+constexpr int DELTA_MARGIN = 200;
 
 std::atomic<bool> g_stopRequested{false};
 std::chrono::steady_clock::time_point g_deadline;
@@ -27,6 +28,20 @@ int moveValueGuess(Piece piece) {
         case 5: return 900;
         default: return 0;
     }
+}
+
+Piece capturedPieceForMove(const Position& pos, const Move& move) {
+    if (move.isEnPassant) return pos.sideToMove == WHITE ? B_PAWN : W_PAWN;
+    return pieceAt(pos, move.to);
+}
+
+bool isNoisyMove(const Position& pos, const Move& move) {
+    return capturedPieceForMove(pos, move) != EMPTY || move.promotion != EMPTY;
+}
+
+int promotionGain(const Move& move) {
+    if (move.promotion == EMPTY) return 0;
+    return moveValueGuess(move.promotion) - moveValueGuess(W_PAWN);
 }
 
 bool shouldStop() {
@@ -75,13 +90,54 @@ int terminalScore(const Position& pos, int ply) {
     return 0;
 }
 
+int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
+    if (shouldStop()) return evaluate(pos);
+
+    nodes++;
+    bool inCheckNow = inCheck(pos, pos.sideToMove);
+    int standPat = 0;
+
+    if (!inCheckNow) {
+        standPat = evaluate(pos);
+        if (standPat >= beta) return beta;
+        if (standPat > alpha) alpha = standPat;
+    }
+
+    Move moves[MAX_MOVES];
+    int moveCount = genLegalMoves(pos, moves);
+    if (moveCount == 0) return terminalScore(pos, ply);
+
+    for (int i = 0; i < moveCount; i++) {
+        const Move& move = moves[i];
+        if (!inCheckNow && !isNoisyMove(pos, move)) continue;
+
+        if (!inCheckNow) {
+            Piece capturedPiece = capturedPieceForMove(pos, move);
+            int gainUpperBound = standPat + moveValueGuess(capturedPiece) + promotionGain(move) + DELTA_MARGIN;
+            if (gainUpperBound < alpha) continue;
+        }
+
+        UndoState undoState;
+        doMove(pos, move, undoState);
+        int score = -quiescence(pos, ply + 1, -beta, -alpha, nodes);
+        undo(pos, move, undoState);
+
+        if (shouldStop()) return alpha;
+        if (score >= beta) return beta;
+        if (score > alpha) alpha = score;
+    }
+
+    return alpha;
+}
+
 int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, uint64_t& nodes,
               Move pvTable[MAX_SEARCH_DEPTH][MAX_SEARCH_DEPTH], int pvLength[MAX_SEARCH_DEPTH]) {
     pvLength[ply] = 0;
     if (shouldStop()) return evaluate(pos);
 
+    if (depth == 0) return quiescence(pos, ply, alpha, beta, nodes);
+
     nodes++;
-    if (depth == 0) return evaluate(pos);
 
     Move moves[MAX_MOVES];
     int moveCount = genLegalMoves(pos, moves);
