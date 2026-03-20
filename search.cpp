@@ -39,6 +39,12 @@ struct NullMoveState {
     uint64_t hashKey;
 };
 
+struct HistoryMoveInfo {
+    Piece movingPiece;
+    Piece capturedPiece;
+    uint8_t castlingBefore;
+};
+
 std::atomic<bool> g_stopRequested{false};
 std::chrono::steady_clock::time_point g_deadline;
 bool g_useDeadline = false;
@@ -46,6 +52,11 @@ std::vector<TTEntry> g_tt(TT_SIZE);
 uint8_t g_ttGeneration = 0;
 Move g_killers[MAX_SEARCH_DEPTH][2];
 int g_history[2][64][64] = {};
+uint64_t g_drawHistory[MAX_DRAW_HISTORY] = {};
+int g_lastIrreversible = 0;
+int g_lastReal = 0;
+int g_lastValid = 0;
+bool g_drawHistoryInitialized = false;
 
 bool movesEqual(const Move& a, const Move& b) {
     return a.from == b.from && a.to == b.to && a.promotion == b.promotion &&
@@ -103,6 +114,34 @@ bool hasNonPawnMaterial(const Position& pos, Color side) {
            pos.pieceBitboards[side][pieceTypeIndex(side == WHITE ? W_BISHOP : B_BISHOP)] != 0 ||
            pos.pieceBitboards[side][pieceTypeIndex(side == WHITE ? W_ROOK : B_ROOK)] != 0 ||
            pos.pieceBitboards[side][pieceTypeIndex(side == WHITE ? W_QUEEN : B_QUEEN)] != 0;
+}
+
+HistoryMoveInfo historyMoveInfo(const Position& pos, const Move& move) {
+    return {pieceAt(pos, move.from), capturedPieceForMove(pos, move), packCastling(pos)};
+}
+
+bool moveIsIrreversible(const HistoryMoveInfo& info, uint8_t castlingAfter) {
+    return pt(info.movingPiece) == 1 || info.capturedPiece != EMPTY || info.castlingBefore != castlingAfter;
+}
+
+void appendDrawHistory(uint64_t hashKey, bool irreversible, bool realMove) {
+    assert(g_lastValid + 1 < MAX_DRAW_HISTORY);
+    g_lastValid++;
+    g_drawHistory[g_lastValid] = hashKey;
+    if (realMove) g_lastReal = g_lastValid;
+    if (irreversible) g_lastIrreversible = g_lastValid;
+    g_drawHistoryInitialized = true;
+}
+
+void pushSearchHistory(uint64_t hashKey, bool irreversible, int& savedLastValid, int& savedLastIrreversible) {
+    savedLastValid = g_lastValid;
+    savedLastIrreversible = g_lastIrreversible;
+    appendDrawHistory(hashKey, irreversible, false);
+}
+
+void popSearchHistory(int savedLastValid, int savedLastIrreversible) {
+    g_lastValid = savedLastValid;
+    g_lastIrreversible = savedLastIrreversible;
 }
 
 void doNullMove(Position& pos, NullMoveState& state) {
@@ -272,6 +311,7 @@ int terminalScore(const Position& pos, int ply) {
 
 int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     if (shouldStop()) return evaluate(pos);
+    if (isDrawByFiftyMove(pos)) return 0;
 
     nodes++;
     bool inCheckNow = inCheck(pos, pos.sideToMove);
@@ -310,11 +350,12 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     return alpha;
 }
 
-int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv, bool allowNull,
+int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv, bool allowNull, bool allowDrawChecks,
               uint64_t& nodes, Move pvTable[MAX_SEARCH_DEPTH][MAX_SEARCH_DEPTH],
               int pvLength[MAX_SEARCH_DEPTH]) {
     pvLength[ply] = 0;
     if (shouldStop()) return evaluate(pos);
+    if (allowDrawChecks && (isDrawByFiftyMove(pos) || isDrawByRepetition(pos))) return 0;
 
     Move ttMove{};
     int ttScore = 0;
@@ -331,7 +372,7 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
         doNullMove(pos, nullState);
         int reduction = depth >= 6 ? DEEP_NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION;
         int score = -alphaBeta(pos, depth - 1 - reduction, ply + 1, -beta, -beta + 1,
-                               false, false, nodes, pvTable, pvLength);
+                               false, false, false, nodes, pvTable, pvLength);
         undoNullMove(pos, nullState);
         if (shouldStop()) return alpha;
         if (score >= beta) {
@@ -354,13 +395,19 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
         bool quiet = isQuietMove(pos, move);
+        HistoryMoveInfo moveInfo = historyMoveInfo(pos, move);
 
         UndoState undoState;
         doMove(pos, move, undoState);
+        int savedLastValid = 0;
+        int savedLastIrreversible = 0;
+        pushSearchHistory(pos.hashKey, moveIsIrreversible(moveInfo, packCastling(pos)),
+                          savedLastValid, savedLastIrreversible);
         bool givesCheck = inCheck(pos, pos.sideToMove);
 
         if (allowFutility && i > 0 && quiet && !givesCheck &&
             staticEval + FUTILITY_MARGIN[depth] <= alpha) {
+            popSearchHistory(savedLastValid, savedLastIrreversible);
             undo(pos, move, undoState);
             continue;
         }
@@ -379,19 +426,21 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
         }
 
         if (i == 0) {
-            score = -alphaBeta(pos, fullDepth, ply + 1, -beta, -alpha, isPv, true, nodes, pvTable, pvLength);
+            score = -alphaBeta(pos, fullDepth, ply + 1, -beta, -alpha, isPv, true, allowDrawChecks,
+                               nodes, pvTable, pvLength);
         } else {
             score = -alphaBeta(pos, searchDepth, ply + 1, -alpha - 1, -alpha,
-                               false, true, nodes, pvTable, pvLength);
+                               false, true, allowDrawChecks, nodes, pvTable, pvLength);
             if (score > alpha && reduced) {
                 score = -alphaBeta(pos, fullDepth, ply + 1, -alpha - 1, -alpha,
-                                   false, true, nodes, pvTable, pvLength);
+                                   false, true, allowDrawChecks, nodes, pvTable, pvLength);
             }
             if (score > alpha) {
                 score = -alphaBeta(pos, fullDepth, ply + 1, -beta, -alpha,
-                                   isPv, true, nodes, pvTable, pvLength);
+                                   isPv, true, allowDrawChecks, nodes, pvTable, pvLength);
             }
         }
+        popSearchHistory(savedLastValid, savedLastIrreversible);
         undo(pos, move, undoState);
 
         if (shouldStop()) return alpha;
@@ -424,6 +473,8 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
 
     if (++g_ttGeneration == 0) g_ttGeneration = 1;
     clearSearchHeuristics();
+    if (!g_drawHistoryInitialized || g_drawHistory[g_lastReal] != pos.hashKey) resetDrawHistory(pos);
+    g_lastValid = g_lastReal;
 
     SearchResult result{{0, 0, EMPTY, false, false, false}, {}, 0, 0, 0, 0, 0, true, false};
 
@@ -464,20 +515,26 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
 
         for (int i = 0; i < rootCount; i++) {
             const Move& move = iterationMoves[i];
+            HistoryMoveInfo moveInfo = historyMoveInfo(pos, move);
             UndoState undoState;
             doMove(pos, move, undoState);
+            int savedLastValid = 0;
+            int savedLastIrreversible = 0;
+            pushSearchHistory(pos.hashKey, moveIsIrreversible(moveInfo, packCastling(pos)),
+                              savedLastValid, savedLastIrreversible);
             int score;
             if (i == 0) {
-                score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true,
+                score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true, true,
                                    iterationNodes, pvTable, pvLength);
             } else {
-                score = -alphaBeta(pos, depth - 1, 1, -alpha - 1, -alpha, false, true,
+                score = -alphaBeta(pos, depth - 1, 1, -alpha - 1, -alpha, false, true, true,
                                    iterationNodes, pvTable, pvLength);
                 if (score > alpha) {
-                    score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true,
+                    score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true, true,
                                        iterationNodes, pvTable, pvLength);
                 }
             }
+            popSearchHistory(savedLastValid, savedLastIrreversible);
             undo(pos, move, undoState);
 
             if (shouldStop()) {
@@ -524,4 +581,34 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
 
 void requestSearchStop() {
     g_stopRequested.store(true, std::memory_order_relaxed);
+}
+
+void resetDrawHistory(const Position& pos) {
+    g_drawHistory[0] = pos.hashKey;
+    g_lastIrreversible = 0;
+    g_lastReal = 0;
+    g_lastValid = 0;
+    g_drawHistoryInitialized = true;
+}
+
+void recordRealMoveForDrawHistory(const Position& before, const Move& move, const Position& after) {
+    if (!g_drawHistoryInitialized || g_drawHistory[g_lastReal] != before.hashKey) resetDrawHistory(before);
+    HistoryMoveInfo moveInfo = historyMoveInfo(before, move);
+    appendDrawHistory(after.hashKey, moveIsIrreversible(moveInfo, packCastling(after)), true);
+}
+
+DrawHistoryState getDrawHistoryState() {
+    return {g_lastIrreversible, g_lastReal, g_lastValid};
+}
+
+bool isDrawByFiftyMove(const Position& pos) {
+    return pos.halfMove >= 100;
+}
+
+bool isDrawByRepetition(const Position& pos) {
+    if (!g_drawHistoryInitialized || g_lastValid - g_lastIrreversible < 2) return false;
+    for (int i = g_lastValid - 2; i >= g_lastIrreversible; i -= 2) {
+        if (g_drawHistory[i] == pos.hashKey) return true;
+    }
+    return false;
 }

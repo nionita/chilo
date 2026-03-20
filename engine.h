@@ -8,6 +8,7 @@
 #include "chess_tables.h"
 
 constexpr int MAX_SEARCH_DEPTH = 64;
+constexpr int MAX_DRAW_HISTORY = 600;
 constexpr int SEARCH_MATE_SCORE = 29000;
 constexpr int SEARCH_MATE_THRESHOLD = SEARCH_MATE_SCORE - MAX_SEARCH_DEPTH;
 
@@ -40,6 +41,18 @@ bool applyUCIMove(Position& pos, const std::string& uci);
 
 void doMove(Position& pos, const Move& mv, UndoState& undo);
 void undo(Position& pos, const Move& mv, const UndoState& undo);
+
+struct DrawHistoryState {
+    int lastIrreversible;
+    int lastReal;
+    int lastValid;
+};
+
+void resetDrawHistory(const Position& pos);
+void recordRealMoveForDrawHistory(const Position& before, const Move& move, const Position& after);
+DrawHistoryState getDrawHistoryState();
+bool isDrawByFiftyMove(const Position& pos);
+bool isDrawByRepetition(const Position& pos);
 
 int evaluate(const Position& pos);
 

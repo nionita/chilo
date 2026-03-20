@@ -66,9 +66,10 @@ void printSearchInfo(const SearchResult& result, void*) {
 bool applyPositionCommand(const std::vector<std::string>& tokens, Position& pos) {
     if (tokens.size() < 2) return false;
 
+    Position basePos;
     std::size_t moveStart = tokens.size();
     if (tokens[1] == "startpos") {
-        pos = parseFEN(STARTPOS_FEN);
+        basePos = parseFEN(STARTPOS_FEN);
         moveStart = 2;
     } else if (tokens[1] == "fen") {
         if (tokens.size() < 8) return false;
@@ -77,17 +78,32 @@ bool applyPositionCommand(const std::vector<std::string>& tokens, Position& pos)
             if (!fen.empty()) fen += ' ';
             fen += tokens[i];
         }
-        pos = parseFEN(fen);
+        basePos = parseFEN(fen);
         moveStart = 8;
     } else {
         return false;
     }
 
+    std::vector<Move> movesToApply;
+    Position tempPos = basePos;
     if (moveStart < tokens.size()) {
         if (tokens[moveStart] != "moves") return false;
         for (std::size_t i = moveStart + 1; i < tokens.size(); i++) {
-            if (!applyUCIMove(pos, tokens[i])) return false;
+            Move move;
+            if (!parseUCIMove(tempPos, tokens[i], move)) return false;
+            UndoState undoState;
+            doMove(tempPos, move, undoState);
+            movesToApply.push_back(move);
         }
+    }
+
+    pos = basePos;
+    resetDrawHistory(pos);
+    for (const Move& move : movesToApply) {
+        Position before = pos;
+        UndoState undoState;
+        doMove(pos, move, undoState);
+        recordRealMoveForDrawHistory(before, move, pos);
     }
 
     return true;
@@ -190,6 +206,7 @@ int main(int argc, char** argv) {
     }
 
     Position currentPos = parseFEN(STARTPOS_FEN);
+    resetDrawHistory(currentPos);
     std::thread searchThread;
     std::atomic<bool> searchRunning{false};
 
@@ -216,6 +233,7 @@ int main(int argc, char** argv) {
         } else if (command == "ucinewgame") {
             stopAndJoinSearch();
             currentPos = parseFEN(STARTPOS_FEN);
+            resetDrawHistory(currentPos);
         } else if (command == "position") {
             stopAndJoinSearch();
             if (!applyPositionCommand(tokens, currentPos)) {

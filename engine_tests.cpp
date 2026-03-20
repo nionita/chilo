@@ -33,6 +33,16 @@ std::string flipColors(const std::string& fen) {
     return result;
 }
 
+bool applyRealHistoryMove(Position& pos, const std::string& uci) {
+    Move move;
+    if (!parseUCIMove(pos, uci, move)) return false;
+    Position before = pos;
+    UndoState undoState;
+    doMove(pos, move, undoState);
+    recordRealMoveForDrawHistory(before, move, pos);
+    return true;
+}
+
 int testMirrorPositions() {
     std::cout << "Test 1: Mirror Position Test\n";
     std::string pos5 = "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1";
@@ -282,8 +292,83 @@ int testUCIMoveHelpers() {
     return 0;
 }
 
+int testDrawHistoryAndFiftyMoveRule() {
+    std::cout << "Test 11: Draw History / 50-Move Rule Test\n";
+
+    {
+        Position p = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        resetDrawHistory(p);
+        if (!applyRealHistoryMove(p, "g1f3") ||
+            !applyRealHistoryMove(p, "g8f6") ||
+            !applyRealHistoryMove(p, "f3g1") ||
+            !applyRealHistoryMove(p, "f6g8")) {
+            std::cout << "  FAIL (could not build reversible repetition sequence)\n";
+            return 1;
+        }
+
+        DrawHistoryState state = getDrawHistoryState();
+        if (state.lastIrreversible != 0 || state.lastReal != 4 || state.lastValid != 4) {
+            std::cout << "  FAIL (unexpected draw-history indices for reversible sequence)\n";
+            return 1;
+        }
+        if (!isDrawByRepetition(p)) {
+            std::cout << "  FAIL (expected repetition draw after reversible knight shuffle)\n";
+            return 1;
+        }
+    }
+
+    {
+        Position p = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        resetDrawHistory(p);
+        if (!applyRealHistoryMove(p, "g1f3") ||
+            !applyRealHistoryMove(p, "g8f6") ||
+            !applyRealHistoryMove(p, "f3g1") ||
+            !applyRealHistoryMove(p, "e7e6")) {
+            std::cout << "  FAIL (could not build irreversible-boundary sequence)\n";
+            return 1;
+        }
+
+        DrawHistoryState state = getDrawHistoryState();
+        if (state.lastIrreversible != 4 || state.lastReal != 4 || state.lastValid != 4) {
+            std::cout << "  FAIL (unexpected draw-history indices after pawn boundary)\n";
+            return 1;
+        }
+        if (isDrawByRepetition(p)) {
+            std::cout << "  FAIL (repetition draw leaked across pawn boundary)\n";
+            return 1;
+        }
+    }
+
+    {
+        Position p = parseFEN("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        resetDrawHistory(p);
+        if (!applyRealHistoryMove(p, "h1g1") ||
+            !applyRealHistoryMove(p, "h8g8") ||
+            !applyRealHistoryMove(p, "g1h1") ||
+            !applyRealHistoryMove(p, "g8h8")) {
+            std::cout << "  FAIL (could not build castling-right-loss sequence)\n";
+            return 1;
+        }
+
+        if (isDrawByRepetition(p)) {
+            std::cout << "  FAIL (repetition draw leaked across castling-right loss)\n";
+            return 1;
+        }
+    }
+
+    Position p99 = parseFEN("8/8/8/8/8/8/6k1/6K1 w - - 99 1");
+    Position p100 = parseFEN("8/8/8/8/8/8/6k1/6K1 w - - 100 1");
+    if (isDrawByFiftyMove(p99) || !isDrawByFiftyMove(p100)) {
+        std::cout << "  FAIL (50-move rule threshold is incorrect)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testEvaluation() {
-    std::cout << "Test 11: Evaluation Test\n";
+    std::cout << "Test 12: Evaluation Test\n";
 
     Position start = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     Position whiteBetter = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
@@ -315,7 +400,7 @@ int testEvaluation() {
 }
 
 int testLegalNoisyMoveGeneration() {
-    std::cout << "Test 12: Legal Noisy Move Generation Test\n";
+    std::cout << "Test 13: Legal Noisy Move Generation Test\n";
 
     {
         Position promotion = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
@@ -359,9 +444,10 @@ int testLegalNoisyMoveGeneration() {
 }
 
 int testSearchPrefersWinningCapture() {
-    std::cout << "Test 13: Search Prefers Winning Capture Test\n";
+    std::cout << "Test 14: Search Prefers Winning Capture Test\n";
 
     Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
+    resetDrawHistory(p);
     SearchLimits limits{1, 0, nullptr, nullptr};
     SearchResult result = searchBestMove(p, limits);
 
@@ -376,9 +462,10 @@ int testSearchPrefersWinningCapture() {
 }
 
 int testSearchAvoidsPoisonedCapture() {
-    std::cout << "Test 14: Search Avoids Poisoned Capture Test\n";
+    std::cout << "Test 15: Search Avoids Poisoned Capture Test\n";
 
     Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
+    resetDrawHistory(p);
     SearchLimits limits{1, 0, nullptr, nullptr};
     SearchResult result = searchBestMove(p, limits);
 
@@ -397,7 +484,7 @@ int testSearchAvoidsPoisonedCapture() {
 }
 
 int testMateScoreHelpers() {
-    std::cout << "Test 15: Mate Score Helper Test\n";
+    std::cout << "Test 16: Mate Score Helper Test\n";
 
     int mateInOne = SEARCH_MATE_SCORE - 1;
     int mateInTwo = SEARCH_MATE_SCORE - 3;
@@ -426,13 +513,15 @@ int testMateScoreHelpers() {
 }
 
 int testSearchFindsMateInOneForBothSides() {
-    std::cout << "Test 16: Search Finds Mate In One For Both Sides Test\n";
+    std::cout << "Test 17: Search Finds Mate In One For Both Sides Test\n";
 
     Position whiteToMove = parseFEN("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
     Position blackToMove = parseFEN("8/8/8/8/8/6k1/5q2/6K1 b - - 0 1");
     SearchLimits limits{1, 0, nullptr, nullptr};
 
+    resetDrawHistory(whiteToMove);
     SearchResult whiteResult = searchBestMove(whiteToMove, limits);
+    resetDrawHistory(blackToMove);
     SearchResult blackResult = searchBestMove(blackToMove, limits);
 
     if (!whiteResult.hasMove || whiteResult.score != SEARCH_MATE_SCORE - 1) {
@@ -462,6 +551,7 @@ int main() {
     failures += testHashRoundTrip();
     failures += testLegalMoveAndTerminalHelpers();
     failures += testUCIMoveHelpers();
+    failures += testDrawHistoryAndFiftyMoveRule();
     failures += testEvaluation();
     failures += testLegalNoisyMoveGeneration();
     failures += testSearchPrefersWinningCapture();

@@ -208,6 +208,8 @@ The next search pass added incremental Zobrist hashing to `Position`, a fixed-si
 
 The current TT/search layout now probes TT before the `depth <= 0` quiescence handoff, so a deeper stored regular-search entry can skip frontier QS entirely. The build also supports benchmarking an alternate TT replacement policy with `EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1`, which forces one-entry buckets to overwrite unconditionally instead of preserving deeper same-generation foreign entries.
 
+The next rules-completeness pass added practical draw handling for repetition and the 50-move rule. Search now maintains a fixed global history of position hashes with separate indices for the last irreversible point, the real-game root, and the current valid top. Main alpha-beta treats the first repeated key in the reversible window as a draw, while both alpha-beta and QS treat `halfMove >= 100` as a draw. Castling-right loss is treated as irreversible for repetition-boundary purposes, and UCI `position ... moves ...` now rebuilds the real-game history instead of passing only the final board.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path

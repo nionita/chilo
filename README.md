@@ -186,6 +186,7 @@ Current engine behavior:
 - TT probe before the quiescence handoff so deeper stored entries can skip frontier QS
 - killer/history quiet-move ordering
 - PVS, null-move pruning, LMR, and shallow futility pruning
+- repetition-draw detection in main search and 50-move draw detection in main search + QS
 - quiescence search with MVV-LVA ordering in QS
 - no UCI options yet
 
