@@ -61,6 +61,7 @@ Supported UCI commands:
 - `position fen <fen> moves ...`
 - `go depth N`
 - `go movetime N`
+- `go wtime WT btime BT [winc WI] [binc BI] [movestogo MTG]`
 - `stop`
 - `quit`
 

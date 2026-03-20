@@ -47,7 +47,7 @@ Completed goals included:
 - ✅ Updated the `Makefile` to compile and link shared engine object files
 - ✅ Added `eval.cpp` with material + piece-square-table evaluation
 - ✅ Added `search.cpp` with legal-move helpers, terminal detection, and iterative-deepening alpha-beta
-- ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, `stop`, and `quit`
+- ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, clock-based `go` limits, `stop`, and `quit`
 
 ## Relevant files / directories
 
@@ -101,8 +101,7 @@ This means future engine features should normally be implemented as additional `
 Recent work moved the engine to a bitboard-first runtime with magic bitboards for sliders and then split the implementation into proper translation units so the project can grow beyond perft without relying on a monolithic implementation header.
 
 Potential areas for future work:
-- Quiescence search
 - Transposition table
-- Better move ordering
+- Better main-search move ordering
 - Richer evaluation
-- Stronger UCI support (`setoption`, clock controls beyond `movetime`)
+- Stronger UCI support (`setoption`, ponder, `go infinite`)

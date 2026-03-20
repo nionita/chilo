@@ -11,6 +11,20 @@ namespace {
 
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
+struct GoCommandOptions {
+    int depth = 0;
+    int movetimeMs = 0;
+    int wtimeMs = 0;
+    int btimeMs = 0;
+    int wincMs = 0;
+    int bincMs = 0;
+    int movesToGo = 0;
+    bool hasDepth = false;
+    bool hasMovetime = false;
+    bool hasWtime = false;
+    bool hasBtime = false;
+};
+
 std::vector<std::string> tokenize(const std::string& line) {
     std::vector<std::string> tokens;
     std::istringstream iss(line);
@@ -68,18 +82,88 @@ bool applyPositionCommand(const std::vector<std::string>& tokens, Position& pos)
     return true;
 }
 
-SearchLimits parseGoCommand(const std::vector<std::string>& tokens) {
+bool parseIntToken(const std::vector<std::string>& tokens, std::size_t index, int& value) {
+    if (index >= tokens.size()) return false;
+    try {
+        value = std::stoi(tokens[index]);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+int computeClockBudgetMs(const Position& pos, const GoCommandOptions& options) {
+    bool hasSideClock = pos.sideToMove == WHITE ? options.hasWtime : options.hasBtime;
+    if (!hasSideClock) return 0;
+
+    int remainingMs = pos.sideToMove == WHITE ? options.wtimeMs : options.btimeMs;
+    int incrementMs = pos.sideToMove == WHITE ? options.wincMs : options.bincMs;
+    if (incrementMs < 0) incrementMs = 0;
+
+    int reserveMs = 50 + incrementMs / 2;
+    int usableMs = remainingMs > reserveMs ? remainingMs - reserveMs : 1;
+    int movesDivisor = options.movesToGo > 0 ? options.movesToGo : 25;
+
+    int budgetMs = usableMs / movesDivisor + incrementMs / 2;
+    if (budgetMs < 1) budgetMs = 1;
+    if (budgetMs > usableMs) budgetMs = usableMs;
+    return budgetMs;
+}
+
+SearchLimits parseGoCommand(const std::vector<std::string>& tokens, const Position& pos) {
+    GoCommandOptions options;
     SearchLimits limits{0, 0, printSearchInfo, nullptr};
     for (std::size_t i = 1; i + 1 < tokens.size(); i++) {
+        int value = 0;
         if (tokens[i] == "depth") {
-            limits.depth = std::stoi(tokens[i + 1]);
+            if (parseIntToken(tokens, i + 1, value)) {
+                options.depth = value;
+                options.hasDepth = true;
+            }
             i++;
         } else if (tokens[i] == "movetime") {
-            limits.movetimeMs = std::stoi(tokens[i + 1]);
+            if (parseIntToken(tokens, i + 1, value)) {
+                options.movetimeMs = value;
+                options.hasMovetime = true;
+            }
+            i++;
+        } else if (tokens[i] == "wtime") {
+            if (parseIntToken(tokens, i + 1, value)) {
+                options.wtimeMs = value;
+                options.hasWtime = true;
+            }
+            i++;
+        } else if (tokens[i] == "btime") {
+            if (parseIntToken(tokens, i + 1, value)) {
+                options.btimeMs = value;
+                options.hasBtime = true;
+            }
+            i++;
+        } else if (tokens[i] == "winc") {
+            if (parseIntToken(tokens, i + 1, value)) options.wincMs = value;
+            i++;
+        } else if (tokens[i] == "binc") {
+            if (parseIntToken(tokens, i + 1, value)) options.bincMs = value;
+            i++;
+        } else if (tokens[i] == "movestogo") {
+            if (parseIntToken(tokens, i + 1, value) && value > 0) options.movesToGo = value;
             i++;
         }
     }
-    if (limits.depth <= 0 && limits.movetimeMs <= 0) limits.depth = 4;
+
+    if (options.hasMovetime) {
+        limits.movetimeMs = options.movetimeMs > 0 ? options.movetimeMs : 1;
+    } else {
+        int budgetMs = computeClockBudgetMs(pos, options);
+        if (budgetMs > 0) {
+            limits.movetimeMs = budgetMs;
+        } else if (options.hasDepth && options.depth > 0) {
+            limits.depth = options.depth;
+        } else {
+            limits.depth = 4;
+        }
+    }
+
     return limits;
 }
 
@@ -121,7 +205,7 @@ int main() {
             }
         } else if (command == "go") {
             stopAndJoinSearch();
-            SearchLimits limits = parseGoCommand(tokens);
+            SearchLimits limits = parseGoCommand(tokens, currentPos);
             Position searchPos = currentPos;
             searchRunning.store(true);
             searchThread = std::thread([searchPos, limits, &searchRunning]() mutable {

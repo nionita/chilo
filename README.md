@@ -146,6 +146,7 @@ Supported commands:
 - `position fen <fen> moves ...`
 - `go depth N`
 - `go movetime N`
+- `go wtime WT btime BT [winc WI] [binc BI] [movestogo MTG]`
 - `stop`
 - `quit`
 
@@ -155,7 +156,8 @@ Current engine behavior:
 - material plus piece-square-table evaluation
 - iterative-deepening negamax alpha-beta
 - simple move ordering
-- no quiescence, transposition table, or UCI options yet
+- quiescence search with MVV-LVA ordering in QS
+- no transposition table or UCI options yet
 
 ### Tests
 
