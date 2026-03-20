@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -244,8 +245,8 @@ inline Position parseFEN(const std::string& f) {
     }
     p.enPassant = -1;
     if (p2[3] != "-") p.enPassant = (p2[3][1] - '1') * 8 + (p2[3][0] - 'a');
-    p.halfMove = 0;
-    p.fullMove = 1;
+    p.halfMove = p2.size() >= 5 ? std::atoi(p2[4].c_str()) : 0;
+    p.fullMove = p2.size() >= 6 ? std::atoi(p2[5].c_str()) : 1;
     assert(p.kingSq[WHITE] != -1 && p.kingSq[BLACK] != -1);
     return p;
 }

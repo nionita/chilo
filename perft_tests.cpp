@@ -197,8 +197,104 @@ int testCastlingRightsUpdates() {
     return 0;
 }
 
+int testFENCounters() {
+    std::cout << "Test 7: FEN Counter Parsing Test\n";
+
+    Position p = parseFEN("7k/8/8/8/8/8/8/7K w - - 17 42");
+    if (p.halfMove != 17 || p.fullMove != 42) {
+        std::cout << "  FAIL (expected halfMove=17 fullMove=42, got "
+                  << p.halfMove << " and " << p.fullMove << ")\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
+int testLegalMoveAndTerminalHelpers() {
+    std::cout << "Test 8: Legal Move / Terminal Helpers Test\n";
+
+    Position mate = parseFEN("7k/6Q1/6K1/8/8/8/8/8 b - - 3 57");
+    Position stalemate = parseFEN("7k/5Q2/6K1/8/8/8/8/8 b - - 8 34");
+
+    Move moves[MAX_MOVES];
+    int mateMoves = genLegalMoves(mate, moves);
+    int staleMoves = genLegalMoves(stalemate, moves);
+
+    if (mateMoves != 0 || !isCheckmate(mate) || isStalemate(mate)) {
+        std::cout << "  FAIL (checkmate helpers incorrect)\n";
+        return 1;
+    }
+    if (staleMoves != 0 || isCheckmate(stalemate) || !isStalemate(stalemate)) {
+        std::cout << "  FAIL (stalemate helpers incorrect)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
+int testUCIMoveHelpers() {
+    std::cout << "Test 9: UCI Move Helper Test\n";
+
+    Position p = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    Move move;
+    if (!parseUCIMove(p, "e2e4", move)) {
+        std::cout << "  FAIL (could not parse legal move e2e4)\n";
+        return 1;
+    }
+    if (!applyUCIMove(p, "e2e4")) {
+        std::cout << "  FAIL (could not apply legal move e2e4)\n";
+        return 1;
+    }
+    if (!hasPiece(p, 28, W_PAWN) || pieceAt(p, 12) != EMPTY || p.sideToMove != BLACK) {
+        std::cout << "  FAIL (position after e2e4 is incorrect)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
+int testEvaluation() {
+    std::cout << "Test 10: Evaluation Test\n";
+
+    Position start = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    Position whiteBetter = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
+    Position blackWorseToMove = parseFEN("4k3/8/8/8/8/8/8/3QK3 b - - 0 1");
+
+    if (evaluate(start) != 0) {
+        std::cout << "  FAIL (starting position should evaluate to 0)\n";
+        return 1;
+    }
+    if (evaluate(whiteBetter) <= 0 || evaluate(blackWorseToMove) >= 0) {
+        std::cout << "  FAIL (evaluation sign is inconsistent with side to move)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
+int testSearchPrefersWinningCapture() {
+    std::cout << "Test 11: Search Prefers Winning Capture Test\n";
+
+    Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
+    SearchLimits limits{1, 0};
+    SearchResult result = searchBestMove(p, limits);
+
+    if (!result.hasMove || moveToUCI(result.bestMove) != "e1e2") {
+        std::cout << "  FAIL (expected best move e1e2, got "
+                  << (result.hasMove ? moveToUCI(result.bestMove) : std::string("0000")) << ")\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int main() {
-    std::cout << "=== Color/Side-to-Move Bug Tests ===\n\n";
+    std::cout << "=== Engine Regression Tests ===\n\n";
     
     int failures = 0;
     failures += testMirrorPositions();
@@ -207,6 +303,11 @@ int main() {
     failures += testCastlingRights();
     failures += testCheckDetection();
     failures += testCastlingRightsUpdates();
+    failures += testFENCounters();
+    failures += testLegalMoveAndTerminalHelpers();
+    failures += testUCIMoveHelpers();
+    failures += testEvaluation();
+    failures += testSearchPrefersWinningCapture();
     
     std::cout << "\n=== Summary ===\n";
     if (failures == 0) std::cout << "All tests PASSED\n";

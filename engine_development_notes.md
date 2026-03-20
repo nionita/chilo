@@ -1,6 +1,6 @@
 # Engine Development Notes
 
-This project is a small chess perft driver used to validate move generation, debug legality issues, and measure search performance while the engine core evolves.
+This project started as a small chess perft driver used to validate move generation, debug legality issues, and measure search performance while the engine core evolved. It now also includes a minimal playable engine loop with static evaluation, alpha-beta search, and a UCI interface.
 
 ## Current Structure
 
@@ -9,6 +9,9 @@ This project is a small chess perft driver used to validate move generation, deb
 - `movegen.cpp`: pseudo-legal move generation
 - `make_unmake.cpp`: move execution and undo
 - `perft_lib.cpp`: perft and perft divide library logic
+- `eval.cpp`: static evaluation
+- `search.cpp`: iterative-deepening alpha-beta search
+- `chilo.cpp`: UCI engine front-end
 - `chess.h`: compatibility umbrella that includes `engine.h`
 - `chess_position.h`: stable position/types layer, FEN parsing, UCI formatting, and representation validation
 - `chess_tables.h`: stable precomputed attack-table layer, including magic constants and slider lookup setup
@@ -22,9 +25,9 @@ This project is a small chess perft driver used to validate move generation, deb
 
 The recommended build entry point is `make`.
 
-- `make`: optimized `perft` and `perft_tests` using `-O3 -DNDEBUG`
-- `make debug`: `perft_debug` and `perft_tests_debug` using `-O0 -g`
-- `make validate`: `perft_validate` and `perft_tests_validate` using `-O0 -g -DCHESS_VALIDATE_STATE`
+- `make`: optimized `perft`, `perft_tests`, and `chilo` using `-O3 -DNDEBUG`
+- `make debug`: `perft_debug`, `perft_tests_debug`, and `chilo_debug` using `-O0 -g`
+- `make validate`: `perft_validate`, `perft_tests_validate`, and `chilo_validate` using `-O0 -g -DCHESS_VALIDATE_STATE`
 
 `CHESS_VALIDATE_STATE` enables an expensive full-state restoration check after every `doMove()` / `undo()` pair. It is useful for debugging but not for benchmarking.
 
@@ -42,6 +45,24 @@ Capabilities:
 - divide output in UCI move format
 - elapsed wall-clock time for each reported depth
 - nodes-per-second (NPS) reporting
+
+UCI engine usage:
+
+```bash
+./chilo
+```
+
+Supported UCI commands:
+
+- `uci`
+- `isready`
+- `ucinewgame`
+- `position startpos moves ...`
+- `position fen <fen> moves ...`
+- `go depth N`
+- `go movetime N`
+- `stop`
+- `quit`
 
 Example:
 
@@ -94,6 +115,16 @@ After the bitboard and magic-bitboard work stabilized, the engine was split so f
 - `chess.h` remains as a compatibility include for existing entrypoints
 
 This is still a maintenance refactor, but it also establishes proper translation-unit boundaries for future engine work. The project no longer compiles each executable from a single implementation header; instead, the frontends link shared engine object files built from the new `.cpp` units.
+
+### First engine-play feature slice
+
+The next project step after the source split was to add a minimal engine loop without overcommitting to advanced search features. That slice now exists:
+
+- `eval.cpp` provides a cheap deterministic evaluation based on material and piece-square tables
+- `search.cpp` provides legal-move generation helpers, terminal-state detection, and iterative-deepening negamax alpha-beta search
+- `chilo.cpp` exposes the engine through a separate UCI binary so GUI integration does not interfere with the perft tools
+
+This is intentionally a baseline engine only. It does not yet include quiescence, a transposition table, repetition detection, or UCI options.
 
 ## Bitboard Migration Plan
 
@@ -174,6 +205,11 @@ Current regression checks in `perft_tests` pass for:
 - castling move generation counts
 - legal-move filtering through check detection
 - build/link correctness across multiple translation units through the shared engine object-file build
+- FEN halfmove/fullmove parsing
+- terminal-state helpers for checkmate and stalemate
+- UCI move parsing/application helpers
+- evaluation sign sanity
+- shallow search preference for an obvious winning capture
 
 Reference perft totals currently match for the standard positions already exercised by the existing tests, including:
 
@@ -194,3 +230,4 @@ The recent ray-table and pawn-table cleanup preserved correctness, but it did no
 - Use `make validate` only when chasing state-corruption or move-restoration bugs.
 - Treat perft node-count correctness as the gate before trusting any performance result.
 - Add new engine features as `.cpp` files behind `engine.h` unless a helper is intentionally tiny and performance-critical enough to justify `inline` header placement.
+- Use `./chilo` or `./chilo_validate` for UCI testing and shallow engine behavior checks.

@@ -1,13 +1,21 @@
-# Chilo Perft
+# Chilo
 
-Small chess perft driver and test suite used to validate move generation and measure search performance.
+Small chess engine project with:
+
+- a perft driver and diagnostics for move-generation validation
+- a minimal evaluation and alpha-beta search
+- a basic UCI engine binary for GUI integration
 
 ## Files
 
-- `chess.h`: chess position, move generation, move execution/undo, perft
+- `engine.h`: public engine API
+- `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, `perft_lib.cpp`: move-generation and perft core
+- `eval.cpp`: static evaluation
+- `search.cpp`: iterative-deepening alpha-beta search
+- `chilo.cpp`: UCI engine binary entry point
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
-- `perft_tests.cpp`: regression-style test program
+- `perft_tests.cpp`: regression-style test program for perft and engine helpers
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
 
@@ -28,6 +36,7 @@ This builds:
 - `perft`
 - `perft_diag`
 - `perft_tests`
+- `chilo`
 
 These targets use:
 
@@ -49,6 +58,7 @@ This builds:
 - `perft_debug`
 - `perft_diag_debug`
 - `perft_tests_debug`
+- `chilo_debug`
 
 These targets use:
 
@@ -70,6 +80,7 @@ This builds:
 - `perft_validate`
 - `perft_diag_validate`
 - `perft_tests_validate`
+- `chilo_validate`
 
 These targets use:
 
@@ -118,6 +129,34 @@ Examples:
 
 This is intended for isolating a bad subtree by comparing one branch at a time against a trusted reference.
 
+### UCI Engine
+
+Run the UCI engine:
+
+```bash
+./chilo
+```
+
+Supported commands:
+
+- `uci`
+- `isready`
+- `ucinewgame`
+- `position startpos moves ...`
+- `position fen <fen> moves ...`
+- `go depth N`
+- `go movetime N`
+- `stop`
+- `quit`
+
+Current engine behavior:
+
+- legal-move filtering on top of the existing pseudo-legal generator
+- material plus piece-square-table evaluation
+- iterative-deepening negamax alpha-beta
+- simple move ordering
+- no quiescence, transposition table, or UCI options yet
+
 ### Tests
 
 Run the optimized test binary:
@@ -146,3 +185,4 @@ make clean           # remove build artifacts
 - Use `perft` for benchmarking.
 - Use `perft_debug` for ordinary debugging.
 - Use `perft_validate` only when investigating `doMove()` / `undo()` state corruption or move-generation bugs.
+- Use `chilo` or `chilo_validate` when testing UCI integration or shallow playing strength.

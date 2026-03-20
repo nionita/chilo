@@ -1,14 +1,15 @@
-# Chess Engine Refactor Summary
+# Chess Engine Status Summary
 
 ## Goal
 
-The project started as a perft-focused move-generation testbed. Recent work expanded that into a small engine library layout so future functionality such as search, evaluation, and UCI support can be added without continuing to grow a monolithic implementation header.
+The project started as a perft-focused move-generation testbed. It now has a first playable-engine slice on top of that foundation: static evaluation, iterative-deepening alpha-beta search, and a basic UCI binary.
 
 Completed goals included:
 1. Implementing `perftDivide` to show individual move counts
 2. Finding and fixing move-generation and undo-state bugs with perft regression testing
 3. Adding assertions and full-state restoration checks
 4. Refactoring the engine into a small public API plus `.cpp` implementation files
+5. Adding a baseline evaluation/search/UCI path without disturbing the existing perft tools
 
 ## Instructions
 
@@ -16,6 +17,7 @@ Completed goals included:
 - Engine implementation has been split across `.cpp` files and linked into the CLI/test programs
 - `chess.h` remains only as a compatibility umbrella include
 - Perft correctness and state-restoration validation remain the primary regression gate
+- `chilo` is now the separate UCI executable for engine integration
 
 ## Discoveries
 
@@ -43,6 +45,9 @@ Completed goals included:
 - ✅ Split engine implementation into translation units: `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, `perft_lib.cpp`
 - ✅ Added `engine.h` as the declarations-only engine interface
 - ✅ Updated the `Makefile` to compile and link shared engine object files
+- ✅ Added `eval.cpp` with material + piece-square-table evaluation
+- ✅ Added `search.cpp` with legal-move helpers, terminal detection, and iterative-deepening alpha-beta
+- ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, `stop`, and `quit`
 
 ## Relevant files / directories
 
@@ -56,9 +61,12 @@ Completed goals included:
 ├── movegen.cpp            # move generation implementation
 ├── make_unmake.cpp        # doMove()/undo()
 ├── perft_lib.cpp          # perft()/perftDivide()
+├── eval.cpp               # Static evaluation
+├── search.cpp             # Search + legal move helpers
+├── chilo.cpp              # UCI engine binary
 ├── perft.cpp              # CLI for perft testing with divide option
 ├── perft_diag.cpp         # Divide/debug helper for drilling into specific move paths
-├── perft_tests.cpp        # Test suite for move generation and state restoration scenarios
+├── perft_tests.cpp        # Test suite for perft, legal-move helpers, eval, and shallow search scenarios
 └── engine_development_notes.md # Documentation of bugs found, fixes, structure, and performance notes
 ```
 
@@ -83,14 +91,18 @@ Completed goals included:
   - `movegen.cpp`
   - `make_unmake.cpp`
   - `perft_lib.cpp`
+  - `eval.cpp`
+  - `search.cpp`
 
-This means future engine features should normally be implemented as additional `.cpp` files behind `engine.h`, while the private headers can usually be ignored unless the task touches representation setup or attack-table internals.
+This means future engine features should normally be implemented as additional `.cpp` files behind `engine.h`, while the private headers can usually be ignored unless the task touches representation setup or attack-table internals. The separate `chilo` binary is now the right place for UCI/protocol-facing work.
 
 ## What's next
 
 Recent work moved the engine to a bitboard-first runtime with magic bitboards for sliders and then split the implementation into proper translation units so the project can grow beyond perft without relying on a monolithic implementation header.
 
 Potential areas for future work:
-- Performance optimization
-- Further stress testing with more complex positions
-- Adding UCI protocol support for chess engine integration
+- Quiescence search
+- Transposition table
+- Better move ordering
+- Richer evaluation
+- Stronger UCI support (`setoption`, clock controls beyond `movetime`)

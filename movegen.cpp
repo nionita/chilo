@@ -148,3 +148,58 @@ int genMoves(const Position& pos, Move* moves) {
 
     return count;
 }
+
+int genLegalMoves(const Position& pos, Move* moves) {
+    Move pseudoMoves[MAX_MOVES];
+    int pseudoCount = genMoves(pos, pseudoMoves);
+    int legalCount = 0;
+    Color us = pos.sideToMove;
+    Position tmp = pos;
+#ifdef CHESS_VALIDATE_STATE
+    Position startPos = pos;
+#endif
+    for (int i = 0; i < pseudoCount; i++) {
+        const Move& mv = pseudoMoves[i];
+        UndoState undoState;
+        doMove(tmp, mv, undoState);
+        if (!inCheck(tmp, us)) moves[legalCount++] = mv;
+        undo(tmp, mv, undoState);
+#ifdef CHESS_VALIDATE_STATE
+        assert(positionsEqual(startPos, tmp));
+#endif
+    }
+    return legalCount;
+}
+
+bool hasAnyLegalMove(const Position& pos) {
+    Move legalMoves[MAX_MOVES];
+    return genLegalMoves(pos, legalMoves) > 0;
+}
+
+bool isCheckmate(const Position& pos) {
+    return inCheck(pos, pos.sideToMove) && !hasAnyLegalMove(pos);
+}
+
+bool isStalemate(const Position& pos) {
+    return !inCheck(pos, pos.sideToMove) && !hasAnyLegalMove(pos);
+}
+
+bool parseUCIMove(const Position& pos, const std::string& uci, Move& outMove) {
+    Move legalMoves[MAX_MOVES];
+    int moveCount = genLegalMoves(pos, legalMoves);
+    for (int i = 0; i < moveCount; i++) {
+        if (moveToUCI(legalMoves[i]) == uci) {
+            outMove = legalMoves[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+bool applyUCIMove(Position& pos, const std::string& uci) {
+    Move mv;
+    if (!parseUCIMove(pos, uci, mv)) return false;
+    UndoState undoState;
+    doMove(pos, mv, undoState);
+    return true;
+}

@@ -1,21 +1,24 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic
 
-ENGINE_SRC := attack.cpp movegen.cpp make_unmake.cpp perft_lib.cpp
+ENGINE_SRC := attack.cpp movegen.cpp make_unmake.cpp perft_lib.cpp eval.cpp search.cpp
 ENGINE_OBJ := $(ENGINE_SRC:.cpp=.o)
+ENGINE_DEBUG_OBJ := $(ENGINE_SRC:.cpp=.debug.o)
+ENGINE_VALIDATE_OBJ := $(ENGINE_SRC:.cpp=.validate.o)
 PERFT_SRC := perft.cpp
 PERFT_DIAG_SRC := perft_diag.cpp
 TEST_SRC := perft_tests.cpp
+CHILO_SRC := chilo.cpp
 
 .PHONY: all clean release debug validate tests tests-debug tests-validate
 
 all: release tests
 
-release: perft perft_diag perft_tests
+release: perft perft_diag perft_tests chilo
 
-debug: perft_debug perft_diag_debug perft_tests_debug
+debug: perft_debug perft_diag_debug perft_tests_debug chilo_debug
 
-validate: perft_validate perft_diag_validate perft_tests_validate
+validate: perft_validate perft_diag_validate perft_tests_validate chilo_validate
 
 tests: perft_tests
 
@@ -32,23 +35,32 @@ perft_diag: $(PERFT_DIAG_SRC) $(ENGINE_OBJ)
 perft_tests: $(TEST_SRC) $(ENGINE_OBJ)
 	$(CXX) $(CXXFLAGS) -O3 -DNDEBUG -o $@ $(TEST_SRC) $(ENGINE_OBJ)
 
-perft_debug: $(PERFT_SRC) attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o
-	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(PERFT_SRC) attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o
+chilo: $(CHILO_SRC) $(ENGINE_OBJ)
+	$(CXX) $(CXXFLAGS) -O3 -DNDEBUG -o $@ $(CHILO_SRC) $(ENGINE_OBJ)
 
-perft_diag_debug: $(PERFT_DIAG_SRC) attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o
-	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(PERFT_DIAG_SRC) attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o
+perft_debug: $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
 
-perft_tests_debug: $(TEST_SRC) attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o
-	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(TEST_SRC) attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o
+perft_diag_debug: $(PERFT_DIAG_SRC) $(ENGINE_DEBUG_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(PERFT_DIAG_SRC) $(ENGINE_DEBUG_OBJ)
 
-perft_validate: $(PERFT_SRC) attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o
-	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_SRC) attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o
+perft_tests_debug: $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
 
-perft_diag_validate: $(PERFT_DIAG_SRC) attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o
-	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_DIAG_SRC) attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o
+chilo_debug: $(CHILO_SRC) $(ENGINE_DEBUG_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(CHILO_SRC) $(ENGINE_DEBUG_OBJ)
 
-perft_tests_validate: $(TEST_SRC) attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o
-	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(TEST_SRC) attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o
+perft_validate: $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
+
+perft_diag_validate: $(PERFT_DIAG_SRC) $(ENGINE_VALIDATE_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_DIAG_SRC) $(ENGINE_VALIDATE_OBJ)
+
+perft_tests_validate: $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
+
+chilo_validate: $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ)
+	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ)
 
 %.o: %.cpp engine.h chess_position.h chess_tables.h
 	$(CXX) $(CXXFLAGS) -O3 -DNDEBUG -c -o $@ $<
@@ -60,4 +72,4 @@ perft_tests_validate: $(TEST_SRC) attack.validate.o movegen.validate.o make_unma
 	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -c -o $@ $<
 
 clean:
-	rm -f perft perft_diag perft_tests perft_debug perft_diag_debug perft_tests_debug perft_validate perft_diag_validate perft_tests_validate $(ENGINE_OBJ) attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o
+	rm -f perft perft_diag perft_tests chilo perft_debug perft_diag_debug perft_tests_debug chilo_debug perft_validate perft_diag_validate perft_tests_validate chilo_validate $(ENGINE_OBJ) $(ENGINE_DEBUG_OBJ) $(ENGINE_VALIDATE_OBJ)
