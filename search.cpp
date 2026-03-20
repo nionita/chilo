@@ -127,6 +127,8 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     bool inCheckNow = inCheck(pos, pos.sideToMove);
     int standPat = 0;
 
+    // Stand pat is only valid when we are not in check. In check, QS must search
+    // all legal evasions and cannot rely on static eval for pruning.
     if (!inCheckNow) {
         standPat = evaluate(pos);
         if (standPat >= beta) return beta;
@@ -137,6 +139,8 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     int moveCount = genLegalMoves(pos, moves);
     if (moveCount == 0) return terminalScore(pos, ply);
 
+    // Outside check, QS only searches noisy continuations. In check, the full
+    // legal evasion set stays in the list and capture evasions are ordered first.
     if (!inCheckNow) {
         int noisyCount = 0;
         for (int i = 0; i < moveCount; i++) {
@@ -193,6 +197,8 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, uint64_t& 
 
         if (shouldStop()) return alpha;
         if (score > alpha) {
+            // When a move improves alpha, rebuild this ply's PV by prepending the
+            // current move to the child PV we just searched.
             alpha = score;
             pvTable[ply][0] = move;
             for (int j = 0; j < pvLength[ply + 1]; j++) pvTable[ply][j + 1] = pvTable[ply + 1][j];
@@ -233,6 +239,8 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     Move pvTable[MAX_SEARCH_DEPTH + 1][MAX_SEARCH_DEPTH];
     int pvLength[MAX_SEARCH_DEPTH + 1] = {};
 
+    // Iterative deepening keeps the search usable under time control and gives us
+    // a stable best move / PV to report after every completed depth.
     for (int depth = 1; depth <= maxDepth; depth++) {
         if (shouldStop()) break;
 

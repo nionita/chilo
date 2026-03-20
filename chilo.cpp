@@ -28,6 +28,7 @@ void printSearchInfo(const SearchResult& result, void*) {
     std::cout << "info depth " << result.depth
               << " score cp " << result.score
               << " nodes " << result.nodes
+              << " time " << result.elapsedMs
               << " nps " << nps;
     if (result.pvLength > 0) {
         std::cout << " pv";
@@ -103,7 +104,7 @@ int main() {
         const std::string& command = tokens[0];
         if (command == "uci") {
             std::cout << "id name Chilo\n";
-            std::cout << "id author OpenAI Codex\n";
+            std::cout << "id author Nicu Ionita, Codex & Kilo\n";
             std::cout << "uciok\n";
             std::cout.flush();
         } else if (command == "isready") {
