@@ -65,7 +65,7 @@ static const int bishopShifts[64] = {
 59, 59, 59, 59, 59, 59, 59, 59, 58, 59, 59, 59, 59, 59, 59, 58,
 };
 
-uint64_t bishopMask(int sq) {
+inline uint64_t bishopMask(int sq) {
     uint64_t mask = 0;
     int r = R(sq), f = F(sq);
     for (int nr = r + 1, nf = f + 1; nr <= 6 && nf <= 6; ++nr, ++nf) mask |= bitAt(nr * 8 + nf);
@@ -75,7 +75,7 @@ uint64_t bishopMask(int sq) {
     return mask;
 }
 
-uint64_t rookMask(int sq) {
+inline uint64_t rookMask(int sq) {
     uint64_t mask = 0;
     int r = R(sq), f = F(sq);
     for (int nr = r + 1; nr <= 6; ++nr) mask |= bitAt(nr * 8 + f);
@@ -85,7 +85,7 @@ uint64_t rookMask(int sq) {
     return mask;
 }
 
-uint64_t bishopAttacksOnTheFly(int sq, uint64_t occ) {
+inline uint64_t bishopAttacksOnTheFly(int sq, uint64_t occ) {
     uint64_t attacks = 0;
     int r = R(sq), f = F(sq);
     for (int nr = r + 1, nf = f + 1; nr <= 7 && nf <= 7; ++nr, ++nf) {
@@ -111,7 +111,7 @@ uint64_t bishopAttacksOnTheFly(int sq, uint64_t occ) {
     return attacks;
 }
 
-uint64_t rookAttacksOnTheFly(int sq, uint64_t occ) {
+inline uint64_t rookAttacksOnTheFly(int sq, uint64_t occ) {
     uint64_t attacks = 0;
     int r = R(sq), f = F(sq);
     for (int nr = r + 1; nr <= 7; ++nr) {
@@ -137,7 +137,7 @@ uint64_t rookAttacksOnTheFly(int sq, uint64_t occ) {
     return attacks;
 }
 
-uint64_t setOccupancy(int index, int bits, uint64_t mask) {
+inline uint64_t setOccupancy(int index, int bits, uint64_t mask) {
     uint64_t occ = 0;
     for (int i = 0; i < bits; ++i) {
         int sq = __builtin_ctzll(mask);
@@ -147,7 +147,7 @@ uint64_t setOccupancy(int index, int bits, uint64_t mask) {
     return occ;
 }
 
-AttackTables makeAttackTables() {
+inline AttackTables makeAttackTables() {
     AttackTables t = {};
     for (int color = 0; color < 2; color++) {
         for (int sq = 0; sq < 64; sq++) {
@@ -198,19 +198,19 @@ AttackTables makeAttackTables() {
     return t;
 }
 
-const AttackTables& attackTables() {
+inline const AttackTables& attackTables() {
     static const AttackTables tables = makeAttackTables();
     return tables;
 }
 
-uint64_t rookAttacks(int sq, uint64_t occ) {
+inline uint64_t rookAttacks(int sq, uint64_t occ) {
     const AttackTables& tables = attackTables();
     uint64_t masked = occ & tables.rookMasks[sq];
     int idx = int((masked * rookMagics[sq]) >> rookShifts[sq]);
     return tables.rookAttacks[sq][idx];
 }
 
-uint64_t bishopAttacks(int sq, uint64_t occ) {
+inline uint64_t bishopAttacks(int sq, uint64_t occ) {
     const AttackTables& tables = attackTables();
     uint64_t masked = occ & tables.bishopMasks[sq];
     int idx = int((masked * bishopMagics[sq]) >> bishopShifts[sq]);

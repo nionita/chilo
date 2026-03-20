@@ -37,13 +37,13 @@ struct Position {
     uint64_t occupancyAll;
 };
 
-int R(int s) { return s >> 3; }
-int F(int s) { return s & 7; }
-uint64_t bitAt(int sq) {
+inline int R(int s) { return s >> 3; }
+inline int F(int s) { return s & 7; }
+inline uint64_t bitAt(int sq) {
     assert(sq >= 0 && sq < 64);
     return 1ULL << sq;
 }
-int pt(Piece p) {
+inline int pt(Piece p) {
     if (p == EMPTY) return 0;
     if (p == W_PAWN || p == B_PAWN) return 1;
     if (p == W_KNIGHT || p == B_KNIGHT) return 2;
@@ -52,22 +52,22 @@ int pt(Piece p) {
     if (p == W_QUEEN || p == B_QUEEN) return 5;
     return 6;
 }
-bool wh(Piece p) { return p >= W_PAWN && p <= W_KING; }
-bool bl(Piece p) { return p >= B_PAWN && p <= B_KING; }
-bool sameCol(Piece a, Piece b) { return (wh(a) && wh(b)) || (bl(a) && bl(b)); }
-Color pieceColor(Piece p) { assert(p != EMPTY); return wh(p) ? WHITE : BLACK; }
-int pieceTypeIndex(Piece p) { assert(p != EMPTY); return pt(p) - 1; }
+inline bool wh(Piece p) { return p >= W_PAWN && p <= W_KING; }
+inline bool bl(Piece p) { return p >= B_PAWN && p <= B_KING; }
+inline bool sameCol(Piece a, Piece b) { return (wh(a) && wh(b)) || (bl(a) && bl(b)); }
+inline Color pieceColor(Piece p) { assert(p != EMPTY); return wh(p) ? WHITE : BLACK; }
+inline int pieceTypeIndex(Piece p) { assert(p != EMPTY); return pt(p) - 1; }
 
-Piece pieceAt(const Position& pos, int sq) {
+inline Piece pieceAt(const Position& pos, int sq) {
     assert(sq >= 0 && sq < 64);
     return pos.pieceAtSquare[sq];
 }
 
-bool hasPiece(const Position& pos, int sq, Piece pc) {
+inline bool hasPiece(const Position& pos, int sq, Piece pc) {
     return pieceAt(pos, sq) == pc;
 }
 
-void initPosition(Position& p) {
+inline void initPosition(Position& p) {
     for (int i = 0; i < 64; i++) p.pieceAtSquare[i] = EMPTY;
     for (int c = 0; c < 2; c++) {
         p.kingSq[c] = -1;
@@ -79,7 +79,7 @@ void initPosition(Position& p) {
     p.occupancyAll = 0;
 }
 
-void addPiece(Position& pos, int sq, Piece pc) {
+inline void addPiece(Position& pos, int sq, Piece pc) {
     assert(sq >= 0 && sq < 64);
     assert(pc != EMPTY);
     assert(pieceAt(pos, sq) == EMPTY);
@@ -92,7 +92,7 @@ void addPiece(Position& pos, int sq, Piece pc) {
     if (type == 5) pos.kingSq[color] = sq;
 }
 
-void removePiece(Position& pos, int sq) {
+inline void removePiece(Position& pos, int sq) {
     assert(sq >= 0 && sq < 64);
     Piece pc = pieceAt(pos, sq);
     assert(pc != EMPTY);
@@ -105,7 +105,7 @@ void removePiece(Position& pos, int sq) {
     if (type == 5) pos.kingSq[color] = -1;
 }
 
-void movePiece(Position& pos, int from, int to) {
+inline void movePiece(Position& pos, int from, int to) {
     assert(from >= 0 && from < 64);
     assert(to >= 0 && to < 64);
     Piece pc = pieceAt(pos, from);
@@ -123,7 +123,7 @@ void movePiece(Position& pos, int from, int to) {
     if (type == 5) pos.kingSq[color] = to;
 }
 
-bool bitboardsConsistent(const Position& pos) {
+inline bool bitboardsConsistent(const Position& pos) {
     uint64_t expectedPieces[2][PIECE_TYPE_COUNT] = {};
     uint64_t expectedOcc[2] = {};
     for (int sq = 0; sq < 64; sq++) {
@@ -147,7 +147,7 @@ bool bitboardsConsistent(const Position& pos) {
     return pos.occupancyAll == (pos.occupancy[WHITE] | pos.occupancy[BLACK]);
 }
 
-bool representationConsistent(const Position& pos) {
+inline bool representationConsistent(const Position& pos) {
     if (!bitboardsConsistent(pos)) return false;
     for (int color = 0; color < 2; color++) {
         int kingSq = pos.kingSq[color];
@@ -159,7 +159,7 @@ bool representationConsistent(const Position& pos) {
     return true;
 }
 
-bool positionsEqual(const Position& a, const Position& b) {
+inline bool positionsEqual(const Position& a, const Position& b) {
     for (int i = 0; i < 64; i++) if (a.pieceAtSquare[i] != b.pieceAtSquare[i]) return false;
     if (a.sideToMove != b.sideToMove) return false;
     for (int i = 0; i < 4; i++) if (a.castling[i] != b.castling[i]) return false;
@@ -177,21 +177,21 @@ bool positionsEqual(const Position& a, const Position& b) {
     return representationConsistent(a) && representationConsistent(b);
 }
 
-uint8_t packCastling(const Position& pos) {
+inline uint8_t packCastling(const Position& pos) {
     return (pos.castling[0] ? 1 : 0) |
            (pos.castling[1] ? 2 : 0) |
            (pos.castling[2] ? 4 : 0) |
            (pos.castling[3] ? 8 : 0);
 }
 
-void restoreCastling(Position& pos, uint8_t rights) {
+inline void restoreCastling(Position& pos, uint8_t rights) {
     pos.castling[0] = rights & 1;
     pos.castling[1] = rights & 2;
     pos.castling[2] = rights & 4;
     pos.castling[3] = rights & 8;
 }
 
-void clearCastlingForSquare(Position& pos, int sq) {
+inline void clearCastlingForSquare(Position& pos, int sq) {
     switch (sq) {
         case 0: pos.castling[1] = false; break;
         case 7: pos.castling[0] = false; break;
@@ -200,7 +200,7 @@ void clearCastlingForSquare(Position& pos, int sq) {
     }
 }
 
-Position parseFEN(const std::string& f) {
+inline Position parseFEN(const std::string& f) {
     Position p;
     initPosition(p);
     std::vector<std::string> p2;
@@ -250,7 +250,7 @@ Position parseFEN(const std::string& f) {
     return p;
 }
 
-std::string moveToUCI(const Move& mv) {
+inline std::string moveToUCI(const Move& mv) {
     std::string s;
     s += char('a' + F(mv.from));
     s += char('1' + R(mv.from));

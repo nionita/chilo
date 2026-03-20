@@ -1,18 +1,21 @@
-# Chess Perft Implementation Summary
+# Chess Engine Refactor Summary
 
 ## Goal
 
-The user has been implementing and debugging a chess perft (performance test) function to validate move generation. Goals included:
-1. Implementing perftDivide feature to show individual move counts at each depth
-2. Finding and fixing bugs in the chess engine's move generation
-3. Adding assertions to catch implicit assumptions and validate correctness
+The project started as a perft-focused move-generation testbed. Recent work expanded that into a small engine library layout so future functionality such as search, evaluation, and UCI support can be added without continuing to grow a monolithic implementation header.
+
+Completed goals included:
+1. Implementing `perftDivide` to show individual move counts
+2. Finding and fixing move-generation and undo-state bugs with perft regression testing
+3. Adding assertions and full-state restoration checks
+4. Refactoring the engine into a small public API plus `.cpp` implementation files
 
 ## Instructions
 
-- Implemented perftDivide wrapper function that iterates moves, executes each, calls perft(pos, d-1), and collects counts
-- Identified and fixed bugs in move generation by testing standard perft positions
-- Proposed and implemented assertions for implicit assumptions in the code
-- Implemented position equality assertion to verify doMove/undo restores position exactly
+- `engine.h` is now the public engine API header
+- Engine implementation has been split across `.cpp` files and linked into the CLI/test programs
+- `chess.h` remains only as a compatibility umbrella include
+- Perft correctness and state-restoration validation remain the primary regression gate
 
 ## Discoveries
 
@@ -37,23 +40,32 @@ The user has been implementing and debugging a chess perft (performance test) fu
 - ✅ All 5 standard perft positions now pass (depths 1-5)
 - ✅ Updated engine_development_notes.md with findings
 - ✅ Refactored stable engine code out of `chess.h` into private headers to keep active work focused
+- ✅ Split engine implementation into translation units: `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, `perft_lib.cpp`
+- ✅ Added `engine.h` as the declarations-only engine interface
+- ✅ Updated the `Makefile` to compile and link shared engine object files
 
 ## Relevant files / directories
 
 ```
 /home/nicu/Sources/chilo/
-├── chess.h                # Active engine path: attacked(), move generation, doMove/undo, perft
+├── engine.h               # Public engine API declarations
+├── chess.h                # Compatibility umbrella include for existing code
 ├── chess_position.h       # Stable position/types layer: Piece/Color/Move/UndoState/Position, helpers, FEN, UCI, validation
 ├── chess_tables.h         # Stable attack-table layer: knight/king/pawn tables, magic constants, magic lookup setup
+├── attack.cpp             # attacked(), inCheck()
+├── movegen.cpp            # move generation implementation
+├── make_unmake.cpp        # doMove()/undo()
+├── perft_lib.cpp          # perft()/perftDivide()
 ├── perft.cpp              # CLI for perft testing with divide option
 ├── perft_diag.cpp         # Divide/debug helper for drilling into specific move paths
 ├── perft_tests.cpp        # Test suite for move generation and state restoration scenarios
 └── engine_development_notes.md # Documentation of bugs found, fixes, structure, and performance notes
 ```
 
-## Header map
+## Interface map
 
-- `chess.h` is now intentionally the file to keep in-context for ongoing engine work.
+- `engine.h` is the main header to include for engine behavior.
+- `chess.h` is only a compatibility wrapper around `engine.h`.
 - `chess_position.h` contains code that is relatively stable:
   - core enums and structs
   - square/piece helpers
@@ -66,12 +78,17 @@ The user has been implementing and debugging a chess perft (performance test) fu
   - checked-in rook/bishop magic constants and shifts
   - attack-table construction
   - magic lookup helpers (`rookAttacks`, `bishopAttacks`)
+- Engine behavior now lives in `.cpp` files:
+  - `attack.cpp`
+  - `movegen.cpp`
+  - `make_unmake.cpp`
+  - `perft_lib.cpp`
 
-This means future performance/debug work will usually stay in `chess.h`, while the private headers can usually be ignored unless the task touches representation setup or attack-table internals.
+This means future engine features should normally be implemented as additional `.cpp` files behind `engine.h`, while the private headers can usually be ignored unless the task touches representation setup or attack-table internals.
 
 ## What's next
 
-Recent work moved the engine to a bitboard-first runtime with magic bitboards for sliders and then split stable code out of `chess.h` to keep the active engine file smaller.
+Recent work moved the engine to a bitboard-first runtime with magic bitboards for sliders and then split the implementation into proper translation units so the project can grow beyond perft without relying on a monolithic implementation header.
 
 Potential areas for future work:
 - Performance optimization

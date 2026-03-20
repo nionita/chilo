@@ -1,7 +1,8 @@
 #include "chess.h"
-#include <chrono>
 
-uint64_t perftDivide(Position& pos, int d);
+#include <chrono>
+#include <iostream>
+#include <string>
 
 uint64_t computeNps(uint64_t nodes, double seconds) {
     return seconds > 0.0 ? static_cast<uint64_t>(nodes / seconds) : 0;

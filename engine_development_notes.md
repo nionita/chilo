@@ -4,7 +4,12 @@ This project is a small chess perft driver used to validate move generation, deb
 
 ## Current Structure
 
-- `chess.h`: active engine path only, including attack detection, move generation, move execution/undo, and perft
+- `engine.h`: public engine interface for attack detection, move generation, move execution/undo, and perft
+- `attack.cpp`: attack detection and check queries
+- `movegen.cpp`: pseudo-legal move generation
+- `make_unmake.cpp`: move execution and undo
+- `perft_lib.cpp`: perft and perft divide library logic
+- `chess.h`: compatibility umbrella that includes `engine.h`
 - `chess_position.h`: stable position/types layer, FEN parsing, UCI formatting, and representation validation
 - `chess_tables.h`: stable precomputed attack-table layer, including magic constants and slider lookup setup
 - `perft.cpp`: CLI for running perft and perft divide
@@ -80,13 +85,15 @@ This keeps move making and debugging simple while shifting the hot path onto bit
 
 ### Source layout cleanup
 
-After the bitboard and magic-bitboard work stabilized, the engine was split so future work does not need to keep all stable code in context:
+After the bitboard and magic-bitboard work stabilized, the engine was split so future work does not need to keep all engine logic in a single header:
 
 - `chess_position.h` now holds the low-churn representation layer and helper utilities
 - `chess_tables.h` now holds the large, low-churn attack-table and magic-bitboard setup
-- `chess.h` now keeps the code that is still most likely to change: `attacked()`, move generation, `doMove()` / `undo()`, and perft
+- `engine.h` now declares the engine API used by frontends and tests
+- `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, and `perft_lib.cpp` now hold the engine implementation
+- `chess.h` remains as a compatibility include for existing entrypoints
 
-This is a maintenance refactor only. It preserves the single public include surface (`#include "chess.h"`) while reducing the amount of unrelated stable code that needs to be read during future optimization/debug sessions.
+This is still a maintenance refactor, but it also establishes proper translation-unit boundaries for future engine work. The project no longer compiles each executable from a single implementation header; instead, the frontends link shared engine object files built from the new `.cpp` units.
 
 ## Bitboard Migration Plan
 
@@ -149,6 +156,8 @@ The next measured pass targeted sliding move generation by replacing the old gen
 
 The next slider pass replaced both ray-based slider attack detection and slider move generation with magic-bitboard lookups using checked-in precomputed magic constants. The runtime tables are built once from those committed constants during static initialization. On the same reference FEN at depth 5, that change improved performance to `2.69737 s` / `33.344056M nps`, making it clearly faster than both the ray-scan path and the best recent pre-magic baseline.
 
+The next maintenance pass moved the mutable engine implementation out of headers into separate source files. `engine.h` now provides the public interface, while `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, and `perft_lib.cpp` contain the implementation used by `perft`, `perft_diag`, and tests. `chess_position.h` and `chess_tables.h` remain header-defined for their small helper functions, but those helpers are now explicitly `inline` so the project links cleanly across multiple translation units.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path
@@ -164,6 +173,7 @@ Current regression checks in `perft_tests` pass for:
 - basic en passant sanity
 - castling move generation counts
 - legal-move filtering through check detection
+- build/link correctness across multiple translation units through the shared engine object-file build
 
 Reference perft totals currently match for the standard positions already exercised by the existing tests, including:
 
@@ -183,3 +193,4 @@ The recent ray-table and pawn-table cleanup preserved correctness, but it did no
 - Use `make debug` when stepping through logic.
 - Use `make validate` only when chasing state-corruption or move-restoration bugs.
 - Treat perft node-count correctness as the gate before trusting any performance result.
+- Add new engine features as `.cpp` files behind `engine.h` unless a helper is intentionally tiny and performance-critical enough to justify `inline` header placement.

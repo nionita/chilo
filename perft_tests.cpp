@@ -1,5 +1,9 @@
 #include "chess.h"
 
+#include <cctype>
+#include <iostream>
+#include <string>
+
 std::string flipColors(const std::string& fen) {
     size_t space = fen.find(' ');
     std::string result = fen;
