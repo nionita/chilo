@@ -28,7 +28,9 @@ bool attacked(const Position& pos, int sq, Color att);
 bool inCheck(const Position& pos, Color col);
 
 int genMoves(const Position& pos, Move* moves);
+int genNoisyMoves(const Position& pos, Move* moves);
 int genLegalMoves(const Position& pos, Move* moves);
+int genLegalNoisyMoves(const Position& pos, Move* moves);
 bool hasAnyLegalMove(const Position& pos);
 bool isCheckmate(const Position& pos);
 bool isStalemate(const Position& pos);

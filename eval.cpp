@@ -74,19 +74,24 @@ constexpr int kingTable[64] = {
      20,  30,  10,   0,   0,  10,  30,  20
 };
 
+int popLsb(uint64_t& bits) {
+    assert(bits != 0);
+    int sq = __builtin_ctzll(bits);
+    bits &= bits - 1;
+    return sq;
+}
+
 int mirrorSquare(int sq) {
     return (7 - R(sq)) * 8 + F(sq);
 }
 
 int pieceBaseValue(Piece piece) {
-    switch (pt(piece)) {
-        case 1: return PAWN_VALUE;
-        case 2: return KNIGHT_VALUE;
-        case 3: return BISHOP_VALUE;
-        case 4: return ROOK_VALUE;
-        case 5: return QUEEN_VALUE;
-        default: return 0;
-    }
+    static constexpr int pieceValues[] = {
+        0,
+        PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0,
+        PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0
+    };
+    return pieceValues[piece];
 }
 
 int pieceSquareValue(Piece piece, int sq) {
@@ -108,9 +113,10 @@ int evaluate(const Position& pos) {
     int whiteScore = 0;
     int blackScore = 0;
 
-    for (int sq = 0; sq < 64; sq++) {
-        Piece piece = pieceAt(pos, sq);
-        if (piece == EMPTY) continue;
+    uint64_t occupied = pos.occupancyAll;
+    while (occupied) {
+        int sq = popLsb(occupied);
+        Piece piece = pos.pieceAtSquare[sq];
         int value = pieceBaseValue(piece) + pieceSquareValue(piece, sq);
         if (wh(piece)) whiteScore += value;
         else blackScore += value;

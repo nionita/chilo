@@ -276,8 +276,52 @@ int testEvaluation() {
     return 0;
 }
 
+int testLegalNoisyMoveGeneration() {
+    std::cout << "Test 11: Legal Noisy Move Generation Test\n";
+
+    {
+        Position promotion = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
+        Move noisyMoves[MAX_MOVES];
+        int noisyCount = genLegalNoisyMoves(promotion, noisyMoves);
+
+        if (noisyCount != 4) {
+            std::cout << "  FAIL (expected 4 quiet promotion moves, got " << noisyCount << ")\n";
+            return 1;
+        }
+        for (int i = 0; i < noisyCount; i++) {
+            if (moveToUCI(noisyMoves[i]).rfind("a7a8", 0) != 0) {
+                std::cout << "  FAIL (unexpected noisy promotion move " << moveToUCI(noisyMoves[i]) << ")\n";
+                return 1;
+            }
+        }
+    }
+
+    {
+        Position enPassant = parseFEN("7k/8/8/3pP3/8/8/8/K7 w - d6 0 1");
+        Move noisyMoves[MAX_MOVES];
+        int noisyCount = genLegalNoisyMoves(enPassant, noisyMoves);
+        bool foundEp = false;
+
+        for (int i = 0; i < noisyCount; i++) {
+            std::string uci = moveToUCI(noisyMoves[i]);
+            if (uci == "e5d6") foundEp = true;
+            if (uci == "e5e6" || uci == "a1a2") {
+                std::cout << "  FAIL (quiet move leaked into noisy move generation: " << uci << ")\n";
+                return 1;
+            }
+        }
+        if (!foundEp) {
+            std::cout << "  FAIL (expected en passant move e5d6 in noisy move generation)\n";
+            return 1;
+        }
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testSearchPrefersWinningCapture() {
-    std::cout << "Test 11: Search Prefers Winning Capture Test\n";
+    std::cout << "Test 12: Search Prefers Winning Capture Test\n";
 
     Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
     SearchLimits limits{1, 0, nullptr, nullptr};
@@ -294,7 +338,7 @@ int testSearchPrefersWinningCapture() {
 }
 
 int testSearchAvoidsPoisonedCapture() {
-    std::cout << "Test 12: Search Avoids Poisoned Capture Test\n";
+    std::cout << "Test 13: Search Avoids Poisoned Capture Test\n";
 
     Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
     SearchLimits limits{1, 0, nullptr, nullptr};
@@ -315,7 +359,7 @@ int testSearchAvoidsPoisonedCapture() {
 }
 
 int testMateScoreHelpers() {
-    std::cout << "Test 13: Mate Score Helper Test\n";
+    std::cout << "Test 14: Mate Score Helper Test\n";
 
     int mateInOne = SEARCH_MATE_SCORE - 1;
     int mateInTwo = SEARCH_MATE_SCORE - 3;
@@ -344,7 +388,7 @@ int testMateScoreHelpers() {
 }
 
 int testSearchFindsMateInOneForBothSides() {
-    std::cout << "Test 14: Search Finds Mate In One For Both Sides Test\n";
+    std::cout << "Test 15: Search Finds Mate In One For Both Sides Test\n";
 
     Position whiteToMove = parseFEN("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
     Position blackToMove = parseFEN("8/8/8/8/8/6k1/5q2/6K1 b - - 0 1");
@@ -380,6 +424,7 @@ int main() {
     failures += testLegalMoveAndTerminalHelpers();
     failures += testUCIMoveHelpers();
     failures += testEvaluation();
+    failures += testLegalNoisyMoveGeneration();
     failures += testSearchPrefersWinningCapture();
     failures += testSearchAvoidsPoisonedCapture();
     failures += testMateScoreHelpers();

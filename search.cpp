@@ -34,10 +34,6 @@ Piece capturedPieceForMove(const Position& pos, const Move& move) {
     return pieceAt(pos, move.to);
 }
 
-bool isNoisyMove(const Position& pos, const Move& move) {
-    return capturedPieceForMove(pos, move) != EMPTY || move.promotion != EMPTY;
-}
-
 int promotionGain(const Move& move) {
     if (move.promotion == EMPTY) return 0;
     return moveValueGuess(move.promotion) - moveValueGuess(W_PAWN);
@@ -135,19 +131,8 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     }
 
     Move moves[MAX_MOVES];
-    int moveCount = genLegalMoves(pos, moves);
-    if (moveCount == 0) return terminalScore(pos, ply);
-
-    // Outside check, QS only searches noisy continuations. In check, the full
-    // legal evasion set stays in the list and capture evasions are ordered first.
-    if (!inCheckNow) {
-        int noisyCount = 0;
-        for (int i = 0; i < moveCount; i++) {
-            if (isNoisyMove(pos, moves[i])) moves[noisyCount++] = moves[i];
-        }
-        moveCount = noisyCount;
-        if (moveCount == 0) return alpha;
-    }
+    int moveCount = inCheckNow ? genLegalMoves(pos, moves) : genLegalNoisyMoves(pos, moves);
+    if (moveCount == 0) return inCheckNow ? terminalScore(pos, ply) : alpha;
 
     orderQSMoves(pos, moves, moveCount);
 
