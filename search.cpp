@@ -67,9 +67,39 @@ int moveOrderScore(const Position& pos, const Move& move, const Move* preferredM
     return score;
 }
 
+int qsMoveOrderScore(const Position& pos, const Move& move) {
+    Piece movingPiece = pieceAt(pos, move.from);
+    Piece capturedPiece = capturedPieceForMove(pos, move);
+
+    if (capturedPiece != EMPTY) {
+        return 100000 + 10 * moveValueGuess(capturedPiece) - moveValueGuess(movingPiece) +
+               promotionGain(move);
+    }
+    if (move.promotion != EMPTY) return 50000 + moveValueGuess(move.promotion);
+    return 0;
+}
+
 void orderMoves(const Position& pos, Move* moves, int count, const Move* preferredMove) {
     int scores[MAX_MOVES];
     for (int i = 0; i < count; i++) scores[i] = moveOrderScore(pos, moves[i], preferredMove);
+
+    for (int i = 1; i < count; i++) {
+        Move move = moves[i];
+        int score = scores[i];
+        int j = i - 1;
+        while (j >= 0 && scores[j] < score) {
+            moves[j + 1] = moves[j];
+            scores[j + 1] = scores[j];
+            j--;
+        }
+        moves[j + 1] = move;
+        scores[j + 1] = score;
+    }
+}
+
+void orderQSMoves(const Position& pos, Move* moves, int count) {
+    int scores[MAX_MOVES];
+    for (int i = 0; i < count; i++) scores[i] = qsMoveOrderScore(pos, moves[i]);
 
     for (int i = 1; i < count; i++) {
         Move move = moves[i];
@@ -107,10 +137,19 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     int moveCount = genLegalMoves(pos, moves);
     if (moveCount == 0) return terminalScore(pos, ply);
 
+    if (!inCheckNow) {
+        int noisyCount = 0;
+        for (int i = 0; i < moveCount; i++) {
+            if (isNoisyMove(pos, moves[i])) moves[noisyCount++] = moves[i];
+        }
+        moveCount = noisyCount;
+        if (moveCount == 0) return alpha;
+    }
+
+    orderQSMoves(pos, moves, moveCount);
+
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
-        if (!inCheckNow && !isNoisyMove(pos, move)) continue;
-
         if (!inCheckNow) {
             Piece capturedPiece = capturedPieceForMove(pos, move);
             int gainUpperBound = standPat + moveValueGuess(capturedPiece) + promotionGain(move) + DELTA_MARGIN;
