@@ -3,19 +3,53 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <vector>
 
 namespace {
 
 constexpr int INF_SCORE = 30000;
 constexpr int DELTA_MARGIN = 200;
+constexpr int NULL_MOVE_REDUCTION = 2;
+constexpr int DEEP_NULL_MOVE_REDUCTION = 3;
+constexpr int LMR_BASE_MOVE_INDEX = 3;
+constexpr int LMR_DEEP_MOVE_INDEX = 8;
+constexpr int FUTILITY_MARGIN[3] = {0, 120, 320};
+constexpr std::size_t TT_SIZE = 1u << 20;
+
+enum TTFlag : uint8_t { TT_NONE, TT_EXACT, TT_LOWER, TT_UPPER };
+
+struct TTEntry {
+    uint64_t key = 0;
+    Move bestMove{};
+    int16_t score = 0;
+    uint8_t depth = 0;
+    uint8_t flag = TT_NONE;
+    uint8_t generation = 0;
+};
+
+struct NullMoveState {
+    int enPassant;
+    int halfMove;
+    int fullMove;
+    uint64_t hashKey;
+};
 
 std::atomic<bool> g_stopRequested{false};
 std::chrono::steady_clock::time_point g_deadline;
 bool g_useDeadline = false;
+std::vector<TTEntry> g_tt(TT_SIZE);
+uint8_t g_ttGeneration = 0;
+Move g_killers[MAX_SEARCH_DEPTH][2];
+int g_history[2][64][64] = {};
 
 bool movesEqual(const Move& a, const Move& b) {
     return a.from == b.from && a.to == b.to && a.promotion == b.promotion &&
            a.isEnPassant == b.isEnPassant && a.isCastle == b.isCastle && a.isDoublePush == b.isDoublePush;
+}
+
+bool isValidMove(const Move& move) {
+    return move.from != move.to || move.promotion != EMPTY || move.isEnPassant || move.isCastle || move.isDoublePush;
 }
 
 int moveValueGuess(Piece piece) {
@@ -34,6 +68,18 @@ Piece capturedPieceForMove(const Position& pos, const Move& move) {
     return pieceAt(pos, move.to);
 }
 
+bool isCaptureMove(const Position& pos, const Move& move) {
+    return capturedPieceForMove(pos, move) != EMPTY;
+}
+
+bool isTacticalMove(const Position& pos, const Move& move) {
+    return isCaptureMove(pos, move) || move.promotion != EMPTY;
+}
+
+bool isQuietMove(const Position& pos, const Move& move) {
+    return !isTacticalMove(pos, move) && !move.isCastle;
+}
+
 int promotionGain(const Move& move) {
     if (move.promotion == EMPTY) return 0;
     return moveValueGuess(move.promotion) - moveValueGuess(W_PAWN);
@@ -48,16 +94,119 @@ bool shouldStop() {
     return false;
 }
 
-int moveOrderScore(const Position& pos, const Move& move, const Move* preferredMove) {
+bool hasNonPawnMaterial(const Position& pos, Color side) {
+    return pos.pieceBitboards[side][pieceTypeIndex(side == WHITE ? W_KNIGHT : B_KNIGHT)] != 0 ||
+           pos.pieceBitboards[side][pieceTypeIndex(side == WHITE ? W_BISHOP : B_BISHOP)] != 0 ||
+           pos.pieceBitboards[side][pieceTypeIndex(side == WHITE ? W_ROOK : B_ROOK)] != 0 ||
+           pos.pieceBitboards[side][pieceTypeIndex(side == WHITE ? W_QUEEN : B_QUEEN)] != 0;
+}
+
+void doNullMove(Position& pos, NullMoveState& state) {
+    state.enPassant = pos.enPassant;
+    state.halfMove = pos.halfMove;
+    state.fullMove = pos.fullMove;
+    state.hashKey = pos.hashKey;
+
+    pos.hashKey ^= enPassantHash(pos.enPassant);
+    pos.enPassant = -1;
+    pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
+    pos.halfMove++;
+    if (pos.sideToMove == WHITE) pos.fullMove++;
+    pos.hashKey ^= sideToMoveHash();
+}
+
+void undoNullMove(Position& pos, const NullMoveState& state) {
+    pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
+    pos.enPassant = state.enPassant;
+    pos.halfMove = state.halfMove;
+    pos.fullMove = state.fullMove;
+    pos.hashKey = state.hashKey;
+}
+
+int scoreToTT(int score, int ply) {
+    if (score > SEARCH_MATE_THRESHOLD) return score + ply;
+    if (score < -SEARCH_MATE_THRESHOLD) return score - ply;
+    return score;
+}
+
+int scoreFromTT(int score, int ply) {
+    if (score > SEARCH_MATE_THRESHOLD) return score - ply;
+    if (score < -SEARCH_MATE_THRESHOLD) return score + ply;
+    return score;
+}
+
+TTEntry& ttEntry(uint64_t key) {
+    return g_tt[key & (TT_SIZE - 1)];
+}
+
+bool probeTT(uint64_t key, int depth, int ply, int alpha, int beta, Move& bestMove, int& score) {
+    const TTEntry& entry = ttEntry(key);
+    if (entry.key != key) return false;
+    if (isValidMove(entry.bestMove)) bestMove = entry.bestMove;
+    if (entry.depth < depth) return false;
+
+    score = scoreFromTT(entry.score, ply);
+    if (entry.flag == TT_EXACT) return true;
+    if (entry.flag == TT_LOWER && score >= beta) return true;
+    if (entry.flag == TT_UPPER && score <= alpha) return true;
+    return false;
+}
+
+void storeTT(uint64_t key, int depth, int ply, int score, TTFlag flag, const Move& bestMove) {
+    TTEntry& entry = ttEntry(key);
+    if (entry.key != key &&
+        entry.key != 0 &&
+        entry.generation == g_ttGeneration &&
+        entry.depth > depth) {
+        return;
+    }
+
+    entry.key = key;
+    entry.bestMove = bestMove;
+    entry.score = static_cast<int16_t>(scoreToTT(score, ply));
+    entry.depth = static_cast<uint8_t>(std::max(depth, 0));
+    entry.flag = flag;
+    entry.generation = g_ttGeneration;
+}
+
+void clearSearchHeuristics() {
+    for (int ply = 0; ply < MAX_SEARCH_DEPTH; ply++) {
+        g_killers[ply][0] = Move{};
+        g_killers[ply][1] = Move{};
+    }
+    for (int color = 0; color < 2; color++) {
+        for (int from = 0; from < 64; from++) {
+            for (int to = 0; to < 64; to++) g_history[color][from][to] = 0;
+        }
+    }
+}
+
+void noteQuietBetaCutoff(Color side, int ply, const Move& move, int depth) {
+    if (ply < MAX_SEARCH_DEPTH && !movesEqual(move, g_killers[ply][0])) {
+        g_killers[ply][1] = g_killers[ply][0];
+        g_killers[ply][0] = move;
+    }
+
+    int& history = g_history[side][move.from][move.to];
+    history += depth * depth;
+    if (history > 1000000) history = 1000000;
+}
+
+int moveOrderScore(const Position& pos, const Move& move, const Move* preferredMove, int ply) {
     if (preferredMove != nullptr && movesEqual(move, *preferredMove)) return 1000000;
 
     int score = 0;
     Piece movingPiece = pieceAt(pos, move.from);
-    Piece capturedPiece = move.isEnPassant
-                              ? (pos.sideToMove == WHITE ? B_PAWN : W_PAWN)
-                              : pieceAt(pos, move.to);
+    Piece capturedPiece = capturedPieceForMove(pos, move);
     if (capturedPiece != EMPTY) score += 100000 + 10 * moveValueGuess(capturedPiece) - moveValueGuess(movingPiece);
     if (move.promotion != EMPTY) score += 50000 + moveValueGuess(move.promotion);
+
+    if (isQuietMove(pos, move)) {
+        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][0])) score += 40000;
+        else if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][1])) score += 35000;
+        score += std::min(g_history[pos.sideToMove][move.from][move.to], 30000);
+    }
+
     if (move.isCastle) score += 1000;
     return score;
 }
@@ -74,9 +223,9 @@ int qsMoveOrderScore(const Position& pos, const Move& move) {
     return 0;
 }
 
-void orderMoves(const Position& pos, Move* moves, int count, const Move* preferredMove) {
+void orderMoves(const Position& pos, Move* moves, int count, const Move* preferredMove, int ply) {
     int scores[MAX_MOVES];
-    for (int i = 0; i < count; i++) scores[i] = moveOrderScore(pos, moves[i], preferredMove);
+    for (int i = 0; i < count; i++) scores[i] = moveOrderScore(pos, moves[i], preferredMove, ply);
 
     for (int i = 1; i < count; i++) {
         Move move = moves[i];
@@ -122,8 +271,6 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     bool inCheckNow = inCheck(pos, pos.sideToMove);
     int standPat = 0;
 
-    // Stand pat is only valid when we are not in check. In check, QS must search
-    // all legal evasions and cannot rely on static eval for pruning.
     if (!inCheckNow) {
         standPat = evaluate(pos);
         if (standPat >= beta) return beta;
@@ -157,40 +304,106 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     return alpha;
 }
 
-int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, uint64_t& nodes,
-              Move pvTable[MAX_SEARCH_DEPTH][MAX_SEARCH_DEPTH], int pvLength[MAX_SEARCH_DEPTH]) {
+int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv, bool allowNull,
+              uint64_t& nodes, Move pvTable[MAX_SEARCH_DEPTH][MAX_SEARCH_DEPTH],
+              int pvLength[MAX_SEARCH_DEPTH]) {
     pvLength[ply] = 0;
     if (shouldStop()) return evaluate(pos);
-
-    if (depth == 0) return quiescence(pos, ply, alpha, beta, nodes);
+    if (depth <= 0) return quiescence(pos, ply, alpha, beta, nodes);
 
     nodes++;
+    const int alphaOriginal = alpha;
+    const bool inCheckNow = inCheck(pos, pos.sideToMove);
+
+    Move ttMove{};
+    int ttScore = 0;
+    if (!isPv && probeTT(pos.hashKey, depth, ply, alpha, beta, ttMove, ttScore)) return ttScore;
+
+    if (allowNull && !isPv && !inCheckNow && depth >= 3 && hasNonPawnMaterial(pos, pos.sideToMove)) {
+        NullMoveState nullState;
+        doNullMove(pos, nullState);
+        int reduction = depth >= 6 ? DEEP_NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION;
+        int score = -alphaBeta(pos, depth - 1 - reduction, ply + 1, -beta, -beta + 1,
+                               false, false, nodes, pvTable, pvLength);
+        undoNullMove(pos, nullState);
+        if (shouldStop()) return alpha;
+        if (score >= beta) {
+            storeTT(pos.hashKey, depth, ply, beta, TT_LOWER, ttMove);
+            return beta;
+        }
+    }
 
     Move moves[MAX_MOVES];
     int moveCount = genLegalMoves(pos, moves);
     if (moveCount == 0) return terminalScore(pos, ply);
 
-    orderMoves(pos, moves, moveCount, nullptr);
+    orderMoves(pos, moves, moveCount, isValidMove(ttMove) ? &ttMove : nullptr, ply);
+
+    Move bestMove = moves[0];
+    int staticEval = 0;
+    bool allowFutility = !isPv && !inCheckNow && depth <= 2;
+    if (allowFutility) staticEval = evaluate(pos);
 
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
+        bool quiet = isQuietMove(pos, move);
+
         UndoState undoState;
         doMove(pos, move, undoState);
-        int score = -alphaBeta(pos, depth - 1, ply + 1, -beta, -alpha, nodes, pvTable, pvLength);
+        bool givesCheck = inCheck(pos, pos.sideToMove);
+
+        if (allowFutility && i > 0 && quiet && !givesCheck &&
+            staticEval + FUTILITY_MARGIN[depth] <= alpha) {
+            undo(pos, move, undoState);
+            continue;
+        }
+
+        int score = 0;
+        int fullDepth = depth - 1;
+        int searchDepth = fullDepth;
+        bool reduced = false;
+
+        if (!isPv && !inCheckNow && !givesCheck && quiet && depth >= 3 && i >= LMR_BASE_MOVE_INDEX) {
+            int reduction = (depth >= 5 && i >= LMR_DEEP_MOVE_INDEX) ? 2 : 1;
+            if (searchDepth - reduction > 0) {
+                searchDepth -= reduction;
+                reduced = true;
+            }
+        }
+
+        if (i == 0) {
+            score = -alphaBeta(pos, fullDepth, ply + 1, -beta, -alpha, isPv, true, nodes, pvTable, pvLength);
+        } else {
+            score = -alphaBeta(pos, searchDepth, ply + 1, -alpha - 1, -alpha,
+                               false, true, nodes, pvTable, pvLength);
+            if (score > alpha && reduced) {
+                score = -alphaBeta(pos, fullDepth, ply + 1, -alpha - 1, -alpha,
+                                   false, true, nodes, pvTable, pvLength);
+            }
+            if (score > alpha) {
+                score = -alphaBeta(pos, fullDepth, ply + 1, -beta, -alpha,
+                                   isPv, true, nodes, pvTable, pvLength);
+            }
+        }
         undo(pos, move, undoState);
 
         if (shouldStop()) return alpha;
         if (score > alpha) {
-            // When a move improves alpha, rebuild this ply's PV by prepending the
-            // current move to the child PV we just searched.
             alpha = score;
+            bestMove = move;
             pvTable[ply][0] = move;
             for (int j = 0; j < pvLength[ply + 1]; j++) pvTable[ply][j + 1] = pvTable[ply + 1][j];
             pvLength[ply] = pvLength[ply + 1] + 1;
         }
-        if (score >= beta) return beta;
+        if (score >= beta) {
+            if (quiet) noteQuietBetaCutoff(pos.sideToMove, ply, move, depth);
+            storeTT(pos.hashKey, depth, ply, beta, TT_LOWER, move);
+            return beta;
+        }
     }
 
+    TTFlag flag = alpha > alphaOriginal ? TT_EXACT : TT_UPPER;
+    storeTT(pos.hashKey, depth, ply, alpha, flag, bestMove);
     return alpha;
 }
 
@@ -201,6 +414,9 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_useDeadline = limits.movetimeMs > 0;
     if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
     auto startTime = std::chrono::steady_clock::now();
+
+    if (++g_ttGeneration == 0) g_ttGeneration = 1;
+    clearSearchHeuristics();
 
     SearchResult result{{0, 0, EMPTY, false, false, false}, {}, 0, 0, 0, 0, 0, true, false};
 
@@ -223,14 +439,12 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     Move pvTable[MAX_SEARCH_DEPTH + 1][MAX_SEARCH_DEPTH];
     int pvLength[MAX_SEARCH_DEPTH + 1] = {};
 
-    // Iterative deepening keeps the search usable under time control and gives us
-    // a stable best move / PV to report after every completed depth.
     for (int depth = 1; depth <= maxDepth; depth++) {
         if (shouldStop()) break;
 
         Move iterationMoves[MAX_MOVES];
         for (int i = 0; i < rootCount; i++) iterationMoves[i] = rootMoves[i];
-        orderMoves(pos, iterationMoves, rootCount, &preferredMove);
+        orderMoves(pos, iterationMoves, rootCount, &preferredMove, 0);
 
         int alpha = -INF_SCORE;
         int beta = INF_SCORE;
@@ -245,7 +459,18 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             const Move& move = iterationMoves[i];
             UndoState undoState;
             doMove(pos, move, undoState);
-            int score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, iterationNodes, pvTable, pvLength);
+            int score;
+            if (i == 0) {
+                score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true,
+                                   iterationNodes, pvTable, pvLength);
+            } else {
+                score = -alphaBeta(pos, depth - 1, 1, -alpha - 1, -alpha, false, true,
+                                   iterationNodes, pvTable, pvLength);
+                if (score > alpha) {
+                    score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true,
+                                       iterationNodes, pvTable, pvLength);
+                }
+            }
             undo(pos, move, undoState);
 
             if (shouldStop()) {
@@ -281,6 +506,8 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                                std::chrono::steady_clock::now() - startTime)
                                .count();
         result.completed = true;
+
+        storeTT(pos.hashKey, depth, 0, bestScore, TT_EXACT, bestMove);
 
         if (limits.infoCallback != nullptr) limits.infoCallback(result, limits.infoUserData);
     }

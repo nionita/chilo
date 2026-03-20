@@ -137,7 +137,7 @@ The next project step after the source split was to add a minimal engine loop wi
 - `search.cpp` provides legal-move generation helpers, terminal-state detection, and iterative-deepening negamax alpha-beta search
 - `chilo.cpp` exposes the engine through a separate UCI binary so GUI integration does not interfere with the perft tools
 
-This is intentionally a baseline engine only. It does not yet include quiescence, a transposition table, repetition detection, or UCI options.
+This is no longer just the baseline engine slice. It now includes quiescence search, a transposition table, improved move ordering, and several standard pruning/reduction heuristics, but it still does not include repetition detection or UCI options.
 
 ## Bitboard Migration Plan
 
@@ -203,6 +203,8 @@ The next slider pass replaced both ray-based slider attack detection and slider 
 The next maintenance pass moved the mutable engine implementation out of headers into separate source files. `engine.h` now provides the public interface, while `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, and `perft_lib.cpp` contain the implementation used by `perft`, `perft_diag`, and tests. `chess_position.h` and `chess_tables.h` remain header-defined for their small helper functions, but those helpers are now explicitly `inline` so the project links cleanly across multiple translation units.
 
 The next representation pass compacted `Move` from 16 bytes down to 4 bytes by shrinking `Piece` and `Color` to byte-sized enums and packing the move flags. A fixed-depth search benchmark against the previous commit used one warm-up plus five measured `go depth 6` runs on `startpos`, one middlegame, and one tactical position. That benchmark showed the compact move to be effectively neutral: about `+0.17%` NPS on `startpos`, `+1.43%` NPS on the middlegame, and `0%` on the tactical position. The change is therefore reasonable to keep for data compactness and future transposition-table work, but it should not be treated as a confirmed speed breakthrough on its own.
+
+The next search pass added incremental Zobrist hashing to `Position`, a fixed-size transposition table, killer/history quiet-move ordering, principal-variation search, null-move pruning, late-move reductions, and shallow futility pruning. Validation was extended with a hash round-trip test to ensure `doMove()` / `undo()` restore the hash exactly. A fixed-depth benchmark against commit `0a55c5d` on the default benchmark set showed much lower node counts and much faster time-to-depth: on `startpos` the engine time to depth 6 dropped from about `976 ms` to `10 ms`, and under `go movetime 1000` on `startpos` the completed depth improved from 5 to 13. These numbers should be interpreted as search-efficiency gains rather than NPS gains, since the newer search intentionally prunes far more nodes.
 
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 

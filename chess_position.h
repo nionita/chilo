@@ -45,6 +45,7 @@ struct UndoState {
     int enPassant;
     int halfMove;
     int fullMove;
+    uint64_t hashKey;
 };
 
 struct Position {
@@ -57,6 +58,7 @@ struct Position {
     uint64_t pieceBitboards[2][PIECE_TYPE_COUNT];
     uint64_t occupancy[2];
     uint64_t occupancyAll;
+    uint64_t hashKey;
 };
 
 inline int R(int s) { return s >> 3; }
@@ -64,6 +66,12 @@ inline int F(int s) { return s & 7; }
 inline uint64_t bitAt(int sq) {
     assert(sq >= 0 && sq < 64);
     return 1ULL << sq;
+}
+inline uint64_t splitmix64(uint64_t& state) {
+    uint64_t result = (state += 0x9e3779b97f4a7c15ULL);
+    result = (result ^ (result >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    result = (result ^ (result >> 27)) * 0x94d049bb133111ebULL;
+    return result ^ (result >> 31);
 }
 inline int pt(Piece p) {
     if (p == EMPTY) return 0;
@@ -79,6 +87,42 @@ inline bool bl(Piece p) { return p >= B_PAWN && p <= B_KING; }
 inline bool sameCol(Piece a, Piece b) { return (wh(a) && wh(b)) || (bl(a) && bl(b)); }
 inline Color pieceColor(Piece p) { assert(p != EMPTY); return wh(p) ? WHITE : BLACK; }
 inline int pieceTypeIndex(Piece p) { assert(p != EMPTY); return pt(p) - 1; }
+inline uint8_t packCastling(const Position& pos);
+inline bool hashConsistent(const Position& pos);
+
+struct ZobristTables {
+    uint64_t piece[13][64];
+    uint64_t castling[16];
+    uint64_t enPassantFile[8];
+    uint64_t sideToMove;
+};
+
+inline const ZobristTables& zobristTables() {
+    static const ZobristTables tables = [] {
+        ZobristTables t{};
+        uint64_t seed = 0x1f2e3d4c5b6a7988ULL;
+        for (int piece = 0; piece < 13; piece++) {
+            for (int sq = 0; sq < 64; sq++) t.piece[piece][sq] = splitmix64(seed);
+        }
+        for (int rights = 0; rights < 16; rights++) t.castling[rights] = splitmix64(seed);
+        for (int file = 0; file < 8; file++) t.enPassantFile[file] = splitmix64(seed);
+        t.sideToMove = splitmix64(seed);
+        return t;
+    }();
+    return tables;
+}
+
+inline uint64_t enPassantHash(int sq) {
+    return sq == -1 ? 0 : zobristTables().enPassantFile[F(sq)];
+}
+
+inline uint64_t castlingHash(uint8_t rights) {
+    return zobristTables().castling[rights];
+}
+
+inline uint64_t sideToMoveHash() {
+    return zobristTables().sideToMove;
+}
 
 inline Piece pieceAt(const Position& pos, int sq) {
     assert(sq >= 0 && sq < 64);
@@ -99,6 +143,7 @@ inline void initPosition(Position& p) {
         }
     }
     p.occupancyAll = 0;
+    p.hashKey = 0;
 }
 
 inline void addPiece(Position& pos, int sq, Piece pc) {
@@ -111,6 +156,7 @@ inline void addPiece(Position& pos, int sq, Piece pc) {
     pos.pieceBitboards[color][type] |= bitAt(sq);
     pos.occupancy[color] |= bitAt(sq);
     pos.occupancyAll |= bitAt(sq);
+    pos.hashKey ^= zobristTables().piece[pc][sq];
     if (type == 5) pos.kingSq[color] = sq;
 }
 
@@ -124,6 +170,7 @@ inline void removePiece(Position& pos, int sq) {
     pos.occupancy[color] &= ~bitAt(sq);
     pos.occupancyAll &= ~bitAt(sq);
     pos.pieceAtSquare[sq] = EMPTY;
+    pos.hashKey ^= zobristTables().piece[pc][sq];
     if (type == 5) pos.kingSq[color] = -1;
 }
 
@@ -142,6 +189,7 @@ inline void movePiece(Position& pos, int from, int to) {
     pos.pieceBitboards[color][type] ^= fromBit | toBit;
     pos.occupancy[color] ^= fromBit | toBit;
     pos.occupancyAll ^= fromBit | toBit;
+    pos.hashKey ^= zobristTables().piece[pc][from] ^ zobristTables().piece[pc][to];
     if (type == 5) pos.kingSq[color] = to;
 }
 
@@ -171,6 +219,7 @@ inline bool bitboardsConsistent(const Position& pos) {
 
 inline bool representationConsistent(const Position& pos) {
     if (!bitboardsConsistent(pos)) return false;
+    if (!hashConsistent(pos)) return false;
     for (int color = 0; color < 2; color++) {
         int kingSq = pos.kingSq[color];
         if (kingSq < 0 || kingSq >= 64) return false;
@@ -188,6 +237,7 @@ inline bool positionsEqual(const Position& a, const Position& b) {
     if (a.enPassant != b.enPassant) return false;
     if (a.halfMove != b.halfMove) return false;
     if (a.fullMove != b.fullMove) return false;
+    if (a.hashKey != b.hashKey) return false;
     if (a.kingSq[WHITE] != b.kingSq[WHITE] || a.kingSq[BLACK] != b.kingSq[BLACK]) return false;
     for (int color = 0; color < 2; color++) {
         if (a.occupancy[color] != b.occupancy[color]) return false;
@@ -211,6 +261,23 @@ inline void restoreCastling(Position& pos, uint8_t rights) {
     pos.castling[1] = rights & 2;
     pos.castling[2] = rights & 4;
     pos.castling[3] = rights & 8;
+}
+
+inline uint64_t computeHash(const Position& pos) {
+    uint64_t hash = 0;
+    const ZobristTables& zobrist = zobristTables();
+    for (int sq = 0; sq < 64; sq++) {
+        Piece piece = pos.pieceAtSquare[sq];
+        if (piece != EMPTY) hash ^= zobrist.piece[piece][sq];
+    }
+    hash ^= castlingHash(packCastling(pos));
+    hash ^= enPassantHash(pos.enPassant);
+    if (pos.sideToMove == BLACK) hash ^= sideToMoveHash();
+    return hash;
+}
+
+inline bool hashConsistent(const Position& pos) {
+    return pos.hashKey == computeHash(pos);
 }
 
 inline void clearCastlingForSquare(Position& pos, int sq) {
@@ -268,6 +335,7 @@ inline Position parseFEN(const std::string& f) {
     if (p2[3] != "-") p.enPassant = (p2[3][1] - '1') * 8 + (p2[3][0] - 'a');
     p.halfMove = p2.size() >= 5 ? std::atoi(p2[4].c_str()) : 0;
     p.fullMove = p2.size() >= 6 ? std::atoi(p2[5].c_str()) : 1;
+    p.hashKey = computeHash(p);
     assert(p.kingSq[WHITE] != -1 && p.kingSq[BLACK] != -1);
     return p;
 }

@@ -182,9 +182,11 @@ Current engine behavior:
 - compact 4-byte `Move` representation
 - material plus piece-square-table evaluation
 - iterative-deepening negamax alpha-beta
-- simple move ordering
+- transposition table with hash-based cutoffs and TT-move ordering
+- killer/history quiet-move ordering
+- PVS, null-move pruning, LMR, and shallow futility pruning
 - quiescence search with MVV-LVA ordering in QS
-- no transposition table or UCI options yet
+- no UCI options yet
 
 ### Tests
 

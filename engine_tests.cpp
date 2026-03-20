@@ -211,8 +211,34 @@ int testFENCounters() {
     return 0;
 }
 
+int testHashRoundTrip() {
+    std::cout << "Test 8: Hash Round-Trip Test\n";
+
+    Position p = parseFEN("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1");
+    Position start = p;
+    Move moves[MAX_MOVES];
+    int moveCount = genLegalMoves(p, moves);
+
+    for (int i = 0; i < moveCount; i++) {
+        UndoState undoState;
+        doMove(p, moves[i], undoState);
+        if (!hashConsistent(p)) {
+            std::cout << "  FAIL (hash became inconsistent after " << moveToUCI(moves[i]) << ")\n";
+            return 1;
+        }
+        undo(p, moves[i], undoState);
+        if (!positionsEqual(p, start)) {
+            std::cout << "  FAIL (position/hash was not restored after " << moveToUCI(moves[i]) << ")\n";
+            return 1;
+        }
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testLegalMoveAndTerminalHelpers() {
-    std::cout << "Test 8: Legal Move / Terminal Helpers Test\n";
+    std::cout << "Test 9: Legal Move / Terminal Helpers Test\n";
 
     Position mate = parseFEN("7k/6Q1/6K1/8/8/8/8/8 b - - 3 57");
     Position stalemate = parseFEN("7k/5Q2/6K1/8/8/8/8/8 b - - 8 34");
@@ -235,7 +261,7 @@ int testLegalMoveAndTerminalHelpers() {
 }
 
 int testUCIMoveHelpers() {
-    std::cout << "Test 9: UCI Move Helper Test\n";
+    std::cout << "Test 10: UCI Move Helper Test\n";
 
     Position p = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     Move move;
@@ -257,7 +283,7 @@ int testUCIMoveHelpers() {
 }
 
 int testEvaluation() {
-    std::cout << "Test 10: Evaluation Test\n";
+    std::cout << "Test 11: Evaluation Test\n";
 
     Position start = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     Position whiteBetter = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
@@ -277,7 +303,7 @@ int testEvaluation() {
 }
 
 int testLegalNoisyMoveGeneration() {
-    std::cout << "Test 11: Legal Noisy Move Generation Test\n";
+    std::cout << "Test 12: Legal Noisy Move Generation Test\n";
 
     {
         Position promotion = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
@@ -321,7 +347,7 @@ int testLegalNoisyMoveGeneration() {
 }
 
 int testSearchPrefersWinningCapture() {
-    std::cout << "Test 12: Search Prefers Winning Capture Test\n";
+    std::cout << "Test 13: Search Prefers Winning Capture Test\n";
 
     Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
     SearchLimits limits{1, 0, nullptr, nullptr};
@@ -338,7 +364,7 @@ int testSearchPrefersWinningCapture() {
 }
 
 int testSearchAvoidsPoisonedCapture() {
-    std::cout << "Test 13: Search Avoids Poisoned Capture Test\n";
+    std::cout << "Test 14: Search Avoids Poisoned Capture Test\n";
 
     Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
     SearchLimits limits{1, 0, nullptr, nullptr};
@@ -359,7 +385,7 @@ int testSearchAvoidsPoisonedCapture() {
 }
 
 int testMateScoreHelpers() {
-    std::cout << "Test 14: Mate Score Helper Test\n";
+    std::cout << "Test 15: Mate Score Helper Test\n";
 
     int mateInOne = SEARCH_MATE_SCORE - 1;
     int mateInTwo = SEARCH_MATE_SCORE - 3;
@@ -388,7 +414,7 @@ int testMateScoreHelpers() {
 }
 
 int testSearchFindsMateInOneForBothSides() {
-    std::cout << "Test 15: Search Finds Mate In One For Both Sides Test\n";
+    std::cout << "Test 16: Search Finds Mate In One For Both Sides Test\n";
 
     Position whiteToMove = parseFEN("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
     Position blackToMove = parseFEN("8/8/8/8/8/6k1/5q2/6K1 b - - 0 1");
@@ -421,6 +447,7 @@ int main() {
     failures += testCheckDetection();
     failures += testCastlingRightsUpdates();
     failures += testFENCounters();
+    failures += testHashRoundTrip();
     failures += testLegalMoveAndTerminalHelpers();
     failures += testUCIMoveHelpers();
     failures += testEvaluation();

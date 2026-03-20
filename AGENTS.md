@@ -47,6 +47,9 @@ Completed goals included:
 - ✅ Updated the `Makefile` to compile and link shared engine object files
 - ✅ Added `eval.cpp` with material + piece-square-table evaluation
 - ✅ Added `search.cpp` with legal-move helpers, terminal detection, and iterative-deepening alpha-beta
+- ✅ Added incremental Zobrist hashing to `Position` / `UndoState` for hash-based search features
+- ✅ Added a transposition table with TT-move ordering and mate-score normalization
+- ✅ Added killer/history move ordering, PVS, null-move pruning, LMR, and shallow futility pruning
 - ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, clock-based `go` limits, `stop`, and `quit`
 - ✅ Compacted `Move` from 16 bytes to 4 bytes while keeping the existing semantics and most call sites unchanged
 - ✅ Added `scripts/benchmark_fixed_depth.py` for repeatable fixed-depth UCI benchmarks between two engine binaries
@@ -106,8 +109,8 @@ This means future engine features should normally be implemented as additional `
 Recent work moved the engine to a bitboard-first runtime with magic bitboards for sliders and then split the implementation into proper translation units so the project can grow beyond perft without relying on a monolithic implementation header.
 
 Potential areas for future work:
-- Transposition table
-- Better main-search move ordering
+- SEE-based capture filtering / ordering
+- Repetition detection
 - Richer evaluation
 - Stronger UCI support (`setoption`, ponder, `go infinite`)
 - Windows debug/validate target parity if it becomes useful

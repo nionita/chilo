@@ -13,6 +13,10 @@ void doMove(Position& pos, const Move& mv, UndoState& undo) {
     undo.fullMove = pos.fullMove;
     undo.enPassant = pos.enPassant;
     undo.castling = packCastling(pos);
+    undo.hashKey = pos.hashKey;
+
+    pos.hashKey ^= castlingHash(undo.castling);
+    pos.hashKey ^= enPassantHash(undo.enPassant);
 
     if (undo.captured != EMPTY) {
         clearCastlingForSquare(pos, mv.to);
@@ -65,6 +69,9 @@ void doMove(Position& pos, const Move& mv, UndoState& undo) {
     else pos.halfMove++;
     pos.sideToMove = pos.sideToMove == WHITE ? BLACK : WHITE;
     if (pos.sideToMove == WHITE) pos.fullMove++;
+    pos.hashKey ^= castlingHash(packCastling(pos));
+    pos.hashKey ^= enPassantHash(pos.enPassant);
+    pos.hashKey ^= sideToMoveHash();
 #ifdef CHESS_VALIDATE_STATE
     assert(representationConsistent(pos));
 #endif
@@ -109,6 +116,7 @@ void undo(Position& pos, const Move& mv, const UndoState& undoState) {
         assert(pieceAt(pos, mv.to) == EMPTY);
         addPiece(pos, mv.to, undoState.captured);
     }
+    pos.hashKey = undoState.hashKey;
 #ifdef CHESS_VALIDATE_STATE
     assert(representationConsistent(pos));
 #endif
