@@ -280,7 +280,7 @@ int testSearchPrefersWinningCapture() {
     std::cout << "Test 11: Search Prefers Winning Capture Test\n";
 
     Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
-    SearchLimits limits{1, 0};
+    SearchLimits limits{1, 0, nullptr, nullptr};
     SearchResult result = searchBestMove(p, limits);
 
     if (!result.hasMove || moveToUCI(result.bestMove) != "e1e2") {

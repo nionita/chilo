@@ -23,6 +23,20 @@ std::string bestMoveString(const SearchResult& result) {
     return result.hasMove ? moveToUCI(result.bestMove) : "0000";
 }
 
+void printSearchInfo(const SearchResult& result, void*) {
+    uint64_t nps = result.elapsedMs > 0 ? (result.nodes * 1000) / result.elapsedMs : 0;
+    std::cout << "info depth " << result.depth
+              << " score cp " << result.score
+              << " nodes " << result.nodes
+              << " nps " << nps;
+    if (result.pvLength > 0) {
+        std::cout << " pv";
+        for (int i = 0; i < result.pvLength; i++) std::cout << " " << moveToUCI(result.pv[i]);
+    }
+    std::cout << "\n";
+    std::cout.flush();
+}
+
 bool applyPositionCommand(const std::vector<std::string>& tokens, Position& pos) {
     if (tokens.size() < 2) return false;
 
@@ -54,7 +68,7 @@ bool applyPositionCommand(const std::vector<std::string>& tokens, Position& pos)
 }
 
 SearchLimits parseGoCommand(const std::vector<std::string>& tokens) {
-    SearchLimits limits{0, 0};
+    SearchLimits limits{0, 0, printSearchInfo, nullptr};
     for (std::size_t i = 1; i + 1 < tokens.size(); i++) {
         if (tokens[i] == "depth") {
             limits.depth = std::stoi(tokens[i + 1]);
@@ -111,9 +125,6 @@ int main() {
             searchRunning.store(true);
             searchThread = std::thread([searchPos, limits, &searchRunning]() mutable {
                 SearchResult result = searchBestMove(searchPos, limits);
-                std::cout << "info depth " << result.depth
-                          << " score cp " << result.score
-                          << " nodes " << result.nodes << "\n";
                 std::cout << "bestmove " << bestMoveString(result) << "\n";
                 std::cout.flush();
                 searchRunning.store(false);

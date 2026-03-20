@@ -75,7 +75,9 @@ int terminalScore(const Position& pos, int ply) {
     return 0;
 }
 
-int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, uint64_t& nodes) {
+int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, uint64_t& nodes,
+              Move pvTable[MAX_SEARCH_DEPTH][MAX_SEARCH_DEPTH], int pvLength[MAX_SEARCH_DEPTH]) {
+    pvLength[ply] = 0;
     if (shouldStop()) return evaluate(pos);
 
     nodes++;
@@ -91,12 +93,17 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, uint64_t& 
         const Move& move = moves[i];
         UndoState undoState;
         doMove(pos, move, undoState);
-        int score = -alphaBeta(pos, depth - 1, ply + 1, -beta, -alpha, nodes);
+        int score = -alphaBeta(pos, depth - 1, ply + 1, -beta, -alpha, nodes, pvTable, pvLength);
         undo(pos, move, undoState);
 
         if (shouldStop()) return alpha;
+        if (score > alpha) {
+            alpha = score;
+            pvTable[ply][0] = move;
+            for (int j = 0; j < pvLength[ply + 1]; j++) pvTable[ply][j + 1] = pvTable[ply + 1][j];
+            pvLength[ply] = pvLength[ply + 1] + 1;
+        }
         if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
     }
 
     return alpha;
@@ -108,21 +115,28 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_stopRequested.store(false, std::memory_order_relaxed);
     g_useDeadline = limits.movetimeMs > 0;
     if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
+    auto startTime = std::chrono::steady_clock::now();
 
-    SearchResult result{{-1, -1, EMPTY, false, false, false}, 0, 0, 0, true, false};
+    SearchResult result{{-1, -1, EMPTY, false, false, false}, {}, 0, 0, 0, 0, 0, true, false};
 
     Move rootMoves[MAX_MOVES];
     int rootCount = genLegalMoves(pos, rootMoves);
     if (rootCount == 0) {
+        result.pvLength = 0;
         result.score = terminalScore(pos, 0);
         return result;
     }
 
     result.bestMove = rootMoves[0];
     result.hasMove = true;
+    result.pv[0] = rootMoves[0];
+    result.pvLength = 1;
 
-    int maxDepth = limits.depth > 0 ? limits.depth : 64;
+    int maxDepth = limits.depth > 0 ? limits.depth : MAX_SEARCH_DEPTH;
+    if (maxDepth > MAX_SEARCH_DEPTH) maxDepth = MAX_SEARCH_DEPTH;
     Move preferredMove = result.bestMove;
+    Move pvTable[MAX_SEARCH_DEPTH + 1][MAX_SEARCH_DEPTH];
+    int pvLength[MAX_SEARCH_DEPTH + 1] = {};
 
     for (int depth = 1; depth <= maxDepth; depth++) {
         if (shouldStop()) break;
@@ -135,6 +149,8 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         int beta = INF_SCORE;
         int bestScore = -INF_SCORE;
         Move bestMove = iterationMoves[0];
+        Move bestPv[MAX_SEARCH_DEPTH];
+        int bestPvLength = 1;
         uint64_t iterationNodes = 0;
         bool interrupted = false;
 
@@ -142,7 +158,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             const Move& move = iterationMoves[i];
             UndoState undoState;
             doMove(pos, move, undoState);
-            int score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, iterationNodes);
+            int score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, iterationNodes, pvTable, pvLength);
             undo(pos, move, undoState);
 
             if (shouldStop()) {
@@ -152,6 +168,12 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             if (score > bestScore) {
                 bestScore = score;
                 bestMove = move;
+                bestPv[0] = move;
+                bestPvLength = 1;
+                for (int j = 0; j < pvLength[1] && j + 1 < MAX_SEARCH_DEPTH; j++) {
+                    bestPv[j + 1] = pvTable[1][j];
+                    bestPvLength = j + 2;
+                }
             }
             if (score > alpha) alpha = score;
         }
@@ -164,9 +186,16 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
 
         preferredMove = bestMove;
         result.bestMove = bestMove;
+        for (int i = 0; i < bestPvLength; i++) result.pv[i] = bestPv[i];
+        result.pvLength = bestPvLength;
         result.score = bestScore;
         result.depth = depth;
+        result.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - startTime)
+                               .count();
         result.completed = true;
+
+        if (limits.infoCallback != nullptr) limits.infoCallback(result, limits.infoUserData);
     }
 
     return result;

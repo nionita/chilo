@@ -7,4 +7,8 @@ perft_validate
 perft_diag_validate
 perft_tests_debug
 perft_tests_validate
+chilo
+chilo_debug
+chilo_validate
+*.o
 *.out

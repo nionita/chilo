@@ -7,6 +7,8 @@
 #include "chess_position.h"
 #include "chess_tables.h"
 
+constexpr int MAX_SEARCH_DEPTH = 64;
+
 bool attacked(const Position& pos, int sq, Color att);
 bool inCheck(const Position& pos, Color col);
 
@@ -24,16 +26,24 @@ void undo(Position& pos, const Move& mv, const UndoState& undo);
 
 int evaluate(const Position& pos);
 
+struct SearchResult;
+using SearchInfoCallback = void (*)(const SearchResult&, void*);
+
 struct SearchLimits {
     int depth;
     int movetimeMs;
+    SearchInfoCallback infoCallback;
+    void* infoUserData;
 };
 
 struct SearchResult {
     Move bestMove;
+    Move pv[MAX_SEARCH_DEPTH];
+    int pvLength;
     int score;
     int depth;
     uint64_t nodes;
+    uint64_t elapsedMs;
     bool completed;
     bool hasMove;
 };
