@@ -15,7 +15,7 @@ Small chess engine project with:
 - `chilo.cpp`: UCI engine binary entry point
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
-- `perft_tests.cpp`: regression-style test program for perft and engine helpers
+- `engine_tests.cpp`: regression-style test program for engine behavior
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
@@ -43,7 +43,7 @@ This builds:
 
 - `perft`
 - `perft_diag`
-- `perft_tests`
+- `engine_tests`
 - `chilo`
 
 These targets use:
@@ -65,7 +65,7 @@ This builds:
 
 - `perft_debug`
 - `perft_diag_debug`
-- `perft_tests_debug`
+- `engine_tests_debug`
 - `chilo_debug`
 
 These targets use:
@@ -87,7 +87,7 @@ This builds:
 
 - `perft_validate`
 - `perft_diag_validate`
-- `perft_tests_validate`
+- `engine_tests_validate`
 - `chilo_validate`
 
 These targets use:
@@ -110,7 +110,7 @@ This builds:
 
 - `perft.exe`
 - `perft_diag.exe`
-- `perft_tests.exe`
+- `engine_tests.exe`
 - `chilo.exe`
 
 These targets use the MinGW-w64 POSIX cross-compiler and try to produce self-contained `.exe` files.
@@ -191,13 +191,13 @@ Current engine behavior:
 Run the optimized test binary:
 
 ```bash
-./perft_tests
+./engine_tests
 ```
 
 Run the validation test binary:
 
 ```bash
-./perft_tests_validate
+./engine_tests_validate
 ```
 
 ### Search Benchmarking

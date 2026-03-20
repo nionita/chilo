@@ -11,26 +11,26 @@ ENGINE_VALIDATE_OBJ := $(ENGINE_SRC:.cpp=.validate.o)
 ENGINE_WIN64_OBJ := $(ENGINE_SRC:.cpp=.win64.o)
 PERFT_SRC := perft.cpp
 PERFT_DIAG_SRC := perft_diag.cpp
-TEST_SRC := perft_tests.cpp
+TEST_SRC := engine_tests.cpp
 CHILO_SRC := chilo.cpp
 
 .PHONY: all clean release debug validate windows64 tests tests-debug tests-validate
 
 all: release tests
 
-release: perft perft_diag perft_tests chilo
+release: perft perft_diag engine_tests chilo
 
-debug: perft_debug perft_diag_debug perft_tests_debug chilo_debug
+debug: perft_debug perft_diag_debug engine_tests_debug chilo_debug
 
-validate: perft_validate perft_diag_validate perft_tests_validate chilo_validate
+validate: perft_validate perft_diag_validate engine_tests_validate chilo_validate
 
-windows64: perft.exe perft_diag.exe perft_tests.exe chilo.exe
+windows64: perft.exe perft_diag.exe engine_tests.exe chilo.exe
 
-tests: perft_tests
+tests: engine_tests
 
-tests-debug: perft_tests_debug
+tests-debug: engine_tests_debug
 
-tests-validate: perft_tests_validate
+tests-validate: engine_tests_validate
 
 perft: $(PERFT_SRC) $(ENGINE_OBJ)
 	$(CXX) $(CXXFLAGS) -O3 -DNDEBUG -o $@ $(PERFT_SRC) $(ENGINE_OBJ)
@@ -38,7 +38,7 @@ perft: $(PERFT_SRC) $(ENGINE_OBJ)
 perft_diag: $(PERFT_DIAG_SRC) $(ENGINE_OBJ)
 	$(CXX) $(CXXFLAGS) -O3 -DNDEBUG -o $@ $(PERFT_DIAG_SRC) $(ENGINE_OBJ)
 
-perft_tests: $(TEST_SRC) $(ENGINE_OBJ)
+engine_tests: $(TEST_SRC) $(ENGINE_OBJ)
 	$(CXX) $(CXXFLAGS) -O3 -DNDEBUG -o $@ $(TEST_SRC) $(ENGINE_OBJ)
 
 chilo: $(CHILO_SRC) $(ENGINE_OBJ)
@@ -50,7 +50,7 @@ perft_debug: $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
 perft_diag_debug: $(PERFT_DIAG_SRC) $(ENGINE_DEBUG_OBJ)
 	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(PERFT_DIAG_SRC) $(ENGINE_DEBUG_OBJ)
 
-perft_tests_debug: $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
+engine_tests_debug: $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
 	$(CXX) $(CXXFLAGS) -O0 -g -o $@ $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
 
 chilo_debug: $(CHILO_SRC) $(ENGINE_DEBUG_OBJ)
@@ -62,7 +62,7 @@ perft_validate: $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
 perft_diag_validate: $(PERFT_DIAG_SRC) $(ENGINE_VALIDATE_OBJ)
 	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_DIAG_SRC) $(ENGINE_VALIDATE_OBJ)
 
-perft_tests_validate: $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
+engine_tests_validate: $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
 	$(CXX) $(CXXFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
 
 chilo_validate: $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ)
@@ -74,7 +74,7 @@ perft.exe: $(PERFT_SRC) $(ENGINE_WIN64_OBJ)
 perft_diag.exe: $(PERFT_DIAG_SRC) $(ENGINE_WIN64_OBJ)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(PERFT_DIAG_SRC) $(ENGINE_WIN64_OBJ)
 
-perft_tests.exe: $(TEST_SRC) $(ENGINE_WIN64_OBJ)
+engine_tests.exe: $(TEST_SRC) $(ENGINE_WIN64_OBJ)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(TEST_SRC) $(ENGINE_WIN64_OBJ)
 
 chilo.exe: $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
@@ -93,4 +93,4 @@ chilo.exe: $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
 clean:
-	rm -f perft perft_diag perft_tests chilo perft_debug perft_diag_debug perft_tests_debug chilo_debug perft_validate perft_diag_validate perft_tests_validate chilo_validate perft.exe perft_diag.exe perft_tests.exe chilo.exe $(ENGINE_OBJ) $(ENGINE_DEBUG_OBJ) $(ENGINE_VALIDATE_OBJ) $(ENGINE_WIN64_OBJ)
+	rm -f perft perft_diag engine_tests chilo perft_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug perft_tests_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate perft_tests_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe perft_tests.exe $(ENGINE_OBJ) $(ENGINE_DEBUG_OBJ) $(ENGINE_VALIDATE_OBJ) $(ENGINE_WIN64_OBJ)

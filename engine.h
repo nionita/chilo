@@ -8,6 +8,21 @@
 #include "chess_tables.h"
 
 constexpr int MAX_SEARCH_DEPTH = 64;
+constexpr int SEARCH_MATE_SCORE = 29000;
+constexpr int SEARCH_MATE_THRESHOLD = SEARCH_MATE_SCORE - MAX_SEARCH_DEPTH;
+
+inline bool isMateScore(int score) {
+    return score >= SEARCH_MATE_THRESHOLD || score <= -SEARCH_MATE_THRESHOLD;
+}
+
+inline int mateDistancePlies(int score) {
+    return score > 0 ? SEARCH_MATE_SCORE - score : SEARCH_MATE_SCORE + score;
+}
+
+inline int mateDistanceMoves(int score) {
+    int plies = mateDistancePlies(score);
+    return score > 0 ? (plies + 1) / 2 : plies / 2;
+}
 
 bool attacked(const Position& pos, int sq, Color att);
 bool inCheck(const Position& pos, Color col);

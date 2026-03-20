@@ -314,6 +314,58 @@ int testSearchAvoidsPoisonedCapture() {
     return 0;
 }
 
+int testMateScoreHelpers() {
+    std::cout << "Test 13: Mate Score Helper Test\n";
+
+    int mateInOne = SEARCH_MATE_SCORE - 1;
+    int mateInTwo = SEARCH_MATE_SCORE - 3;
+    int matedInOne = -SEARCH_MATE_SCORE + 2;
+    int alreadyMated = -SEARCH_MATE_SCORE;
+
+    if (!isMateScore(mateInOne) || mateDistanceMoves(mateInOne) != 1) {
+        std::cout << "  FAIL (mate-in-one conversion is incorrect)\n";
+        return 1;
+    }
+    if (!isMateScore(mateInTwo) || mateDistanceMoves(mateInTwo) != 2) {
+        std::cout << "  FAIL (mate-in-two conversion is incorrect)\n";
+        return 1;
+    }
+    if (!isMateScore(matedInOne) || mateDistanceMoves(matedInOne) != 1) {
+        std::cout << "  FAIL (mated-in-one conversion is incorrect)\n";
+        return 1;
+    }
+    if (!isMateScore(alreadyMated) || mateDistanceMoves(alreadyMated) != 0) {
+        std::cout << "  FAIL (already-mated conversion is incorrect)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
+int testSearchFindsMateInOneForBothSides() {
+    std::cout << "Test 14: Search Finds Mate In One For Both Sides Test\n";
+
+    Position whiteToMove = parseFEN("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+    Position blackToMove = parseFEN("8/8/8/8/8/6k1/5q2/6K1 b - - 0 1");
+    SearchLimits limits{1, 0, nullptr, nullptr};
+
+    SearchResult whiteResult = searchBestMove(whiteToMove, limits);
+    SearchResult blackResult = searchBestMove(blackToMove, limits);
+
+    if (!whiteResult.hasMove || whiteResult.score != SEARCH_MATE_SCORE - 1) {
+        std::cout << "  FAIL (white mate-in-one score is incorrect)\n";
+        return 1;
+    }
+    if (!blackResult.hasMove || blackResult.score != SEARCH_MATE_SCORE - 1) {
+        std::cout << "  FAIL (black mate-in-one score is incorrect)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int main() {
     std::cout << "=== Engine Regression Tests ===\n\n";
     
@@ -330,6 +382,8 @@ int main() {
     failures += testEvaluation();
     failures += testSearchPrefersWinningCapture();
     failures += testSearchAvoidsPoisonedCapture();
+    failures += testMateScoreHelpers();
+    failures += testSearchFindsMateInOneForBothSides();
     
     std::cout << "\n=== Summary ===\n";
     if (failures == 0) std::cout << "All tests PASSED\n";

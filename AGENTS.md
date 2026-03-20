@@ -70,7 +70,7 @@ Completed goals included:
 ├── chilo.cpp              # UCI engine binary
 ├── perft.cpp              # CLI for perft testing with divide option
 ├── perft_diag.cpp         # Divide/debug helper for drilling into specific move paths
-├── perft_tests.cpp        # Test suite for perft, legal-move helpers, eval, and shallow search scenarios
+├── engine_tests.cpp       # Test suite for perft, legal-move helpers, eval, search, and UCI-related scenarios
 ├── scripts/               # Benchmark and other helper scripts
 └── engine_development_notes.md # Documentation of bugs found, fixes, structure, and performance notes
 ```

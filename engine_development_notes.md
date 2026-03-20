@@ -17,7 +17,7 @@ This project started as a small chess perft driver used to validate move generat
 - `chess_tables.h`: stable precomputed attack-table layer, including magic constants and slider lookup setup
 - `perft.cpp`: CLI for running perft and perft divide
 - `perft_diag.cpp`: subtree divide helper for debugging against external references
-- `perft_tests.cpp`: lightweight regression test program
+- `engine_tests.cpp`: lightweight regression test program
 - `scripts/benchmark_fixed_depth.py`: helper for fixed-depth search benchmarks between two UCI binaries
 - `Makefile`: build targets for optimized, debug, and validation builds
 - `README.md`: build and usage guide
@@ -26,9 +26,9 @@ This project started as a small chess perft driver used to validate move generat
 
 The recommended build entry point is `make`.
 
-- `make`: optimized `perft`, `perft_tests`, and `chilo` using `-O3 -DNDEBUG`
-- `make debug`: `perft_debug`, `perft_tests_debug`, and `chilo_debug` using `-O0 -g`
-- `make validate`: `perft_validate`, `perft_tests_validate`, and `chilo_validate` using `-O0 -g -DCHESS_VALIDATE_STATE`
+- `make`: optimized `perft`, `engine_tests`, and `chilo` using `-O3 -DNDEBUG`
+- `make debug`: `perft_debug`, `engine_tests_debug`, and `chilo_debug` using `-O0 -g`
+- `make validate`: `perft_validate`, `engine_tests_validate`, and `chilo_validate` using `-O0 -g -DCHESS_VALIDATE_STATE`
 - `make windows64`: cross-compiled Windows x64 release `.exe` binaries using MinGW-w64 POSIX tools
 
 `CHESS_VALIDATE_STATE` enables an expensive full-state restoration check after every `doMove()` / `undo()` pair. It is useful for debugging but not for benchmarking.
@@ -212,7 +212,7 @@ To support that investigation, the project now includes a separate `perft_diag` 
 
 ## Test Status
 
-Current regression checks in `perft_tests` pass for:
+Current regression checks in `engine_tests` pass for:
 
 - mirror-position comparisons
 - color-flip sanity

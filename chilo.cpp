@@ -37,11 +37,21 @@ std::string bestMoveString(const SearchResult& result) {
     return result.hasMove ? moveToUCI(result.bestMove) : "0000";
 }
 
+void printUCIScore(int score) {
+    if (isMateScore(score)) {
+        int mateMoves = mateDistanceMoves(score);
+        std::cout << "mate " << (score > 0 ? mateMoves : -mateMoves);
+        return;
+    }
+    std::cout << "cp " << score;
+}
+
 void printSearchInfo(const SearchResult& result, void*) {
     uint64_t nps = result.elapsedMs > 0 ? (result.nodes * 1000) / result.elapsedMs : 0;
     std::cout << "info depth " << result.depth
-              << " score cp " << result.score
-              << " nodes " << result.nodes
+              << " score ";
+    printUCIScore(result.score);
+    std::cout << " nodes " << result.nodes
               << " time " << result.elapsedMs
               << " nps " << nps;
     if (result.pvLength > 0) {

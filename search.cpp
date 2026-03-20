@@ -7,7 +7,6 @@
 namespace {
 
 constexpr int INF_SCORE = 30000;
-constexpr int MATE_SCORE = 29000;
 constexpr int DELTA_MARGIN = 200;
 
 std::atomic<bool> g_stopRequested{false};
@@ -116,7 +115,7 @@ void orderQSMoves(const Position& pos, Move* moves, int count) {
 }
 
 int terminalScore(const Position& pos, int ply) {
-    if (inCheck(pos, pos.sideToMove)) return -MATE_SCORE + ply;
+    if (inCheck(pos, pos.sideToMove)) return -SEARCH_MATE_SCORE + ply;
     return 0;
 }
 
