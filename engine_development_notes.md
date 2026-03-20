@@ -18,6 +18,7 @@ This project started as a small chess perft driver used to validate move generat
 - `perft.cpp`: CLI for running perft and perft divide
 - `perft_diag.cpp`: subtree divide helper for debugging against external references
 - `perft_tests.cpp`: lightweight regression test program
+- `scripts/benchmark_fixed_depth.py`: helper for fixed-depth search benchmarks between two UCI binaries
 - `Makefile`: build targets for optimized, debug, and validation builds
 - `README.md`: build and usage guide
 
@@ -97,6 +98,7 @@ The current version improves that by:
 
 - caching king squares in `Position`
 - generating moves into a fixed stack buffer instead of allocating `std::vector<Move>` at every node
+- storing `Move` in a compact 4-byte representation
 - maintaining parallel bitboards and occupancy masks
 - using bitboards for attack detection and move generation
 - using occupancy and piece masks instead of square-array reads for more hot-path attack and move-generation checks
@@ -190,6 +192,8 @@ The next slider pass replaced both ray-based slider attack detection and slider 
 
 The next maintenance pass moved the mutable engine implementation out of headers into separate source files. `engine.h` now provides the public interface, while `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, and `perft_lib.cpp` contain the implementation used by `perft`, `perft_diag`, and tests. `chess_position.h` and `chess_tables.h` remain header-defined for their small helper functions, but those helpers are now explicitly `inline` so the project links cleanly across multiple translation units.
 
+The next representation pass compacted `Move` from 16 bytes down to 4 bytes by shrinking `Piece` and `Color` to byte-sized enums and packing the move flags. A fixed-depth search benchmark against the previous commit used one warm-up plus five measured `go depth 6` runs on `startpos`, one middlegame, and one tactical position. That benchmark showed the compact move to be effectively neutral: about `+0.17%` NPS on `startpos`, `+1.43%` NPS on the middlegame, and `0%` on the tactical position. The change is therefore reasonable to keep for data compactness and future transposition-table work, but it should not be treated as a confirmed speed breakthrough on its own.
+
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 
 - print sorted divide counts at the root or at any descendant reached by a legal UCI move path
@@ -227,6 +231,7 @@ The recent ray-table and pawn-table cleanup preserved correctness, but it did no
 ## Recommended Workflow
 
 - Use `make` and `./perft` for benchmarking.
+- Use `python3 scripts/benchmark_fixed_depth.py` for repeatable fixed-depth search benchmarks between two engine binaries.
 - Use `make debug` when stepping through logic.
 - Use `make validate` only when chasing state-corruption or move-restoration bugs.
 - Treat perft node-count correctness as the gate before trusting any performance result.

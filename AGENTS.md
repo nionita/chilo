@@ -48,6 +48,8 @@ Completed goals included:
 - ✅ Added `eval.cpp` with material + piece-square-table evaluation
 - ✅ Added `search.cpp` with legal-move helpers, terminal detection, and iterative-deepening alpha-beta
 - ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, clock-based `go` limits, `stop`, and `quit`
+- ✅ Compacted `Move` from 16 bytes to 4 bytes while keeping the existing semantics and most call sites unchanged
+- ✅ Added `scripts/benchmark_fixed_depth.py` for repeatable fixed-depth UCI benchmarks between two engine binaries
 
 ## Relevant files / directories
 
@@ -67,6 +69,7 @@ Completed goals included:
 ├── perft.cpp              # CLI for perft testing with divide option
 ├── perft_diag.cpp         # Divide/debug helper for drilling into specific move paths
 ├── perft_tests.cpp        # Test suite for perft, legal-move helpers, eval, and shallow search scenarios
+├── scripts/               # Benchmark and other helper scripts
 └── engine_development_notes.md # Documentation of bugs found, fixes, structure, and performance notes
 ```
 

@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 
-enum Piece { EMPTY, W_PAWN, W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN, W_KING,
-             B_PAWN, B_KNIGHT, B_BISHOP, B_ROOK, B_QUEEN, B_KING };
-enum Color { WHITE, BLACK };
+enum Piece : uint8_t { EMPTY, W_PAWN, W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN, W_KING,
+                       B_PAWN, B_KNIGHT, B_BISHOP, B_ROOK, B_QUEEN, B_KING };
+enum Color : uint8_t { WHITE, BLACK };
 
 constexpr int PIECE_TYPE_COUNT = 6;
 constexpr int MAX_PIECES_PER_TYPE = 10;
@@ -17,7 +17,28 @@ constexpr int MAX_MOVES = 256;
 constexpr int ROOK_TABLE_SIZE = 4096;
 constexpr int BISHOP_TABLE_SIZE = 512;
 
-struct Move { int from, to; Piece promotion; bool isEnPassant, isCastle, isDoublePush; };
+struct Move {
+    uint8_t from;
+    uint8_t to;
+    Piece promotion;
+    uint8_t isEnPassant : 1;
+    uint8_t isCastle : 1;
+    uint8_t isDoublePush : 1;
+    uint8_t reserved : 5;
+
+    constexpr Move()
+        : from(0), to(0), promotion(EMPTY), isEnPassant(0), isCastle(0), isDoublePush(0), reserved(0) {}
+
+    constexpr Move(int fromSq, int toSq, Piece promo, bool enPassant, bool castle, bool doublePush)
+        : from(static_cast<uint8_t>(fromSq)),
+          to(static_cast<uint8_t>(toSq)),
+          promotion(promo),
+          isEnPassant(enPassant ? 1 : 0),
+          isCastle(castle ? 1 : 0),
+          isDoublePush(doublePush ? 1 : 0),
+          reserved(0) {}
+};
+static_assert(sizeof(Move) == 4, "Move should stay compact");
 struct UndoState {
     Piece captured;
     uint8_t castling;

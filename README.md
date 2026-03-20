@@ -16,6 +16,7 @@ Small chess engine project with:
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `perft_tests.cpp`: regression-style test program for perft and engine helpers
+- `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
 
@@ -153,6 +154,7 @@ Supported commands:
 Current engine behavior:
 
 - legal-move filtering on top of the existing pseudo-legal generator
+- compact 4-byte `Move` representation
 - material plus piece-square-table evaluation
 - iterative-deepening negamax alpha-beta
 - simple move ordering
@@ -173,6 +175,25 @@ Run the validation test binary:
 ./perft_tests_validate
 ```
 
+### Search Benchmarking
+
+Compare two UCI binaries at a fixed search depth:
+
+```bash
+python3 scripts/benchmark_fixed_depth.py \
+  --baseline /path/to/old/chilo \
+  --candidate /path/to/new/chilo \
+  --depth 6 \
+  --runs 5 \
+  --warmups 1 \
+  --output-dir /tmp/chilo-bench/results
+```
+
+If no custom positions are provided, the script uses the current default set:
+- `startpos`
+- one complex middlegame
+- one tactical position
+
 ## Common Targets
 
 ```bash
@@ -185,6 +206,7 @@ make clean           # remove build artifacts
 ## Notes
 
 - Use `perft` for benchmarking.
+- Use `scripts/benchmark_fixed_depth.py` when comparing fixed-depth search speed between engine versions.
 - Use `perft_debug` for ordinary debugging.
 - Use `perft_validate` only when investigating `doMove()` / `undo()` state corruption or move-generation bugs.
 - Use `chilo` or `chilo_validate` when testing UCI integration or shallow playing strength.

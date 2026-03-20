@@ -218,7 +218,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
     auto startTime = std::chrono::steady_clock::now();
 
-    SearchResult result{{-1, -1, EMPTY, false, false, false}, {}, 0, 0, 0, 0, 0, true, false};
+    SearchResult result{{0, 0, EMPTY, false, false, false}, {}, 0, 0, 0, 0, 0, true, false};
 
     Move rootMoves[MAX_MOVES];
     int rootCount = genLegalMoves(pos, rootMoves);
