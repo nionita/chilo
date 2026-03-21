@@ -444,11 +444,11 @@ int testEvaluation() {
     Position passedPawnRear = parseFEN("4k3/8/8/3P4/8/8/8/4K3 w - - 0 1");
     Position passedPawnAdvanced = parseFEN("4k3/8/3P4/8/8/8/8/4K3 w - - 0 1");
     Position passedPawnBlocked = parseFEN("4k3/3r4/3P4/8/8/8/8/4K3 w - - 0 1");
-    Position passedPawnClear = parseFEN("r3k3/8/3P4/8/8/8/8/4K3 w - - 0 1");
+    Position passedPawnClear = parseFEN("4k2r/8/3P4/8/8/8/8/4K3 w - - 0 1");
     Position activeKing = parseFEN("8/8/8/3K4/8/8/8/4k3 w - - 0 1");
     Position passiveKing = parseFEN("8/8/8/8/8/8/8/4k2K w - - 0 1");
-    Position safeKing = parseFEN("4k3/8/8/8/8/8/5PPP/6K1 w - - 0 1");
-    Position exposedKing = parseFEN("4k3/8/8/8/8/5PPP/8/6K1 w - - 0 1");
+    Position safeKing = parseFEN("6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1");
+    Position exposedKing = parseFEN("6k1/8/8/8/8/8/P1P4P/6K1 w - - 0 1");
     Position whiteTempo = parseFEN("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
     Position blackTempo = parseFEN("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
 

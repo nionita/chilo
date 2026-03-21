@@ -24,11 +24,11 @@ constexpr EvalScore PIECE_VALUES[13] = {
 
 constexpr int GAME_PHASE_WEIGHTS[13] = {
     0,
-    0, 1, 1, 2, 4, 0,
-    0, 1, 1, 2, 4, 0
+    0, 12, 12, 20, 39, 0,
+    0, 12, 12, 20, 39, 0
 };
 
-constexpr int MAX_PHASE = 24;
+constexpr int MAX_PHASE = 254;
 
 constexpr int pawnTableMg[64] = {
       0,   0,   0,   0,   0,   0,   0,   0,
@@ -165,14 +165,14 @@ constexpr int kingTableEg[64] = {
 constexpr EvalScore MOBILITY_BONUS[7] = {
     {0, 0},
     {0, 0},
-    {4, 3},
-    {5, 4},
-    {3, 6},
-    {2, 4},
+    {9, 7},
+    {6, 3},
+    {3, 9},
+    {0, 5},
     {0, 0}
 };
 
-constexpr EvalScore BISHOP_PAIR_BONUS{30, 45};
+constexpr EvalScore BISHOP_PAIR_BONUS{50, 24};
 constexpr EvalScore DOUBLED_PAWN_PENALTY{-12, -18};
 constexpr EvalScore ISOLATED_PAWN_PENALTY{-10, -14};
 constexpr EvalScore ROOK_OPEN_FILE_BONUS{20, 12};
@@ -199,6 +199,7 @@ constexpr EvalScore PASSED_PAWN_RANK_BONUS[8] = {
 };
 
 constexpr int TEMPO_BONUS = 12;
+constexpr int PST_SCALE_DIVISOR = 10;
 
 int popLsb(uint64_t& bits) {
     assert(bits != 0);
@@ -244,12 +245,12 @@ void addToSide(Color side, EvalScore term, int& whiteMg, int& whiteEg, int& blac
 EvalScore pieceSquareValue(Piece piece, int sq) {
     int tableSq = tableSquare(piece, sq);
     switch (pt(piece)) {
-        case 1: return {pawnTableMg[tableSq], pawnTableEg[tableSq]};
-        case 2: return {knightTableMg[tableSq], knightTableEg[tableSq]};
-        case 3: return {bishopTableMg[tableSq], bishopTableEg[tableSq]};
-        case 4: return {rookTableMg[tableSq], rookTableEg[tableSq]};
-        case 5: return {queenTableMg[tableSq], queenTableEg[tableSq]};
-        case 6: return {kingTableMg[tableSq], kingTableEg[tableSq]};
+        case 1: return {pawnTableMg[tableSq] / PST_SCALE_DIVISOR, pawnTableEg[tableSq] / PST_SCALE_DIVISOR};
+        case 2: return {knightTableMg[tableSq] / PST_SCALE_DIVISOR, knightTableEg[tableSq] / PST_SCALE_DIVISOR};
+        case 3: return {bishopTableMg[tableSq] / PST_SCALE_DIVISOR, bishopTableEg[tableSq] / PST_SCALE_DIVISOR};
+        case 4: return {rookTableMg[tableSq] / PST_SCALE_DIVISOR, rookTableEg[tableSq] / PST_SCALE_DIVISOR};
+        case 5: return {queenTableMg[tableSq] / PST_SCALE_DIVISOR, queenTableEg[tableSq] / PST_SCALE_DIVISOR};
+        case 6: return {kingTableMg[tableSq] / PST_SCALE_DIVISOR, kingTableEg[tableSq] / PST_SCALE_DIVISOR};
         default: return SCORE_ZERO;
     }
 }
