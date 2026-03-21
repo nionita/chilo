@@ -133,7 +133,7 @@ This is still a maintenance refactor, but it also establishes proper translation
 
 The next project step after the source split was to add a minimal engine loop without overcommitting to advanced search features. That slice now exists:
 
-- `eval.cpp` provides a cheap deterministic evaluation based on material and piece-square tables, with non-king PST intentionally scaled down to a small correction term
+- `eval.cpp` now provides a tapered middlegame/endgame evaluation based on phase, MG/EG PST, mobility, pawn structure, rook-file terms, bishop pair, king safety, king activity, and richer passed-pawn scoring
 - `search.cpp` provides legal-move generation helpers, terminal-state detection, and iterative-deepening negamax alpha-beta search
 - `chilo.cpp` exposes the engine through a separate UCI binary so GUI integration does not interfere with the perft tools
 
@@ -211,6 +211,8 @@ The current TT/search layout now probes TT before the `depth <= 0` quiescence ha
 The next rules-completeness pass added practical draw handling for repetition and the 50-move rule. Search now maintains a fixed global history of position hashes with separate indices for the last irreversible point, the real-game root, and the current valid top. Main alpha-beta treats the first repeated key in the reversible window as a draw, while both alpha-beta and QS treat `halfMove >= 100` as a draw. Castling-right loss is treated as irreversible for repetition-boundary purposes, and UCI `position ... moves ...` now rebuilds the real-game history instead of passing only the final board.
 
 The next move-ordering pass added static exchange evaluation (SEE) for capture classification. Main search now keeps the existing preferred move and killer/history framework, but splits captures into good and bad buckets with SEE while still sorting each bucket by MVV-LVA. Non-check quiescence now searches only SEE-nonnegative captures plus promotions, while in-check quiescence still searches all legal evasions.
+
+The next evaluation pass replaced the old material-plus-PST score with a tapered middlegame/endgame evaluation driven by non-pawn material phase. All tuning constants now live together in `eval.cpp`, and the first richer term set includes MG/EG PST, mobility by piece type, doubled/isolated/passed pawns, bishop pair, rook open/semi-open files, king safety from pawn shield plus attack-zone pressure, endgame king activity, passed-pawn path bonuses/penalties based on blockers and attacks, and a fixed tempo bonus for the side to move.
 
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 

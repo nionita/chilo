@@ -180,7 +180,10 @@ Current engine behavior:
 
 - legal-move filtering on top of the existing pseudo-legal generator
 - compact 4-byte `Move` representation
-- material plus piece-square-table evaluation, with non-king PST as a small correction term
+- tapered middlegame/endgame evaluation driven by non-pawn material phase
+- MG/EG PST, mobility, doubled/isolated/passed pawns, bishop pair, rook open/semi-open files
+- king safety from pawn shield + attack zone, plus endgame king activity and richer passed-pawn scoring
+- fixed side-to-move tempo bonus
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering
 - TT probe before the quiescence handoff so deeper stored entries can skip frontier QS

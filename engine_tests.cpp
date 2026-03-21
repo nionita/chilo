@@ -33,6 +33,63 @@ std::string flipColors(const std::string& fen) {
     return result;
 }
 
+std::string flipPositionAndColors(const std::string& fen) {
+    size_t space1 = fen.find(' ');
+    size_t space2 = fen.find(' ', space1 + 1);
+    size_t space3 = fen.find(' ', space2 + 1);
+    size_t space4 = fen.find(' ', space3 + 1);
+    size_t space5 = fen.find(' ', space4 + 1);
+
+    std::string board = fen.substr(0, space1);
+    std::string side = fen.substr(space1 + 1, space2 - space1 - 1);
+    std::string castling = fen.substr(space2 + 1, space3 - space2 - 1);
+    std::string enPassant = fen.substr(space3 + 1, space4 - space3 - 1);
+    std::string halfMove = fen.substr(space4 + 1, space5 - space4 - 1);
+    std::string fullMove = fen.substr(space5 + 1);
+
+    std::string ranks[8];
+    size_t start = 0;
+    for (int i = 0; i < 8; i++) {
+        size_t slash = board.find('/', start);
+        if (slash == std::string::npos) slash = board.size();
+        ranks[i] = board.substr(start, slash - start);
+        start = slash + 1;
+    }
+
+    std::string flippedBoard;
+    for (int i = 7; i >= 0; i--) {
+        if (!flippedBoard.empty()) flippedBoard += '/';
+        for (char c : ranks[i]) {
+            if (c >= 'a' && c <= 'z') flippedBoard += static_cast<char>(toupper(c));
+            else if (c >= 'A' && c <= 'Z') flippedBoard += static_cast<char>(tolower(c));
+            else flippedBoard += c;
+        }
+    }
+
+    std::string flippedCastling;
+    if (castling == "-") {
+        flippedCastling = "-";
+    } else {
+        for (char c : castling) {
+            if (c == 'K') flippedCastling += 'k';
+            else if (c == 'Q') flippedCastling += 'q';
+            else if (c == 'k') flippedCastling += 'K';
+            else if (c == 'q') flippedCastling += 'Q';
+        }
+    }
+
+    std::string flippedEp = "-";
+    if (enPassant != "-") {
+        flippedEp += "";
+        char file = enPassant[0];
+        char rank = enPassant[1];
+        flippedEp = std::string(1, file) + std::string(1, static_cast<char>('9' - rank));
+    }
+
+    std::string flippedSide = side == "w" ? "b" : "w";
+    return flippedBoard + " " + flippedSide + " " + flippedCastling + " " + flippedEp + " " + halfMove + " " + fullMove;
+}
+
 bool applyRealHistoryMove(Position& pos, const std::string& uci) {
     Move move;
     if (!parseUCIMove(pos, uci, move)) return false;
@@ -373,26 +430,91 @@ int testEvaluation() {
     Position start = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     Position whiteBetter = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
     Position blackWorseToMove = parseFEN("4k3/8/8/8/8/8/8/3QK3 b - - 0 1");
-    Position knightCentralized = parseFEN("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1");
-    Position kingsOnly = parseFEN("4k3/8/8/8/8/8/8/6K1 w - - 0 1");
+    Position mobileBishop = parseFEN("4k3/8/8/8/3B4/8/6PP/4K3 w - - 0 1");
+    Position trappedBishop = parseFEN("4k3/8/8/8/8/8/1P5P/B3K3 w - - 0 1");
+    Position bishopPair = parseFEN("4k3/8/8/8/8/8/4BB2/4K3 w - - 0 1");
+    Position bishopKnight = parseFEN("4k3/8/8/8/8/8/4BN2/4K3 w - - 0 1");
+    Position doubledPawns = parseFEN("4k3/8/8/8/8/3P4/3P4/4K3 w - - 0 1");
+    Position healthyPawns = parseFEN("4k3/8/8/8/8/8/3PP3/4K3 w - - 0 1");
+    Position isolatedPawn = parseFEN("4k3/8/8/8/3P4/8/P7/4K3 w - - 0 1");
+    Position supportedPawn = parseFEN("4k3/8/8/8/3P4/2P5/8/4K3 w - - 0 1");
+    Position openRook = parseFEN("4k3/7p/8/8/8/8/7P/R3K3 w - - 0 1");
+    Position semiOpenRook = parseFEN("4k3/p7/8/8/8/8/7P/R3K3 w - - 0 1");
+    Position closedRook = parseFEN("4k3/p7/8/8/8/8/P7/R3K3 w - - 0 1");
+    Position passedPawnRear = parseFEN("4k3/8/8/3P4/8/8/8/4K3 w - - 0 1");
+    Position passedPawnAdvanced = parseFEN("4k3/8/3P4/8/8/8/8/4K3 w - - 0 1");
+    Position passedPawnBlocked = parseFEN("4k3/3r4/3P4/8/8/8/8/4K3 w - - 0 1");
+    Position passedPawnClear = parseFEN("r3k3/8/3P4/8/8/8/8/4K3 w - - 0 1");
+    Position activeKing = parseFEN("8/8/8/3K4/8/8/8/4k3 w - - 0 1");
+    Position passiveKing = parseFEN("8/8/8/8/8/8/8/4k2K w - - 0 1");
+    Position safeKing = parseFEN("4k3/8/8/8/8/8/5PPP/6K1 w - - 0 1");
+    Position exposedKing = parseFEN("4k3/8/8/8/8/5PPP/8/6K1 w - - 0 1");
+    Position whiteTempo = parseFEN("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    Position blackTempo = parseFEN("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
 
-    if (evaluate(start) != 0) {
-        std::cout << "  FAIL (starting position should evaluate to 0)\n";
+    if (evaluate(start) <= 0) {
+        std::cout << "  FAIL (starting position should reflect a positive side-to-move tempo bonus)\n";
+        return 1;
+    }
+    if (evaluate(whiteTempo) != evaluate(blackTempo)) {
+        std::cout << "  FAIL (tempo bonus should give the same side-to-move eval in symmetric king-only positions)\n";
         return 1;
     }
     if (evaluate(whiteBetter) <= 0 || evaluate(blackWorseToMove) >= 0) {
         std::cout << "  FAIL (evaluation sign is inconsistent with side to move)\n";
         return 1;
     }
-    if (evaluate(knightCentralized) != 322) {
-        std::cout << "  FAIL (expected centralized knight eval of 322, got "
-                  << evaluate(knightCentralized) << ")\n";
+    if (evaluate(mobileBishop) <= evaluate(trappedBishop)) {
+        std::cout << "  FAIL (mobility term does not reward the mobile bishop)\n";
         return 1;
     }
-    if (evaluate(kingsOnly) != 10) {
-        std::cout << "  FAIL (expected king PST eval of 10, got "
-                  << evaluate(kingsOnly) << ")\n";
+    if (evaluate(bishopPair) <= evaluate(bishopKnight)) {
+        std::cout << "  FAIL (bishop pair bonus is not visible)\n";
         return 1;
+    }
+    if (evaluate(healthyPawns) <= evaluate(doubledPawns)) {
+        std::cout << "  FAIL (doubled pawn penalty is not visible)\n";
+        return 1;
+    }
+    if (evaluate(supportedPawn) <= evaluate(isolatedPawn)) {
+        std::cout << "  FAIL (isolated pawn penalty is not visible)\n";
+        return 1;
+    }
+    if (evaluate(openRook) <= evaluate(closedRook) || evaluate(semiOpenRook) <= evaluate(closedRook)) {
+        std::cout << "  FAIL (rook open/semi-open file bonuses are not visible)\n";
+        return 1;
+    }
+    if (evaluate(passedPawnAdvanced) <= evaluate(passedPawnRear)) {
+        std::cout << "  FAIL (advanced passed pawn is not rewarded)\n";
+        return 1;
+    }
+    if (evaluate(passedPawnClear) <= evaluate(passedPawnBlocked)) {
+        std::cout << "  FAIL (blocked passed pawn is not penalized)\n";
+        return 1;
+    }
+    if (evaluate(activeKing) <= evaluate(passiveKing)) {
+        std::cout << "  FAIL (endgame king activity is not rewarded)\n";
+        return 1;
+    }
+    if (evaluate(safeKing) <= evaluate(exposedKing)) {
+        std::cout << "  FAIL (king safety term is not visible)\n";
+        return 1;
+    }
+
+    const std::string symmetryFens[] = {
+        "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+        "4k3/8/8/3P4/8/8/8/4K3 w - - 0 1",
+        "4k3/8/8/8/3B4/8/6PP/4K3 w - - 0 1",
+        "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",
+        "4k3/7p/8/8/8/8/7P/R3K3 w - - 0 1"
+    };
+    for (const std::string& fen : symmetryFens) {
+        Position original = parseFEN(fen);
+        Position flipped = parseFEN(flipPositionAndColors(fen));
+        if (evaluate(original) != evaluate(flipped)) {
+            std::cout << "  FAIL (eval symmetry mismatch after color+side flip for FEN: " << fen << ")\n";
+            return 1;
+        }
     }
 
     std::cout << "  PASS\n";
