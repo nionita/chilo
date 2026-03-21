@@ -50,7 +50,7 @@ Completed goals included:
 - ✅ Added incremental Zobrist hashing to `Position` / `UndoState` for hash-based search features
 - ✅ Added a transposition table with TT-move ordering and mate-score normalization
 - ✅ TT probe now happens before the quiescence handoff, and TT replacement policy can be benchmarked via `EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1`
-- ✅ Added killer/history move ordering, PVS, null-move pruning, LMR, and shallow futility pruning
+- ✅ Added killer/history move ordering, PVS, null-move pruning, 3-tier LMR, and futility pruning through depth 3
 - ✅ Added practical draw handling for repetition and the 50-move rule, including real-game hash history from UCI `position ... moves ...`
 - ✅ Added SEE-based capture classification for main-search ordering and non-check QS filtering
 - ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, clock-based `go` limits, `stop`, and `quit`

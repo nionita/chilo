@@ -12,9 +12,10 @@ constexpr int INF_SCORE = 30000;
 constexpr int DELTA_MARGIN = 200;
 constexpr int NULL_MOVE_REDUCTION = 2;
 constexpr int DEEP_NULL_MOVE_REDUCTION = 3;
-constexpr int LMR_BASE_MOVE_INDEX = 3;
-constexpr int LMR_DEEP_MOVE_INDEX = 8;
-constexpr int FUTILITY_MARGIN[3] = {0, 120, 320};
+constexpr int LMR_LEVEL1_MOVE_INDEX = 2;
+constexpr int LMR_LEVEL2_MOVE_INDEX = 6;
+constexpr int LMR_LEVEL3_MOVE_INDEX = 12;
+constexpr int FUTILITY_MARGIN[4] = {0, 120, 320, 550};
 constexpr std::size_t TT_SIZE = 1u << 20;
 
 #ifndef CHILO_TT_ALWAYS_OVERWRITE
@@ -517,7 +518,7 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
 
     Move bestMove = moves[0];
     int staticEval = 0;
-    bool allowFutility = !isPv && !inCheckNow && depth <= 2;
+    bool allowFutility = !isPv && !inCheckNow && depth <= 3;
     if (allowFutility) staticEval = evaluate(pos);
 
     for (int i = 0; i < moveCount; i++) {
@@ -545,8 +546,10 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
         int searchDepth = fullDepth;
         bool reduced = false;
 
-        if (!isPv && !inCheckNow && !givesCheck && quiet && depth >= 3 && i >= LMR_BASE_MOVE_INDEX) {
-            int reduction = (depth >= 5 && i >= LMR_DEEP_MOVE_INDEX) ? 2 : 1;
+        if (!isPv && !inCheckNow && !givesCheck && quiet && depth >= 3 && i >= LMR_LEVEL1_MOVE_INDEX) {
+            int reduction = 1;
+            if (depth >= 7 && i >= LMR_LEVEL3_MOVE_INDEX) reduction = 3;
+            else if (depth >= 5 && i >= LMR_LEVEL2_MOVE_INDEX) reduction = 2;
             if (searchDepth - reduction > 0) {
                 searchDepth -= reduction;
                 reduced = true;

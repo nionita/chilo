@@ -188,7 +188,7 @@ Current engine behavior:
 - transposition table with hash-based cutoffs and TT-move ordering
 - TT probe before the quiescence handoff so deeper stored entries can skip frontier QS
 - killer/history quiet-move ordering plus SEE-based capture bucketing
-- PVS, null-move pruning, LMR, and shallow futility pruning
+- PVS, null-move pruning, 3-tier LMR, and futility pruning through depth 3
 - repetition-draw detection in main search and 50-move draw detection in main search + QS
 - quiescence search with SEE-filtered captures and MVV-LVA ordering
 - no UCI options yet
