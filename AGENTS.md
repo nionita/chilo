@@ -52,6 +52,7 @@ Completed goals included:
 - ✅ TT probe now happens before the quiescence handoff, and TT replacement policy can be benchmarked via `EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1`
 - ✅ Added killer/history move ordering, PVS, null-move pruning, LMR, and shallow futility pruning
 - ✅ Added practical draw handling for repetition and the 50-move rule, including real-game hash history from UCI `position ... moves ...`
+- ✅ Added SEE-based capture classification for main-search ordering and non-check QS filtering
 - ✅ Added `chilo.cpp` with support for `uci`, `isready`, `ucinewgame`, `position`, `go depth`, `go movetime`, clock-based `go` limits, `stop`, and `quit`
 - ✅ Compacted `Move` from 16 bytes to 4 bytes while keeping the existing semantics and most call sites unchanged
 - ✅ Added `scripts/benchmark_fixed_depth.py` for repeatable fixed-depth UCI benchmarks between two engine binaries
@@ -111,8 +112,6 @@ This means future engine features should normally be implemented as additional `
 Recent work moved the engine to a bitboard-first runtime with magic bitboards for sliders and then split the implementation into proper translation units so the project can grow beyond perft without relying on a monolithic implementation header.
 
 Potential areas for future work:
-- SEE-based capture filtering / ordering
-- Repetition detection
 - Richer evaluation
 - Stronger UCI support (`setoption`, ponder, `go infinite`)
 - Windows debug/validate target parity if it becomes useful

@@ -443,8 +443,60 @@ int testLegalNoisyMoveGeneration() {
     return 0;
 }
 
+int testStaticExchangeEval() {
+    std::cout << "Test 14: Static Exchange Evaluation Test\n";
+
+    {
+        Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
+        Move move;
+        if (!parseUCIMove(p, "e1e2", move) || staticExchangeEval(p, move) <= 0) {
+            std::cout << "  FAIL (expected winning capture e1e2 to be SEE-positive)\n";
+            return 1;
+        }
+    }
+
+    {
+        Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
+        Move move;
+        if (!parseUCIMove(p, "e1e2", move) || staticExchangeEval(p, move) >= 0) {
+            std::cout << "  FAIL (expected poisoned capture e1e2 to be SEE-negative)\n";
+            return 1;
+        }
+    }
+
+    {
+        Position p = parseFEN("8/8/8/8/8/4k3/4r3/4R1K1 w - - 0 1");
+        Move move;
+        if (!parseUCIMove(p, "e1e2", move) || staticExchangeEval(p, move) != 0) {
+            std::cout << "  FAIL (expected equal exchange e1e2 to be SEE-zero)\n";
+            return 1;
+        }
+    }
+
+    {
+        Position p = parseFEN("7k/8/8/3pP3/8/8/8/K7 w - d6 0 1");
+        Move move;
+        if (!parseUCIMove(p, "e5d6", move) || staticExchangeEval(p, move) <= 0) {
+            std::cout << "  FAIL (expected en passant e5d6 to be SEE-positive)\n";
+            return 1;
+        }
+    }
+
+    {
+        Position p = parseFEN("k6r/6P1/8/8/8/8/8/K7 w - - 0 1");
+        Move move;
+        if (!parseUCIMove(p, "g7h8q", move) || staticExchangeEval(p, move) <= 0) {
+            std::cout << "  FAIL (expected promotion capture g7h8q to be SEE-positive)\n";
+            return 1;
+        }
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testSearchPrefersWinningCapture() {
-    std::cout << "Test 14: Search Prefers Winning Capture Test\n";
+    std::cout << "Test 15: Search Prefers Winning Capture Test\n";
 
     Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
     resetDrawHistory(p);
@@ -462,7 +514,7 @@ int testSearchPrefersWinningCapture() {
 }
 
 int testSearchAvoidsPoisonedCapture() {
-    std::cout << "Test 15: Search Avoids Poisoned Capture Test\n";
+    std::cout << "Test 16: Search Avoids Poisoned Capture Test\n";
 
     Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
     resetDrawHistory(p);
@@ -483,8 +535,26 @@ int testSearchAvoidsPoisonedCapture() {
     return 0;
 }
 
+int testSearchPrefersQuietPromotion() {
+    std::cout << "Test 17: Search Prefers Quiet Promotion Test\n";
+
+    Position p = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
+    resetDrawHistory(p);
+    SearchLimits limits{1, 0, nullptr, nullptr};
+    SearchResult result = searchBestMove(p, limits);
+
+    if (!result.hasMove || moveToUCI(result.bestMove) != "a7a8q") {
+        std::cout << "  FAIL (expected best move a7a8q, got "
+                  << (result.hasMove ? moveToUCI(result.bestMove) : std::string("0000")) << ")\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testMateScoreHelpers() {
-    std::cout << "Test 16: Mate Score Helper Test\n";
+    std::cout << "Test 18: Mate Score Helper Test\n";
 
     int mateInOne = SEARCH_MATE_SCORE - 1;
     int mateInTwo = SEARCH_MATE_SCORE - 3;
@@ -513,7 +583,7 @@ int testMateScoreHelpers() {
 }
 
 int testSearchFindsMateInOneForBothSides() {
-    std::cout << "Test 17: Search Finds Mate In One For Both Sides Test\n";
+    std::cout << "Test 19: Search Finds Mate In One For Both Sides Test\n";
 
     Position whiteToMove = parseFEN("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
     Position blackToMove = parseFEN("8/8/8/8/8/6k1/5q2/6K1 b - - 0 1");
@@ -554,8 +624,10 @@ int main() {
     failures += testDrawHistoryAndFiftyMoveRule();
     failures += testEvaluation();
     failures += testLegalNoisyMoveGeneration();
+    failures += testStaticExchangeEval();
     failures += testSearchPrefersWinningCapture();
     failures += testSearchAvoidsPoisonedCapture();
+    failures += testSearchPrefersQuietPromotion();
     failures += testMateScoreHelpers();
     failures += testSearchFindsMateInOneForBothSides();
     

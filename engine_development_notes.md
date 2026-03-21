@@ -137,7 +137,7 @@ The next project step after the source split was to add a minimal engine loop wi
 - `search.cpp` provides legal-move generation helpers, terminal-state detection, and iterative-deepening negamax alpha-beta search
 - `chilo.cpp` exposes the engine through a separate UCI binary so GUI integration does not interfere with the perft tools
 
-This is no longer just the baseline engine slice. It now includes quiescence search, a transposition table, improved move ordering, and several standard pruning/reduction heuristics, but it still does not include repetition detection or UCI options.
+This is no longer just the baseline engine slice. It now includes quiescence search, a transposition table, SEE-informed move ordering, draw handling for repetition and the 50-move rule, and several standard pruning/reduction heuristics, but it still does not include UCI options.
 
 ## Bitboard Migration Plan
 
@@ -209,6 +209,8 @@ The next search pass added incremental Zobrist hashing to `Position`, a fixed-si
 The current TT/search layout now probes TT before the `depth <= 0` quiescence handoff, so a deeper stored regular-search entry can skip frontier QS entirely. The build also supports benchmarking an alternate TT replacement policy with `EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1`, which forces one-entry buckets to overwrite unconditionally instead of preserving deeper same-generation foreign entries.
 
 The next rules-completeness pass added practical draw handling for repetition and the 50-move rule. Search now maintains a fixed global history of position hashes with separate indices for the last irreversible point, the real-game root, and the current valid top. Main alpha-beta treats the first repeated key in the reversible window as a draw, while both alpha-beta and QS treat `halfMove >= 100` as a draw. Castling-right loss is treated as irreversible for repetition-boundary purposes, and UCI `position ... moves ...` now rebuilds the real-game history instead of passing only the final board.
+
+The next move-ordering pass added static exchange evaluation (SEE) for capture classification. Main search now keeps the existing preferred move and killer/history framework, but splits captures into good and bad buckets with SEE while still sorting each bucket by MVV-LVA. Non-check quiescence now searches only SEE-nonnegative captures plus promotions, while in-check quiescence still searches all legal evasions.
 
 To support that investigation, the project now includes a separate `perft_diag` helper that can:
 

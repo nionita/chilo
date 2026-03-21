@@ -55,6 +55,7 @@ bool isDrawByFiftyMove(const Position& pos);
 bool isDrawByRepetition(const Position& pos);
 
 int evaluate(const Position& pos);
+int staticExchangeEval(const Position& pos, const Move& move);
 
 struct SearchResult;
 using SearchInfoCallback = void (*)(const SearchResult&, void*);

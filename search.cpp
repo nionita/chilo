@@ -45,6 +45,12 @@ struct HistoryMoveInfo {
     uint8_t castlingBefore;
 };
 
+struct SeeState {
+    uint64_t pieces[2][PIECE_TYPE_COUNT];
+    uint64_t occupancy[2];
+    uint64_t occupancyAll;
+};
+
 std::atomic<bool> g_stopRequested{false};
 std::chrono::steady_clock::time_point g_deadline;
 bool g_useDeadline = false;
@@ -65,6 +71,10 @@ bool movesEqual(const Move& a, const Move& b) {
 
 bool isValidMove(const Move& move) {
     return move.from != move.to || move.promotion != EMPTY || move.isEnPassant || move.isCastle || move.isDoublePush;
+}
+
+Color opposite(Color side) {
+    return side == WHITE ? BLACK : WHITE;
 }
 
 int moveValueGuess(Piece piece) {
@@ -98,6 +108,113 @@ bool isQuietMove(const Position& pos, const Move& move) {
 int promotionGain(const Move& move) {
     if (move.promotion == EMPTY) return 0;
     return moveValueGuess(move.promotion) - moveValueGuess(W_PAWN);
+}
+
+Piece pieceFor(Color side, int type) {
+    static constexpr Piece whitePieces[PIECE_TYPE_COUNT] = {
+        W_PAWN, W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN, W_KING
+    };
+    static constexpr Piece blackPieces[PIECE_TYPE_COUNT] = {
+        B_PAWN, B_KNIGHT, B_BISHOP, B_ROOK, B_QUEEN, B_KING
+    };
+    return side == WHITE ? whitePieces[type] : blackPieces[type];
+}
+
+bool promotionSquare(Color side, int sq) {
+    return side == WHITE ? R(sq) == 7 : R(sq) == 0;
+}
+
+void initSeeState(const Position& pos, SeeState& state) {
+    for (int color = 0; color < 2; color++) {
+        state.occupancy[color] = pos.occupancy[color];
+        for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
+            state.pieces[color][type] = pos.pieceBitboards[color][type];
+        }
+    }
+    state.occupancyAll = pos.occupancyAll;
+}
+
+void removeSeePiece(SeeState& state, Color side, Piece piece, int sq) {
+    int type = pieceTypeIndex(piece);
+    uint64_t bit = bitAt(sq);
+    state.pieces[side][type] &= ~bit;
+    state.occupancy[side] &= ~bit;
+    state.occupancyAll &= ~bit;
+}
+
+void addSeePiece(SeeState& state, Color side, Piece piece, int sq) {
+    int type = pieceTypeIndex(piece);
+    uint64_t bit = bitAt(sq);
+    state.pieces[side][type] |= bit;
+    state.occupancy[side] |= bit;
+    state.occupancyAll |= bit;
+}
+
+uint64_t attackersToSquare(const SeeState& state, int sq, Color side) {
+    const AttackTables& tables = attackTables();
+    uint64_t attackers = 0;
+    attackers |= state.pieces[side][pieceTypeIndex(pieceFor(side, 0))] & tables.pawnAttackers[side][sq];
+    attackers |= state.pieces[side][pieceTypeIndex(pieceFor(side, 1))] & tables.knight[sq];
+    attackers |= state.pieces[side][pieceTypeIndex(pieceFor(side, 5))] & tables.king[sq];
+
+    uint64_t bishops = state.pieces[side][pieceTypeIndex(pieceFor(side, 2))];
+    uint64_t rooks = state.pieces[side][pieceTypeIndex(pieceFor(side, 3))];
+    uint64_t queens = state.pieces[side][pieceTypeIndex(pieceFor(side, 4))];
+    attackers |= bishopAttacks(sq, state.occupancyAll) & (bishops | queens);
+    attackers |= rookAttacks(sq, state.occupancyAll) & (rooks | queens);
+    return attackers;
+}
+
+bool pickLeastValuableAttacker(const SeeState& state, Color side, uint64_t attackers, int& fromSq, Piece& piece) {
+    for (int type = 0; type < PIECE_TYPE_COUNT; type++) {
+        uint64_t candidates = attackers & state.pieces[side][type];
+        if (candidates == 0) continue;
+        fromSq = __builtin_ctzll(candidates);
+        piece = pieceFor(side, type);
+        return true;
+    }
+    return false;
+}
+
+int seeGain(SeeState& state, int sq, Color side, Piece targetPiece) {
+    uint64_t attackers = attackersToSquare(state, sq, side);
+    while (attackers) {
+        int fromSq = -1;
+        Piece attacker = EMPTY;
+        if (!pickLeastValuableAttacker(state, side, attackers, fromSq, attacker)) break;
+
+        Color defendingSide = opposite(side);
+        Piece occupant = attacker;
+        int immediateGain = moveValueGuess(targetPiece);
+        if (pt(attacker) == 1 && promotionSquare(side, sq)) {
+            occupant = side == WHITE ? W_QUEEN : B_QUEEN;
+            immediateGain += moveValueGuess(occupant) - moveValueGuess(attacker);
+        }
+
+        removeSeePiece(state, defendingSide, targetPiece, sq);
+        removeSeePiece(state, side, attacker, fromSq);
+        addSeePiece(state, side, occupant, sq);
+
+        bool legalKingCapture = true;
+        if (pt(attacker) == 6 && attackersToSquare(state, sq, defendingSide) != 0) legalKingCapture = false;
+
+        int gain = 0;
+        if (legalKingCapture) gain = std::max(0, immediateGain - seeGain(state, sq, defendingSide, occupant));
+
+        removeSeePiece(state, side, occupant, sq);
+        addSeePiece(state, side, attacker, fromSq);
+        addSeePiece(state, defendingSide, targetPiece, sq);
+
+        if (legalKingCapture) return gain;
+        attackers &= ~bitAt(fromSq);
+    }
+    return 0;
+}
+
+int captureOrderScore(const Position& pos, const Move& move) {
+    Piece movingPiece = pieceAt(pos, move.from);
+    Piece capturedPiece = capturedPieceForMove(pos, move);
+    return 10 * moveValueGuess(capturedPiece) - moveValueGuess(movingPiece) + promotionGain(move);
 }
 
 bool shouldStop() {
@@ -240,15 +357,21 @@ void noteQuietBetaCutoff(Color side, int ply, const Move& move, int depth) {
 int moveOrderScore(const Position& pos, const Move& move, const Move* preferredMove, int ply) {
     if (preferredMove != nullptr && movesEqual(move, *preferredMove)) return 1000000;
 
-    int score = 0;
-    Piece movingPiece = pieceAt(pos, move.from);
-    Piece capturedPiece = capturedPieceForMove(pos, move);
-    if (capturedPiece != EMPTY) score += 100000 + 10 * moveValueGuess(capturedPiece) - moveValueGuess(movingPiece);
-    if (move.promotion != EMPTY) score += 50000 + moveValueGuess(move.promotion);
-
     if (isQuietMove(pos, move)) {
-        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][0])) score += 40000;
-        else if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][1])) score += 35000;
+        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][0])) return 850000;
+        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][1])) return 800000;
+    }
+
+    if (isCaptureMove(pos, move)) {
+        int see = staticExchangeEval(pos, move);
+        int bucket = see >= 0 ? 700000 : 100000;
+        return bucket + captureOrderScore(pos, move);
+    }
+
+    if (move.promotion != EMPTY) return 600000 + moveValueGuess(move.promotion);
+
+    int score = 200000;
+    if (isQuietMove(pos, move)) {
         score += std::min(g_history[pos.sideToMove][move.from][move.to], 30000);
     }
 
@@ -257,13 +380,7 @@ int moveOrderScore(const Position& pos, const Move& move, const Move* preferredM
 }
 
 int qsMoveOrderScore(const Position& pos, const Move& move) {
-    Piece movingPiece = pieceAt(pos, move.from);
-    Piece capturedPiece = capturedPieceForMove(pos, move);
-
-    if (capturedPiece != EMPTY) {
-        return 100000 + 10 * moveValueGuess(capturedPiece) - moveValueGuess(movingPiece) +
-               promotionGain(move);
-    }
+    if (isCaptureMove(pos, move)) return 100000 + captureOrderScore(pos, move);
     if (move.promotion != EMPTY) return 50000 + moveValueGuess(move.promotion);
     return 0;
 }
@@ -326,6 +443,17 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
     Move moves[MAX_MOVES];
     int moveCount = inCheckNow ? genLegalMoves(pos, moves) : genLegalNoisyMoves(pos, moves);
     if (moveCount == 0) return inCheckNow ? terminalScore(pos, ply) : alpha;
+
+    if (!inCheckNow) {
+        int filteredCount = 0;
+        for (int i = 0; i < moveCount; i++) {
+            const Move& move = moves[i];
+            if (isCaptureMove(pos, move) && staticExchangeEval(pos, move) < 0) continue;
+            moves[filteredCount++] = move;
+        }
+        moveCount = filteredCount;
+        if (moveCount == 0) return alpha;
+    }
 
     orderQSMoves(pos, moves, moveCount);
 
@@ -464,6 +592,32 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
 }
 
 }  // namespace
+
+int staticExchangeEval(const Position& pos, const Move& move) {
+    Piece capturedPiece = capturedPieceForMove(pos, move);
+    if (capturedPiece == EMPTY) return move.promotion != EMPTY ? promotionGain(move) : 0;
+
+    SeeState state{};
+    initSeeState(pos, state);
+
+    Color us = pos.sideToMove;
+    Color them = opposite(us);
+    Piece movingPiece = pieceAt(pos, move.from);
+    Piece occupyingPiece = move.promotion != EMPTY ? move.promotion : movingPiece;
+    int targetSq = move.to;
+
+    removeSeePiece(state, us, movingPiece, move.from);
+    if (move.isEnPassant) {
+        int capSq = (us == WHITE ? R(move.to) - 1 : R(move.to) + 1) * 8 + F(move.to);
+        removeSeePiece(state, them, capturedPiece, capSq);
+    } else {
+        removeSeePiece(state, them, capturedPiece, targetSq);
+    }
+    addSeePiece(state, us, occupyingPiece, targetSq);
+
+    int gain = moveValueGuess(capturedPiece) + promotionGain(move);
+    return gain - seeGain(state, targetSq, them, occupyingPiece);
+}
 
 SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_stopRequested.store(false, std::memory_order_relaxed);
