@@ -430,74 +430,31 @@ int testEvaluation() {
     Position start = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     Position whiteBetter = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
     Position blackWorseToMove = parseFEN("4k3/8/8/8/8/8/8/3QK3 b - - 0 1");
-    Position mobileBishop = parseFEN("4k3/8/8/8/3B4/8/6PP/4K3 w - - 0 1");
-    Position trappedBishop = parseFEN("4k3/8/8/8/8/8/1P5P/B3K3 w - - 0 1");
+    Position developedKnight = parseFEN("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1");
+    Position rimKnight = parseFEN("4k3/8/8/8/8/8/8/N3K3 w - - 0 1");
     Position bishopPair = parseFEN("4k3/8/8/8/8/8/4BB2/4K3 w - - 0 1");
     Position bishopKnight = parseFEN("4k3/8/8/8/8/8/4BN2/4K3 w - - 0 1");
-    Position doubledPawns = parseFEN("4k3/8/8/8/8/3P4/3P4/4K3 w - - 0 1");
-    Position healthyPawns = parseFEN("4k3/8/8/8/8/8/3PP3/4K3 w - - 0 1");
-    Position isolatedPawn = parseFEN("4k3/8/8/8/3P4/8/P7/4K3 w - - 0 1");
-    Position supportedPawn = parseFEN("4k3/8/8/8/3P4/2P5/8/4K3 w - - 0 1");
-    Position openRook = parseFEN("4k3/7p/8/8/8/8/7P/R3K3 w - - 0 1");
-    Position semiOpenRook = parseFEN("4k3/p7/8/8/8/8/7P/R3K3 w - - 0 1");
-    Position closedRook = parseFEN("4k3/p7/8/8/8/8/P7/R3K3 w - - 0 1");
-    Position passedPawnRear = parseFEN("4k3/8/8/3P4/8/8/8/4K3 w - - 0 1");
-    Position passedPawnAdvanced = parseFEN("4k3/8/3P4/8/8/8/8/4K3 w - - 0 1");
-    Position passedPawnBlocked = parseFEN("4k3/3r4/3P4/8/8/8/8/4K3 w - - 0 1");
-    Position passedPawnClear = parseFEN("4k2r/8/3P4/8/8/8/8/4K3 w - - 0 1");
-    Position activeKing = parseFEN("8/8/8/3K4/8/8/8/4k3 w - - 0 1");
-    Position passiveKing = parseFEN("8/8/8/8/8/8/8/4k2K w - - 0 1");
-    Position safeKing = parseFEN("6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1");
-    Position exposedKing = parseFEN("6k1/8/8/8/8/8/P1P4P/6K1 w - - 0 1");
-    Position whiteTempo = parseFEN("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-    Position blackTempo = parseFEN("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
+    Position kingOnlyWhite = parseFEN("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    Position kingOnlyBlack = parseFEN("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
 
-    if (evaluate(start) <= 0) {
-        std::cout << "  FAIL (starting position should reflect a positive side-to-move tempo bonus)\n";
-        return 1;
-    }
-    if (evaluate(whiteTempo) != evaluate(blackTempo)) {
-        std::cout << "  FAIL (tempo bonus should give the same side-to-move eval in symmetric king-only positions)\n";
+    if (evaluate(start) != 0) {
+        std::cout << "  FAIL (starting position should remain symmetric under the NNUE replacement)\n";
         return 1;
     }
     if (evaluate(whiteBetter) <= 0 || evaluate(blackWorseToMove) >= 0) {
         std::cout << "  FAIL (evaluation sign is inconsistent with side to move)\n";
         return 1;
     }
-    if (evaluate(mobileBishop) <= evaluate(trappedBishop)) {
-        std::cout << "  FAIL (mobility term does not reward the mobile bishop)\n";
+    if (evaluate(kingOnlyWhite) != 0 || evaluate(kingOnlyBlack) != 0) {
+        std::cout << "  FAIL (symmetric king-only positions should evaluate to 0)\n";
+        return 1;
+    }
+    if (evaluate(developedKnight) <= evaluate(rimKnight)) {
+        std::cout << "  FAIL (piece-square encoding does not reward the developed knight)\n";
         return 1;
     }
     if (evaluate(bishopPair) <= evaluate(bishopKnight)) {
-        std::cout << "  FAIL (bishop pair bonus is not visible)\n";
-        return 1;
-    }
-    if (evaluate(healthyPawns) <= evaluate(doubledPawns)) {
-        std::cout << "  FAIL (doubled pawn penalty is not visible)\n";
-        return 1;
-    }
-    if (evaluate(supportedPawn) <= evaluate(isolatedPawn)) {
-        std::cout << "  FAIL (isolated pawn penalty is not visible)\n";
-        return 1;
-    }
-    if (evaluate(openRook) <= evaluate(closedRook) || evaluate(semiOpenRook) <= evaluate(closedRook)) {
-        std::cout << "  FAIL (rook open/semi-open file bonuses are not visible)\n";
-        return 1;
-    }
-    if (evaluate(passedPawnAdvanced) <= evaluate(passedPawnRear)) {
-        std::cout << "  FAIL (advanced passed pawn is not rewarded)\n";
-        return 1;
-    }
-    if (evaluate(passedPawnClear) <= evaluate(passedPawnBlocked)) {
-        std::cout << "  FAIL (blocked passed pawn is not penalized)\n";
-        return 1;
-    }
-    if (evaluate(activeKing) <= evaluate(passiveKing)) {
-        std::cout << "  FAIL (endgame king activity is not rewarded)\n";
-        return 1;
-    }
-    if (evaluate(safeKing) <= evaluate(exposedKing)) {
-        std::cout << "  FAIL (king safety term is not visible)\n";
+        std::cout << "  FAIL (bishop pair unit is not visible)\n";
         return 1;
     }
 
@@ -515,6 +472,13 @@ int testEvaluation() {
             std::cout << "  FAIL (eval symmetry mismatch after color+side flip for FEN: " << fen << ")\n";
             return 1;
         }
+    }
+
+    const int queenUpExpected = 901;
+    if (evaluate(whiteBetter) != queenUpExpected) {
+        std::cout << "  FAIL (fixed-score regression mismatch, expected " << queenUpExpected
+                  << ", got " << evaluate(whiteBetter) << ")\n";
+        return 1;
     }
 
     std::cout << "  PASS\n";

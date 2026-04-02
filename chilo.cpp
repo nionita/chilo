@@ -10,7 +10,7 @@
 namespace {
 
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const char* CHILO_VERSION = "0.3.0";
+const char* CHILO_VERSION = "0.4.0";
 
 struct GoCommandOptions {
     int depth = 0;
