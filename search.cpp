@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -52,6 +53,12 @@ struct SeeState {
     uint64_t occupancyAll;
 };
 
+struct SearchLeaf {
+    Position pos{};
+    int score = 0;
+    bool valid = false;
+};
+
 std::atomic<bool> g_stopRequested{false};
 std::chrono::steady_clock::time_point g_deadline;
 bool g_useDeadline = false;
@@ -72,6 +79,13 @@ bool movesEqual(const Move& a, const Move& b) {
 
 bool isValidMove(const Move& move) {
     return move.from != move.to || move.promotion != EMPTY || move.isEnPassant || move.isCastle || move.isDoublePush;
+}
+
+void setLeaf(SearchLeaf* leaf, const Position& pos, int score) {
+    if (leaf == nullptr) return;
+    leaf->pos = pos;
+    leaf->score = score;
+    leaf->valid = true;
 }
 
 Color opposite(Color side) {
@@ -427,23 +441,45 @@ int terminalScore(const Position& pos, int ply) {
     return 0;
 }
 
-int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
-    if (shouldStop()) return evaluate(pos);
-    if (isDrawByFiftyMove(pos)) return 0;
+int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes, SearchLeaf* leaf) {
+    if (shouldStop()) {
+        int score = evaluate(pos);
+        setLeaf(leaf, pos, score);
+        return score;
+    }
+    if (isDrawByFiftyMove(pos)) {
+        setLeaf(leaf, pos, 0);
+        return 0;
+    }
 
     nodes++;
     bool inCheckNow = inCheck(pos, pos.sideToMove);
     int standPat = 0;
+    SearchLeaf bestLeaf{};
 
     if (!inCheckNow) {
         standPat = evaluate(pos);
-        if (standPat >= beta) return beta;
-        if (standPat > alpha) alpha = standPat;
+        if (standPat >= beta) {
+            setLeaf(leaf, pos, standPat);
+            return beta;
+        }
+        if (standPat > alpha) {
+            alpha = standPat;
+            setLeaf(&bestLeaf, pos, standPat);
+        }
     }
 
     Move moves[MAX_MOVES];
     int moveCount = inCheckNow ? genLegalMoves(pos, moves) : genLegalNoisyMoves(pos, moves);
-    if (moveCount == 0) return inCheckNow ? terminalScore(pos, ply) : alpha;
+    if (moveCount == 0) {
+        if (inCheckNow) {
+            int score = terminalScore(pos, ply);
+            setLeaf(leaf, pos, score);
+            return score;
+        }
+        setLeaf(leaf, pos, standPat);
+        return alpha;
+    }
 
     if (!inCheckNow) {
         int filteredCount = 0;
@@ -453,7 +489,10 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
             moves[filteredCount++] = move;
         }
         moveCount = filteredCount;
-        if (moveCount == 0) return alpha;
+        if (moveCount == 0) {
+            setLeaf(leaf, pos, standPat);
+            return alpha;
+        }
     }
 
     orderQSMoves(pos, moves, moveCount);
@@ -468,29 +507,55 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes) {
 
         UndoState undoState;
         doMove(pos, move, undoState);
-        int score = -quiescence(pos, ply + 1, -beta, -alpha, nodes);
+        SearchLeaf childLeaf{};
+        int score = -quiescence(pos, ply + 1, -beta, -alpha, nodes, &childLeaf);
         undo(pos, move, undoState);
 
         if (shouldStop()) return alpha;
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
+        if (score >= beta) {
+            if (leaf != nullptr) {
+                if (childLeaf.valid) *leaf = childLeaf;
+                else leaf->valid = false;
+            }
+            return beta;
+        }
+        if (score > alpha) {
+            alpha = score;
+            if (childLeaf.valid) bestLeaf = childLeaf;
+            else bestLeaf.valid = false;
+        }
     }
 
+    if (leaf != nullptr) {
+        if (bestLeaf.valid) *leaf = bestLeaf;
+        else if (!inCheckNow) setLeaf(leaf, pos, standPat);
+        else leaf->valid = false;
+    }
     return alpha;
 }
 
 int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv, bool allowNull, bool allowDrawChecks,
               uint64_t& nodes, Move pvTable[MAX_SEARCH_DEPTH][MAX_SEARCH_DEPTH],
-              int pvLength[MAX_SEARCH_DEPTH]) {
+              int pvLength[MAX_SEARCH_DEPTH], SearchLeaf* leaf) {
     pvLength[ply] = 0;
-    if (shouldStop()) return evaluate(pos);
-    if (allowDrawChecks && (isDrawByFiftyMove(pos) || isDrawByRepetition(pos))) return 0;
+    if (shouldStop()) {
+        int score = evaluate(pos);
+        setLeaf(leaf, pos, score);
+        return score;
+    }
+    if (allowDrawChecks && (isDrawByFiftyMove(pos) || isDrawByRepetition(pos))) {
+        setLeaf(leaf, pos, 0);
+        return 0;
+    }
 
     Move ttMove{};
     int ttScore = 0;
-    if (!isPv && probeTT(pos.hashKey, depth, ply, alpha, beta, ttMove, ttScore)) return ttScore;
+    if (!isPv && probeTT(pos.hashKey, depth, ply, alpha, beta, ttMove, ttScore)) {
+        if (leaf != nullptr) leaf->valid = false;
+        return ttScore;
+    }
 
-    if (depth <= 0) return quiescence(pos, ply, alpha, beta, nodes);
+    if (depth <= 0) return quiescence(pos, ply, alpha, beta, nodes, leaf);
 
     nodes++;
     const int alphaOriginal = alpha;
@@ -501,22 +566,28 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
         doNullMove(pos, nullState);
         int reduction = depth >= 6 ? DEEP_NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION;
         int score = -alphaBeta(pos, depth - 1 - reduction, ply + 1, -beta, -beta + 1,
-                               false, false, false, nodes, pvTable, pvLength);
+                               false, false, false, nodes, pvTable, pvLength, nullptr);
         undoNullMove(pos, nullState);
         if (shouldStop()) return alpha;
         if (score >= beta) {
             storeTT(pos.hashKey, depth, ply, beta, TT_LOWER, ttMove);
+            if (leaf != nullptr) leaf->valid = false;
             return beta;
         }
     }
 
     Move moves[MAX_MOVES];
     int moveCount = genLegalMoves(pos, moves);
-    if (moveCount == 0) return terminalScore(pos, ply);
+    if (moveCount == 0) {
+        int score = terminalScore(pos, ply);
+        setLeaf(leaf, pos, score);
+        return score;
+    }
 
     orderMoves(pos, moves, moveCount, isValidMove(ttMove) ? &ttMove : nullptr, ply);
 
     Move bestMove = moves[0];
+    SearchLeaf bestLeaf{};
     int staticEval = 0;
     bool allowFutility = !isPv && !inCheckNow && depth <= 3;
     if (allowFutility) staticEval = evaluate(pos);
@@ -545,6 +616,7 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
         int fullDepth = depth - 1;
         int searchDepth = fullDepth;
         bool reduced = false;
+        SearchLeaf childLeaf{};
 
         if (!isPv && !inCheckNow && !givesCheck && quiet && depth >= 3 && i >= LMR_LEVEL1_MOVE_INDEX) {
             int reduction = 1;
@@ -558,17 +630,17 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
 
         if (i == 0) {
             score = -alphaBeta(pos, fullDepth, ply + 1, -beta, -alpha, isPv, true, allowDrawChecks,
-                               nodes, pvTable, pvLength);
+                               nodes, pvTable, pvLength, &childLeaf);
         } else {
             score = -alphaBeta(pos, searchDepth, ply + 1, -alpha - 1, -alpha,
-                               false, true, allowDrawChecks, nodes, pvTable, pvLength);
+                               false, true, allowDrawChecks, nodes, pvTable, pvLength, &childLeaf);
             if (score > alpha && reduced) {
                 score = -alphaBeta(pos, fullDepth, ply + 1, -alpha - 1, -alpha,
-                                   false, true, allowDrawChecks, nodes, pvTable, pvLength);
+                                   false, true, allowDrawChecks, nodes, pvTable, pvLength, &childLeaf);
             }
             if (score > alpha) {
                 score = -alphaBeta(pos, fullDepth, ply + 1, -beta, -alpha,
-                                   isPv, true, allowDrawChecks, nodes, pvTable, pvLength);
+                                   isPv, true, allowDrawChecks, nodes, pvTable, pvLength, &childLeaf);
             }
         }
         popSearchHistory(savedLastValid, savedLastIrreversible);
@@ -578,6 +650,8 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
         if (score > alpha) {
             alpha = score;
             bestMove = move;
+            if (childLeaf.valid) bestLeaf = childLeaf;
+            else bestLeaf.valid = false;
             pvTable[ply][0] = move;
             for (int j = 0; j < pvLength[ply + 1]; j++) pvTable[ply][j + 1] = pvTable[ply + 1][j];
             pvLength[ply] = pvLength[ply + 1] + 1;
@@ -585,12 +659,20 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
         if (score >= beta) {
             if (quiet) noteQuietBetaCutoff(pos.sideToMove, ply, move, depth);
             storeTT(pos.hashKey, depth, ply, beta, TT_LOWER, move);
+            if (leaf != nullptr) {
+                if (childLeaf.valid) *leaf = childLeaf;
+                else leaf->valid = false;
+            }
             return beta;
         }
     }
 
     TTFlag flag = alpha > alphaOriginal ? TT_EXACT : TT_UPPER;
     storeTT(pos.hashKey, depth, ply, alpha, flag, bestMove);
+    if (leaf != nullptr) {
+        if (bestLeaf.valid) *leaf = bestLeaf;
+        else leaf->valid = false;
+    }
     return alpha;
 }
 
@@ -627,13 +709,23 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_useDeadline = limits.movetimeMs > 0;
     if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
     auto startTime = std::chrono::steady_clock::now();
+    const bool collectRootDetails = limits.collectRootMoveResults || limits.sampleCallback != nullptr;
+    const std::string rootFen = collectRootDetails ? positionToFEN(pos) : std::string();
 
     if (++g_ttGeneration == 0) g_ttGeneration = 1;
     clearSearchHeuristics();
     if (!g_drawHistoryInitialized || g_drawHistory[g_lastReal] != pos.hashKey) resetDrawHistory(pos);
     g_lastValid = g_lastReal;
 
-    SearchResult result{{0, 0, EMPTY, false, false, false}, {}, 0, 0, 0, 0, 0, true, false};
+    SearchResult result{};
+    result.bestMove = Move{};
+    result.pvLength = 0;
+    result.score = 0;
+    result.depth = 0;
+    result.nodes = 0;
+    result.elapsedMs = 0;
+    result.completed = true;
+    result.hasMove = false;
 
     Move rootMoves[MAX_MOVES];
     int rootCount = genLegalMoves(pos, rootMoves);
@@ -669,6 +761,8 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         int bestPvLength = 1;
         uint64_t iterationNodes = 0;
         bool interrupted = false;
+        std::vector<RootMoveResult> iterationRootResults;
+        if (collectRootDetails) iterationRootResults.reserve(rootCount);
 
         for (int i = 0; i < rootCount; i++) {
             const Move& move = iterationMoves[i];
@@ -680,15 +774,21 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             pushSearchHistory(pos.hashKey, moveIsIrreversible(moveInfo, packCastling(pos)),
                               savedLastValid, savedLastIrreversible);
             int score;
-            if (i == 0) {
-                score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true, true,
-                                   iterationNodes, pvTable, pvLength);
+            SearchLeaf childLeaf{};
+            if (collectRootDetails) {
+                score = -alphaBeta(pos, depth - 1, 1, -INF_SCORE, INF_SCORE, true, true, true,
+                                   iterationNodes, pvTable, pvLength, &childLeaf);
             } else {
-                score = -alphaBeta(pos, depth - 1, 1, -alpha - 1, -alpha, false, true, true,
-                                   iterationNodes, pvTable, pvLength);
-                if (score > alpha) {
+                if (i == 0) {
                     score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true, true,
-                                       iterationNodes, pvTable, pvLength);
+                                       iterationNodes, pvTable, pvLength, nullptr);
+                } else {
+                    score = -alphaBeta(pos, depth - 1, 1, -alpha - 1, -alpha, false, true, true,
+                                       iterationNodes, pvTable, pvLength, nullptr);
+                    if (score > alpha) {
+                        score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true, true,
+                                           iterationNodes, pvTable, pvLength, nullptr);
+                    }
                 }
             }
             popSearchHistory(savedLastValid, savedLastIrreversible);
@@ -697,6 +797,16 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             if (shouldStop()) {
                 interrupted = true;
                 break;
+            }
+            if (collectRootDetails) {
+                RootMoveResult rootResult{};
+                rootResult.move = move;
+                rootResult.score = score;
+                rootResult.evalScore = childLeaf.score;
+                rootResult.evalSideToMove = childLeaf.pos.sideToMove;
+                rootResult.hasEval = childLeaf.valid;
+                if (childLeaf.valid) rootResult.evalFen = positionToFEN(childLeaf.pos);
+                iterationRootResults.push_back(std::move(rootResult));
             }
             if (score > bestScore) {
                 bestScore = score;
@@ -727,10 +837,22 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                                std::chrono::steady_clock::now() - startTime)
                                .count();
         result.completed = true;
+        result.rootMoveResults = std::move(iterationRootResults);
 
         storeTT(pos.hashKey, depth, 0, bestScore, TT_EXACT, bestMove);
 
         if (limits.infoCallback != nullptr) limits.infoCallback(result, limits.infoUserData);
+    }
+
+    if (limits.sampleCallback != nullptr &&
+        result.completed &&
+        result.depth >= limits.minSampleDepth) {
+        for (const RootMoveResult& rootMove : result.rootMoveResults) {
+            if (!movesEqual(rootMove.move, result.bestMove) || !rootMove.hasEval) continue;
+            SearchSample sample{rootFen, rootMove.evalFen, result.depth, rootMove.evalScore};
+            limits.sampleCallback(sample, limits.sampleUserData);
+            break;
+        }
     }
 
     return result;

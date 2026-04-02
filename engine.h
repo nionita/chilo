@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "chess_position.h"
 #include "chess_tables.h"
@@ -60,11 +61,33 @@ int staticExchangeEval(const Position& pos, const Move& move);
 struct SearchResult;
 using SearchInfoCallback = void (*)(const SearchResult&, void*);
 
+struct SearchSample {
+    std::string rootFen;
+    std::string evalFen;
+    int depth;
+    int score;
+};
+
+using SearchSampleCallback = void (*)(const SearchSample&, void*);
+
+struct RootMoveResult {
+    Move move;
+    int score;
+    int evalScore;
+    Color evalSideToMove;
+    bool hasEval;
+    std::string evalFen;
+};
+
 struct SearchLimits {
     int depth;
     int movetimeMs;
     SearchInfoCallback infoCallback;
     void* infoUserData;
+    bool collectRootMoveResults = false;
+    int minSampleDepth = 0;
+    SearchSampleCallback sampleCallback = nullptr;
+    void* sampleUserData = nullptr;
 };
 
 struct SearchResult {
@@ -77,6 +100,7 @@ struct SearchResult {
     uint64_t elapsedMs;
     bool completed;
     bool hasMove;
+    std::vector<RootMoveResult> rootMoveResults;
 };
 
 SearchResult searchBestMove(Position& pos, const SearchLimits& limits);

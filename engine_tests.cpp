@@ -100,6 +100,17 @@ bool applyRealHistoryMove(Position& pos, const std::string& uci) {
     return true;
 }
 
+struct SampleCapture {
+    int calls = 0;
+    SearchSample lastSample{};
+};
+
+void recordSearchSample(const SearchSample& sample, void* userData) {
+    SampleCapture* capture = static_cast<SampleCapture*>(userData);
+    capture->calls++;
+    capture->lastSample = sample;
+}
+
 int testMirrorPositions() {
     std::cout << "Test 1: Mirror Position Test\n";
     std::string pos5 = "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1";
@@ -424,8 +435,106 @@ int testDrawHistoryAndFiftyMoveRule() {
     return 0;
 }
 
+int testFENRoundTrip() {
+    std::cout << "Test 12: FEN Round-Trip Test\n";
+
+    const std::string fens[] = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/8/8/3pP3/8/8/8/R3K2R w KQkq d6 14 27",
+        "8/8/8/8/8/8/6k1/6K1 b - - 99 88"
+    };
+
+    for (const std::string& fen : fens) {
+        Position original = parseFEN(fen);
+        std::string roundTrip = positionToFEN(original);
+        if (roundTrip != fen) {
+            std::cout << "  FAIL (FEN round-trip mismatch, expected " << fen
+                      << ", got " << roundTrip << ")\n";
+            return 1;
+        }
+
+        Position rebuilt = parseFEN(roundTrip);
+        if (!positionsEqual(original, rebuilt)) {
+            std::cout << "  FAIL (position changed after parse/serialize/parse round-trip for " << fen << ")\n";
+            return 1;
+        }
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
+int testSearchSampleHook() {
+    std::cout << "Test 13: Search Sample Hook Test\n";
+
+    Position p = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
+    resetDrawHistory(p);
+
+    SampleCapture capture;
+    SearchLimits limits{1, 0, nullptr, nullptr};
+    limits.collectRootMoveResults = true;
+    limits.minSampleDepth = 1;
+    limits.sampleCallback = recordSearchSample;
+    limits.sampleUserData = &capture;
+
+    SearchResult result = searchBestMove(p, limits);
+    if (!result.completed || !result.hasMove) {
+        std::cout << "  FAIL (expected a completed search with a legal move)\n";
+        return 1;
+    }
+    if (capture.calls != 1) {
+        std::cout << "  FAIL (expected exactly one sample callback, got " << capture.calls << ")\n";
+        return 1;
+    }
+    if (capture.lastSample.rootFen != positionToFEN(p)) {
+        std::cout << "  FAIL (sample root FEN does not match the searched position)\n";
+        return 1;
+    }
+    if (capture.lastSample.depth != result.depth || capture.lastSample.evalFen.empty()) {
+        std::cout << "  FAIL (sample payload is incomplete)\n";
+        return 1;
+    }
+
+    Position evalPos = parseFEN(capture.lastSample.evalFen);
+    if (!representationConsistent(evalPos)) {
+        std::cout << "  FAIL (sample eval FEN does not rebuild a consistent position)\n";
+        return 1;
+    }
+
+    bool matchedBestMove = false;
+    std::string bestMove = moveToUCI(result.bestMove);
+    for (const RootMoveResult& rootMove : result.rootMoveResults) {
+        if (moveToUCI(rootMove.move) != bestMove || !rootMove.hasEval) continue;
+        if (rootMove.evalFen == capture.lastSample.evalFen &&
+            rootMove.evalScore == capture.lastSample.score) {
+            matchedBestMove = true;
+            break;
+        }
+    }
+    if (!matchedBestMove) {
+        std::cout << "  FAIL (sample callback did not match the best move root sample)\n";
+        return 1;
+    }
+
+    resetDrawHistory(p);
+    SampleCapture filteredCapture;
+    SearchLimits filteredLimits{1, 0, nullptr, nullptr};
+    filteredLimits.collectRootMoveResults = true;
+    filteredLimits.minSampleDepth = 2;
+    filteredLimits.sampleCallback = recordSearchSample;
+    filteredLimits.sampleUserData = &filteredCapture;
+    SearchResult filteredResult = searchBestMove(p, filteredLimits);
+    if (!filteredResult.completed || filteredCapture.calls != 0) {
+        std::cout << "  FAIL (minimum sample depth filter did not suppress the shallow sample)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testEvaluation() {
-    std::cout << "Test 12: Evaluation Test\n";
+    std::cout << "Test 14: Evaluation Test\n";
 
     Position start = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     Position whiteBetter = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
@@ -486,7 +595,7 @@ int testEvaluation() {
 }
 
 int testLegalNoisyMoveGeneration() {
-    std::cout << "Test 13: Legal Noisy Move Generation Test\n";
+    std::cout << "Test 15: Legal Noisy Move Generation Test\n";
 
     {
         Position promotion = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
@@ -530,7 +639,7 @@ int testLegalNoisyMoveGeneration() {
 }
 
 int testStaticExchangeEval() {
-    std::cout << "Test 14: Static Exchange Evaluation Test\n";
+    std::cout << "Test 16: Static Exchange Evaluation Test\n";
 
     {
         Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
@@ -582,7 +691,7 @@ int testStaticExchangeEval() {
 }
 
 int testSearchPrefersWinningCapture() {
-    std::cout << "Test 15: Search Prefers Winning Capture Test\n";
+    std::cout << "Test 17: Search Prefers Winning Capture Test\n";
 
     Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
     resetDrawHistory(p);
@@ -600,7 +709,7 @@ int testSearchPrefersWinningCapture() {
 }
 
 int testSearchAvoidsPoisonedCapture() {
-    std::cout << "Test 16: Search Avoids Poisoned Capture Test\n";
+    std::cout << "Test 18: Search Avoids Poisoned Capture Test\n";
 
     Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
     resetDrawHistory(p);
@@ -622,7 +731,7 @@ int testSearchAvoidsPoisonedCapture() {
 }
 
 int testSearchPrefersQuietPromotion() {
-    std::cout << "Test 17: Search Prefers Quiet Promotion Test\n";
+    std::cout << "Test 19: Search Prefers Quiet Promotion Test\n";
 
     Position p = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
     resetDrawHistory(p);
@@ -640,7 +749,7 @@ int testSearchPrefersQuietPromotion() {
 }
 
 int testMateScoreHelpers() {
-    std::cout << "Test 18: Mate Score Helper Test\n";
+    std::cout << "Test 20: Mate Score Helper Test\n";
 
     int mateInOne = SEARCH_MATE_SCORE - 1;
     int mateInTwo = SEARCH_MATE_SCORE - 3;
@@ -669,7 +778,7 @@ int testMateScoreHelpers() {
 }
 
 int testSearchFindsMateInOneForBothSides() {
-    std::cout << "Test 19: Search Finds Mate In One For Both Sides Test\n";
+    std::cout << "Test 21: Search Finds Mate In One For Both Sides Test\n";
 
     Position whiteToMove = parseFEN("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
     Position blackToMove = parseFEN("8/8/8/8/8/6k1/5q2/6K1 b - - 0 1");
@@ -708,6 +817,8 @@ int main() {
     failures += testLegalMoveAndTerminalHelpers();
     failures += testUCIMoveHelpers();
     failures += testDrawHistoryAndFiftyMoveRule();
+    failures += testFENRoundTrip();
+    failures += testSearchSampleHook();
     failures += testEvaluation();
     failures += testLegalNoisyMoveGeneration();
     failures += testStaticExchangeEval();

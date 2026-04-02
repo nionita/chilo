@@ -14,18 +14,19 @@ PERFT_SRC := perft.cpp
 PERFT_DIAG_SRC := perft_diag.cpp
 TEST_SRC := engine_tests.cpp
 CHILO_SRC := chilo.cpp
+SELFPLAY_SRC := selfplay_collect.cpp
 
 .PHONY: all clean release debug validate windows64 tests tests-debug tests-validate
 
 all: release tests
 
-release: perft perft_diag engine_tests chilo
+release: perft perft_diag engine_tests chilo selfplay_collect
 
-debug: perft_debug perft_diag_debug engine_tests_debug chilo_debug
+debug: perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug
 
-validate: perft_validate perft_diag_validate engine_tests_validate chilo_validate
+validate: perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate
 
-windows64: perft.exe perft_diag.exe engine_tests.exe chilo.exe
+windows64: perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe
 
 tests: engine_tests
 
@@ -45,6 +46,9 @@ engine_tests: $(TEST_SRC) $(ENGINE_OBJ)
 chilo: $(CHILO_SRC) $(ENGINE_OBJ)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(CHILO_SRC) $(ENGINE_OBJ)
 
+selfplay_collect: $(SELFPLAY_SRC) $(ENGINE_OBJ)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(SELFPLAY_SRC) $(ENGINE_OBJ)
+
 perft_debug: $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
 
@@ -56,6 +60,9 @@ engine_tests_debug: $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
 
 chilo_debug: $(CHILO_SRC) $(ENGINE_DEBUG_OBJ)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(CHILO_SRC) $(ENGINE_DEBUG_OBJ)
+
+selfplay_collect_debug: $(SELFPLAY_SRC) $(ENGINE_DEBUG_OBJ)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(SELFPLAY_SRC) $(ENGINE_DEBUG_OBJ)
 
 perft_validate: $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
@@ -69,6 +76,9 @@ engine_tests_validate: $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
 chilo_validate: $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ)
 
+selfplay_collect_validate: $(SELFPLAY_SRC) $(ENGINE_VALIDATE_OBJ)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(SELFPLAY_SRC) $(ENGINE_VALIDATE_OBJ)
+
 perft.exe: $(PERFT_SRC) $(ENGINE_WIN64_OBJ)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(PERFT_SRC) $(ENGINE_WIN64_OBJ)
 
@@ -80,6 +90,9 @@ engine_tests.exe: $(TEST_SRC) $(ENGINE_WIN64_OBJ)
 
 chilo.exe: $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
+
+selfplay_collect.exe: $(SELFPLAY_SRC) $(ENGINE_WIN64_OBJ)
+	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(SELFPLAY_SRC) $(ENGINE_WIN64_OBJ)
 
 %.o: %.cpp engine.h chess_position.h chess_tables.h
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
@@ -94,4 +107,4 @@ chilo.exe: $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
 clean:
-	rm -f perft perft_diag engine_tests chilo perft_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug perft_tests_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate perft_tests_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe perft_tests.exe $(ENGINE_OBJ) $(ENGINE_DEBUG_OBJ) $(ENGINE_VALIDATE_OBJ) $(ENGINE_WIN64_OBJ)
+	rm -f perft perft_diag engine_tests chilo selfplay_collect perft_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug perft_tests_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate perft_tests_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe perft_tests.exe $(ENGINE_OBJ) $(ENGINE_DEBUG_OBJ) $(ENGINE_VALIDATE_OBJ) $(ENGINE_WIN64_OBJ)

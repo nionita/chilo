@@ -340,6 +340,67 @@ inline Position parseFEN(const std::string& f) {
     return p;
 }
 
+inline std::string positionToFEN(const Position& pos) {
+    std::string fen;
+    for (int rank = 7; rank >= 0; rank--) {
+        int emptyCount = 0;
+        for (int file = 0; file < 8; file++) {
+            Piece piece = pieceAt(pos, rank * 8 + file);
+            if (piece == EMPTY) {
+                emptyCount++;
+                continue;
+            }
+            if (emptyCount > 0) {
+                fen += char('0' + emptyCount);
+                emptyCount = 0;
+            }
+
+            char pieceChar = '?';
+            switch (piece) {
+                case W_PAWN: pieceChar = 'P'; break;
+                case W_KNIGHT: pieceChar = 'N'; break;
+                case W_BISHOP: pieceChar = 'B'; break;
+                case W_ROOK: pieceChar = 'R'; break;
+                case W_QUEEN: pieceChar = 'Q'; break;
+                case W_KING: pieceChar = 'K'; break;
+                case B_PAWN: pieceChar = 'p'; break;
+                case B_KNIGHT: pieceChar = 'n'; break;
+                case B_BISHOP: pieceChar = 'b'; break;
+                case B_ROOK: pieceChar = 'r'; break;
+                case B_QUEEN: pieceChar = 'q'; break;
+                case B_KING: pieceChar = 'k'; break;
+                default: assert(false); break;
+            }
+            fen += pieceChar;
+        }
+        if (emptyCount > 0) fen += char('0' + emptyCount);
+        if (rank > 0) fen += '/';
+    }
+
+    fen += pos.sideToMove == WHITE ? " w " : " b ";
+
+    std::string castling;
+    if (pos.castling[0]) castling += 'K';
+    if (pos.castling[1]) castling += 'Q';
+    if (pos.castling[2]) castling += 'k';
+    if (pos.castling[3]) castling += 'q';
+    fen += castling.empty() ? "-" : castling;
+    fen += ' ';
+
+    if (pos.enPassant == -1) {
+        fen += '-';
+    } else {
+        fen += char('a' + F(pos.enPassant));
+        fen += char('1' + R(pos.enPassant));
+    }
+
+    fen += ' ';
+    fen += std::to_string(pos.halfMove);
+    fen += ' ';
+    fen += std::to_string(pos.fullMove);
+    return fen;
+}
+
 inline std::string moveToUCI(const Move& mv) {
     std::string s;
     s += char('a' + F(mv.from));
