@@ -1,0 +1,49 @@
+{
+  "contract_id": "chilo.tiny_nnue.v1",
+  "version": 1,
+  "architecture": "TinyNnue",
+  "hidden_size": 16,
+  "clip_max": 255,
+  "perspectives": 2,
+  "piece_planes": 13,
+  "board_squares": 64,
+  "max_pieces": 32,
+  "active_piece_values": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ],
+  "piece_enum": {
+    "EMPTY": 0,
+    "W_PAWN": 1,
+    "W_KNIGHT": 2,
+    "W_BISHOP": 3,
+    "W_ROOK": 4,
+    "W_QUEEN": 5,
+    "W_KING": 6,
+    "B_PAWN": 7,
+    "B_KNIGHT": 8,
+    "B_BISHOP": 9,
+    "B_ROOK": 10,
+    "B_QUEEN": 11,
+    "B_KING": 12
+  },
+  "color_enum": {
+    "WHITE": 0,
+    "BLACK": 1
+  },
+  "square_indexing": "a1=0, h1=7, a8=56, h8=63",
+  "black_piece_normalization": "mirror_square=(7-rank)*8+file",
+  "input_layout": "input_weights[perspective][piece][square][hidden]",
+  "activation": "clipped_relu",
+  "output_formula": "score=(white_perspective-black_perspective)/2; return side_to_move==WHITE ? score : -score"
+}

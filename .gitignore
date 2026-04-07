@@ -13,7 +13,12 @@ perft_tests_validate
 chilo
 chilo_debug
 chilo_validate
+selfplay_collect
+selfplay_collect_debug
+selfplay_collect_validate
 *.exe
 __pycache__/
 *.o
 *.out
+*.pt
+*.npy

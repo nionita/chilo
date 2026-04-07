@@ -15,6 +15,7 @@ PERFT_DIAG_SRC := perft_diag.cpp
 TEST_SRC := engine_tests.cpp
 CHILO_SRC := chilo.cpp
 SELFPLAY_SRC := selfplay_collect.cpp
+ENGINE_HEADERS := engine.h chess_position.h chess_tables.h generated_nnue_weights.h
 
 .PHONY: all clean release debug validate windows64 tests tests-debug tests-validate
 
@@ -94,16 +95,16 @@ chilo.exe: $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
 selfplay_collect.exe: $(SELFPLAY_SRC) $(ENGINE_WIN64_OBJ)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(SELFPLAY_SRC) $(ENGINE_WIN64_OBJ)
 
-%.o: %.cpp engine.h chess_position.h chess_tables.h
+%.o: %.cpp $(ENGINE_HEADERS)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
-%.debug.o: %.cpp engine.h chess_position.h chess_tables.h
+%.debug.o: %.cpp $(ENGINE_HEADERS)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -c -o $@ $<
 
-%.validate.o: %.cpp engine.h chess_position.h chess_tables.h
+%.validate.o: %.cpp $(ENGINE_HEADERS)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -c -o $@ $<
 
-%.win64.o: %.cpp engine.h chess_position.h chess_tables.h
+%.win64.o: %.cpp $(ENGINE_HEADERS)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
 clean:
