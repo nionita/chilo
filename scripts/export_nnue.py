@@ -8,7 +8,14 @@ from typing import Dict, Tuple
 
 import numpy as np
 
-from nnue_common import build_seeded_weights, compact_json, integer_model_eval, load_contract
+from nnue_common import (
+    build_seeded_weights,
+    compact_json,
+    integer_model_eval,
+    iter_dataset_records,
+    load_contract,
+    load_dataset_manifest,
+)
 
 
 def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.ndarray | int]]:
@@ -46,24 +53,27 @@ def quantize_weights(weights: Dict[str, np.ndarray | int]) -> Dict[str, np.ndarr
     return quantized
 
 
-def validate_dataset(dataset_dir: Path, contract: Dict[str, object], float_weights, quantized_weights, tolerance: float) -> Dict[str, object]:
-    manifest = json.loads((dataset_dir / "manifest.json").read_text(encoding="utf-8"))
-    if manifest["contract_id"] != contract["contract_id"] or manifest["contract_sha256"] != contract["contract_sha256"]:
-        raise SystemExit("Export validation dataset does not match the current contract.")
-
-    samples = np.load(dataset_dir / "samples.npy", mmap_mode="r")
-    if samples.shape[0] == 0:
-        return {"validation_samples": 0, "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
+def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weights, quantized_weights, tolerance: float,
+                     max_samples: int) -> Dict[str, object]:
+    load_dataset_manifest(dataset_path, contract)
 
     input_weights_float = np.asarray(float_weights["input_weights"], dtype=np.float64)
     hidden_bias_float = np.asarray(float_weights["hidden_bias"], dtype=np.float64)
     output_weights_float = np.asarray(float_weights["output_weights"], dtype=np.float64)
     output_bias_float = float(float_weights["output_bias"])
-    count = min(int(samples.shape[0]), 256)
+
     diffs = []
     clip_max = int(contract["clip_max"])
-    for index in range(count):
-        record = samples[index]
+
+    split = "val"
+    records = list(iter_dataset_records(dataset_path, split=split, max_records=max_samples))
+    if not records:
+        split = None
+        records = list(iter_dataset_records(dataset_path, split=split, max_records=max_samples))
+    if not records:
+        return {"validation_samples": 0, "validation_split": "none", "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
+
+    for record in records:
         pieces = record["pieces"][: int(record["piece_count"])].tolist()
         squares = record["squares"][: int(record["piece_count"])].tolist()
 
@@ -91,7 +101,12 @@ def validate_dataset(dataset_dir: Path, contract: Dict[str, object], float_weigh
         raise SystemExit(
             f"Quantized export drift is too high: max_abs_diff={max_abs_diff:.2f}, tolerance={tolerance:.2f}"
         )
-    return {"validation_samples": count, "max_abs_diff": max_abs_diff, "mean_abs_diff": mean_abs_diff}
+    return {
+        "validation_samples": len(diffs),
+        "validation_split": split if split is not None else "all",
+        "max_abs_diff": max_abs_diff,
+        "mean_abs_diff": mean_abs_diff,
+    }
 
 
 def format_nested_initializer(array: np.ndarray, indent: int = 4) -> str:
@@ -151,7 +166,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", default=None, help="PyTorch checkpoint produced by train_nnue.py.")
     parser.add_argument("--seeded", action="store_true", help="Export the current heuristic-seeded weights instead of a checkpoint.")
     parser.add_argument("--contract", default=None, help="Optional path to nnue_contract.json.")
-    parser.add_argument("--dataset-dir", default=None, help="Optional dataset cache used to validate quantization drift.")
+    parser.add_argument("--dataset-dir", default=None, help="Optional sharded dataset root or manifest used to validate quantization drift.")
+    parser.add_argument("--validation-samples", type=int, default=256, help="Maximum number of validation positions to sample from the dataset.")
     parser.add_argument("--tolerance", type=float, default=0.0, help="Maximum allowed max absolute drift during quantization validation.")
     parser.add_argument("--output-header", required=True, help="Path to write the generated_nnue_weights.h file.")
     parser.add_argument("--output-manifest", required=True, help="Path to write the export manifest JSON.")
@@ -177,15 +193,22 @@ def main() -> int:
             raise SystemExit("Checkpoint contract_sha256 does not match the requested export contract.")
 
     quantized_weights = quantize_weights(float_weights)
-    validation = {"validation_samples": 0, "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
+    validation = {"validation_samples": 0, "validation_split": "none", "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
     if args.dataset_dir:
-        validation = validate_dataset(Path(args.dataset_dir), contract, float_weights, quantized_weights, args.tolerance)
+        validation = validate_dataset(
+            Path(args.dataset_dir),
+            contract,
+            float_weights,
+            quantized_weights,
+            args.tolerance,
+            args.validation_samples,
+        )
 
     output_header = Path(args.output_header)
     output_manifest = Path(args.output_manifest)
     write_header(output_header, contract, quantized_weights)
     manifest = {
-        "format": "chilo.nnue_export.v1",
+        "format": "chilo.nnue_export.v2",
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
         "architecture": contract["architecture"],

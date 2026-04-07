@@ -16,8 +16,12 @@ chilo_validate
 selfplay_collect
 selfplay_collect_debug
 selfplay_collect_validate
+eval_fen
+eval_fen_debug
+eval_fen_validate
 *.exe
 __pycache__/
+.venv/
 *.o
 *.out
 *.pt

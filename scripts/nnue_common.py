@@ -11,6 +11,9 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONTRACT_PATH = SCRIPT_DIR / "nnue_contract.json"
 MAX_PIECES = 32
+DATASET_FORMAT = "chilo.nnue_dataset.v2"
+DATASET_MANIFEST_NAME = "manifest.json"
+SHARD_DIR_NAME = "shards"
 
 PIECE_FROM_FEN = {
     "P": 1,
@@ -51,6 +54,97 @@ def load_contract(path: Path | None = None) -> Dict[str, object]:
 def contract_sha256(contract: Dict[str, object]) -> str:
     canonical = json.dumps(contract, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def json_dtype_descr(dtype: np.dtype) -> object:
+    return json.loads(json.dumps(dtype.descr))
+
+
+def compact_json(data: Dict[str, object]) -> str:
+    return json.dumps(data, indent=2, sort_keys=True) + "\n"
+
+
+def splitmix64(value: int) -> int:
+    value = (value + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    return value ^ (value >> 31)
+
+
+def stable_random_u64(seed: int, index: int) -> int:
+    return splitmix64((seed & 0xFFFFFFFFFFFFFFFF) ^ ((index + 1) * 0x9E3779B97F4A7C15))
+
+
+def assign_shard_splits(total_shards: int, validation_fraction: float, seed: int) -> List[str]:
+    if total_shards <= 0:
+        return []
+    if validation_fraction <= 0.0 or total_shards == 1:
+        return ["train"] * total_shards
+
+    val_count = int(round(total_shards * validation_fraction))
+    val_count = max(1, val_count)
+    val_count = min(total_shards - 1, val_count)
+
+    shard_order = list(range(total_shards))
+    shard_order.sort(key=lambda shard_index: stable_random_u64(seed, shard_index))
+
+    val_shards = set(shard_order[:val_count])
+    return ["val" if shard_index in val_shards else "train" for shard_index in range(total_shards)]
+
+
+def resolve_dataset_manifest(path: Path) -> Path:
+    if path.is_dir():
+        manifest_path = path / DATASET_MANIFEST_NAME
+    else:
+        manifest_path = path
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Dataset manifest not found at {manifest_path}")
+    return manifest_path
+
+
+def load_dataset_manifest(path: Path, contract: Dict[str, object] | None = None) -> Tuple[Path, Dict[str, object]]:
+    manifest_path = resolve_dataset_manifest(path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format") != DATASET_FORMAT:
+        raise ValueError(f"Unsupported dataset format in {manifest_path}: {manifest.get('format')!r}")
+
+    if contract is not None:
+        if manifest.get("contract_id") != contract["contract_id"]:
+            raise ValueError("Dataset contract_id does not match the current trainer contract.")
+        if manifest.get("contract_sha256") != contract["contract_sha256"]:
+            raise ValueError("Dataset contract_sha256 does not match the current trainer contract.")
+        if manifest.get("dtype_descr") != json_dtype_descr(DATASET_DTYPE):
+            raise ValueError("Dataset dtype does not match the expected sparse sample dtype.")
+
+    return manifest_path, manifest
+
+
+def shard_path_from_meta(dataset_root: Path, shard_meta: Dict[str, object]) -> Path:
+    return dataset_root / str(shard_meta["path"])
+
+
+def shard_metas_for_split(manifest: Dict[str, object], split: str | None) -> List[Dict[str, object]]:
+    shard_metas = list(manifest.get("shards", []))
+    if split is None:
+        return shard_metas
+    return [shard_meta for shard_meta in shard_metas if shard_meta.get("split") == split]
+
+
+def iter_dataset_records(
+    dataset_path: Path,
+    split: str | None = None,
+    max_records: int = 0,
+) -> Iterable[np.void]:
+    manifest_path, manifest = load_dataset_manifest(dataset_path)
+    dataset_root = manifest_path.parent
+    yielded = 0
+    for shard_meta in shard_metas_for_split(manifest, split):
+        shard = np.load(shard_path_from_meta(dataset_root, shard_meta), mmap_mode="r")
+        for record in shard:
+            yield record
+            yielded += 1
+            if max_records > 0 and yielded >= max_records:
+                return
 
 
 def piece_color(piece: int) -> int:
@@ -281,16 +375,3 @@ def integer_model_eval(
 
     combined = trunc_divide_by_two(perspective_scores[0] - perspective_scores[1])
     return combined if side_to_move == 0 else -combined
-
-
-def samples_to_batch_arrays(samples: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    return (
-        samples["pieces"].astype(np.int64, copy=False),
-        samples["squares"].astype(np.int64, copy=False),
-        samples["piece_count"].astype(np.int64, copy=False),
-        samples["side_to_move"].astype(np.int64, copy=False),
-    )
-
-
-def compact_json(data: Dict[str, object]) -> str:
-    return json.dumps(data, indent=2, sort_keys=True) + "\n"

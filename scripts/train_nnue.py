@@ -4,29 +4,37 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 from pathlib import Path
+from typing import Dict, Iterable, List
 
 import numpy as np
 
-from nnue_common import build_seeded_weights, compact_json, load_contract
+from nnue_common import (
+    build_seeded_weights,
+    compact_json,
+    load_contract,
+    load_dataset_manifest,
+    shard_metas_for_split,
+    shard_path_from_meta,
+)
 
 
 def load_torch():
     try:
         import torch
         from torch import nn
-        from torch.utils.data import DataLoader, Dataset
+        from torch.utils.data import DataLoader, IterableDataset, get_worker_info
     except ImportError as exc:
         raise SystemExit(
-            "PyTorch is required for training. Install torch in this environment and rerun train_nnue.py."
+            "PyTorch is required for training. Install torch in .venv with scripts/setup_python_env.sh and rerun train_nnue.py."
         ) from exc
-    return torch, nn, Dataset, DataLoader
+    return torch, nn, IterableDataset, DataLoader, get_worker_info
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the tiny Chilo NNUE with PyTorch.")
-    parser.add_argument("--dataset-dir", required=True, help="Directory containing samples.npy and manifest.json.")
+    parser = argparse.ArgumentParser(description="Train the tiny Chilo NNUE with PyTorch on sharded datasets.")
+    parser.add_argument("--dataset", "--dataset-dir", dest="dataset", required=True,
+                        help="Dataset root directory or manifest.json path produced by prepare_nnue_dataset.py.")
     parser.add_argument("--output-dir", required=True, help="Directory for checkpoints and training metadata.")
     parser.add_argument("--contract", default=None, help="Optional path to nnue_contract.json.")
     parser.add_argument("--epochs", type=int, default=8)
@@ -35,48 +43,71 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--score-scale", type=float, default=600.0)
     parser.add_argument("--result-weight", type=float, default=0.25)
-    parser.add_argument("--validation-fraction", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--init", choices=("seeded", "random"), default="seeded")
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--shuffle-buffer-size", type=int, default=8192)
+    parser.add_argument("--report-batches", type=int, default=200, help="Print a progress line every N training batches.")
     return parser.parse_args()
 
 
-def load_dataset(dataset_dir: Path, contract: dict) -> np.ndarray:
-    manifest = json.loads((dataset_dir / "manifest.json").read_text(encoding="utf-8"))
-    if manifest["contract_id"] != contract["contract_id"]:
-        raise SystemExit("Dataset contract_id does not match the current trainer contract.")
-    if manifest["contract_sha256"] != contract["contract_sha256"]:
-        raise SystemExit("Dataset contract_sha256 does not match the current trainer contract.")
-    samples = np.load(dataset_dir / "samples.npy", mmap_mode="r")
-    dtype_descr = json.loads(json.dumps(samples.dtype.descr))
-    if dtype_descr != manifest["dtype_descr"]:
-        raise SystemExit("Dataset dtype does not match its manifest.")
-    return samples
+def shard_sample_total(shard_metas: List[Dict[str, object]]) -> int:
+    return sum(int(shard_meta["sample_count"]) for shard_meta in shard_metas)
 
 
 def main() -> int:
     args = parse_args()
-    contract = load_contract(Path(args.contract) if args.contract else None)
-    samples = load_dataset(Path(args.dataset_dir), contract)
-    if samples.shape[0] == 0:
-        raise SystemExit("Training dataset is empty.")
+    if args.shuffle_buffer_size <= 0:
+        raise SystemExit("--shuffle-buffer-size must be positive.")
+    if args.num_workers < 0:
+        raise SystemExit("--num-workers must be zero or positive.")
+    if args.report_batches <= 0:
+        raise SystemExit("--report-batches must be positive.")
 
-    torch, nn, Dataset, DataLoader = load_torch()
+    contract = load_contract(Path(args.contract) if args.contract else None)
+    manifest_path, manifest = load_dataset_manifest(Path(args.dataset), contract)
+
+    train_shards = shard_metas_for_split(manifest, "train")
+    val_shards = shard_metas_for_split(manifest, "val")
+    if not train_shards:
+        raise SystemExit("Training dataset contains no train shards.")
+
+    dataset_root = manifest_path.parent
+    train_samples = shard_sample_total(train_shards)
+    val_samples = shard_sample_total(val_shards)
+
+    torch, nn, IterableDataset, DataLoader, get_worker_info = load_torch()
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    class SparseDataset(Dataset):
-        def __init__(self, storage: np.ndarray, indices: np.ndarray):
-            self.storage = storage
-            self.indices = indices
+    class ShardedSparseDataset(IterableDataset):
+        def __init__(
+            self,
+            root: Path,
+            shard_metas: List[Dict[str, object]],
+            shuffle: bool,
+            shuffle_buffer_size: int,
+            base_seed: int,
+            epoch: int,
+        ):
+            super().__init__()
+            self.root = root
+            self.shard_metas = list(shard_metas)
+            self.shuffle = shuffle
+            self.shuffle_buffer_size = shuffle_buffer_size
+            self.base_seed = base_seed
+            self.epoch = epoch
 
-        def __len__(self) -> int:
-            return int(self.indices.shape[0])
+        def _worker_shards(self) -> List[Dict[str, object]]:
+            worker_info = get_worker_info()
+            if worker_info is None:
+                return list(self.shard_metas)
+            return list(self.shard_metas[worker_info.id::worker_info.num_workers])
 
-        def __getitem__(self, item: int):
-            record = self.storage[int(self.indices[item])]
+        @staticmethod
+        def _record_to_sample(record: np.void) -> Dict[str, np.ndarray | np.integer | np.floating]:
             return {
                 "pieces": record["pieces"].astype(np.int64),
                 "squares": record["squares"].astype(np.int64),
@@ -85,6 +116,37 @@ def main() -> int:
                 "score": np.float32(record["score"]),
                 "result": np.float32(record["result"]),
             }
+
+        def __iter__(self) -> Iterable[Dict[str, np.ndarray | np.integer | np.floating]]:
+            shard_metas = self._worker_shards()
+            worker_info = get_worker_info()
+            worker_id = 0 if worker_info is None else worker_info.id
+            rng = np.random.default_rng(self.base_seed + self.epoch * 1000003 + worker_id)
+
+            if self.shuffle:
+                shard_metas = list(shard_metas)
+                rng.shuffle(shard_metas)
+                buffer: List[Dict[str, np.ndarray | np.integer | np.floating]] = []
+                for shard_meta in shard_metas:
+                    shard = np.load(shard_path_from_meta(self.root, shard_meta), mmap_mode="r")
+                    for record in shard:
+                        sample = self._record_to_sample(record)
+                        if len(buffer) < self.shuffle_buffer_size:
+                            buffer.append(sample)
+                            continue
+                        replace_index = int(rng.integers(len(buffer)))
+                        yield buffer[replace_index]
+                        buffer[replace_index] = sample
+
+                while buffer:
+                    pop_index = int(rng.integers(len(buffer)))
+                    yield buffer.pop(pop_index)
+                return
+
+            for shard_meta in shard_metas:
+                shard = np.load(shard_path_from_meta(self.root, shard_meta), mmap_mode="r")
+                for record in shard:
+                    yield self._record_to_sample(record)
 
     class TinyNnueModel(nn.Module):
         def __init__(self, contract_data: dict, init_mode: str):
@@ -123,6 +185,24 @@ def main() -> int:
             signed = torch.where(side_to_move == 0, raw, -raw)
             return signed.squeeze(-1)
 
+    def build_loader(shards: List[Dict[str, object]], shuffle: bool, epoch: int):
+        if not shards:
+            return None
+        dataset = ShardedSparseDataset(
+            dataset_root,
+            shards,
+            shuffle=shuffle,
+            shuffle_buffer_size=args.shuffle_buffer_size,
+            base_seed=args.seed,
+            epoch=epoch,
+        )
+        return DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+        )
+
     def bounded_target(score_tensor, result_tensor):
         score_target = torch.tanh(score_tensor / args.score_scale)
         return (1.0 - args.result_weight) * score_target + args.result_weight * result_tensor
@@ -130,21 +210,7 @@ def main() -> int:
     def target_loss(pred_cp, score_tensor, result_tensor):
         pred = torch.tanh(pred_cp / args.score_scale)
         target = bounded_target(score_tensor, result_tensor)
-        return torch.mean((pred - target) ** 2), pred, target
-
-    all_indices = np.arange(samples.shape[0], dtype=np.int64)
-    rng = np.random.default_rng(args.seed)
-    rng.shuffle(all_indices)
-    val_count = int(round(samples.shape[0] * args.validation_fraction))
-    if val_count <= 0:
-        val_count = 1 if samples.shape[0] > 1 else 0
-    if val_count >= samples.shape[0]:
-        val_count = samples.shape[0] - 1
-    train_indices = all_indices[val_count:]
-    val_indices = all_indices[:val_count]
-
-    train_loader = DataLoader(SparseDataset(samples, train_indices), batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(SparseDataset(samples, val_indices), batch_size=args.batch_size, shuffle=False) if val_count > 0 else None
+        return torch.mean((pred - target) ** 2)
 
     device = torch.device(args.device)
     model = TinyNnueModel(contract, args.init).to(device)
@@ -155,10 +221,15 @@ def main() -> int:
 
     best_val_loss = None
     history = []
+
     for epoch in range(1, args.epochs + 1):
+        train_loader = build_loader(train_shards, shuffle=True, epoch=epoch)
+        val_loader = build_loader(val_shards, shuffle=False, epoch=epoch)
+
         model.train()
         train_loss_sum = 0.0
         train_items = 0
+        train_batches = 0
         for batch in train_loader:
             pieces = batch["pieces"].to(device)
             squares = batch["squares"].to(device)
@@ -169,15 +240,23 @@ def main() -> int:
 
             optimizer.zero_grad(set_to_none=True)
             pred_cp = model(pieces, squares, piece_count, side_to_move)
-            loss, _, _ = target_loss(pred_cp, score, result)
+            loss = target_loss(pred_cp, score, result)
             loss.backward()
             optimizer.step()
 
             batch_items = int(pieces.shape[0])
             train_loss_sum += float(loss.item()) * batch_items
             train_items += batch_items
+            train_batches += 1
+
+            if train_batches % args.report_batches == 0:
+                print(
+                    f"epoch={epoch} batch={train_batches} processed={train_items}/{train_samples} "
+                    f"train_loss={train_loss_sum / max(train_items, 1):.6f}"
+                )
 
         train_loss = train_loss_sum / max(train_items, 1)
+
         val_loss = None
         if val_loader is not None:
             model.eval()
@@ -192,21 +271,34 @@ def main() -> int:
                     score = batch["score"].to(device)
                     result = batch["result"].to(device)
                     pred_cp = model(pieces, squares, piece_count, side_to_move)
-                    loss, _, _ = target_loss(pred_cp, score, result)
+                    loss = target_loss(pred_cp, score, result)
                     batch_items = int(pieces.shape[0])
                     val_loss_sum += float(loss.item()) * batch_items
                     val_items += batch_items
             val_loss = val_loss_sum / max(val_items, 1)
 
-        epoch_summary = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss}
+        epoch_summary = {
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "train_samples": train_items,
+            "val_samples": val_samples,
+        }
         history.append(epoch_summary)
         print(
-            f"epoch={epoch} train_loss={train_loss:.6f}" +
-            (f" val_loss={val_loss:.6f}" if val_loss is not None else "")
+            f"epoch={epoch} train_loss={train_loss:.6f} train_samples={train_items}" +
+            (f" val_loss={val_loss:.6f} val_samples={val_samples}" if val_loss is not None else "")
         )
 
         checkpoint = {
-            "contract": {k: v for k, v in contract.items() if k not in ("contract_path",)},
+            "contract": {key: value for key, value in contract.items() if key not in ("contract_path",)},
+            "dataset": {
+                "manifest_path": str(manifest_path.resolve()),
+                "train_shards": len(train_shards),
+                "val_shards": len(val_shards),
+                "train_samples": train_samples,
+                "val_samples": val_samples,
+            },
             "state_dict": model.state_dict(),
             "training": {
                 "epochs": args.epochs,
@@ -215,9 +307,10 @@ def main() -> int:
                 "weight_decay": args.weight_decay,
                 "score_scale": args.score_scale,
                 "result_weight": args.result_weight,
-                "validation_fraction": args.validation_fraction,
                 "seed": args.seed,
                 "init": args.init,
+                "num_workers": args.num_workers,
+                "shuffle_buffer_size": args.shuffle_buffer_size,
                 "history": history,
             },
         }
@@ -227,19 +320,24 @@ def main() -> int:
             torch.save(checkpoint, output_dir / "best.pt")
 
     training_manifest = {
-        "format": "chilo.nnue_training.v1",
+        "format": "chilo.nnue_training.v2",
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
-        "dataset_dir": str(Path(args.dataset_dir).resolve()),
+        "dataset_manifest": str(manifest_path.resolve()),
+        "train_shards": len(train_shards),
+        "val_shards": len(val_shards),
+        "train_samples": train_samples,
+        "val_samples": val_samples,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
         "score_scale": args.score_scale,
         "result_weight": args.result_weight,
-        "validation_fraction": args.validation_fraction,
         "seed": args.seed,
         "init": args.init,
+        "num_workers": args.num_workers,
+        "shuffle_buffer_size": args.shuffle_buffer_size,
         "history": history,
         "best_checkpoint": str((output_dir / "best.pt").resolve()),
     }

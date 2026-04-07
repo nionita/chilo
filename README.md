@@ -13,10 +13,15 @@ Small chess engine project with:
 - `eval.cpp`: static evaluation
 - `search.cpp`: iterative-deepening alpha-beta search
 - `chilo.cpp`: UCI engine binary entry point
+- `eval_fen.cpp`: tiny CLI for evaluating one or more FENs with the compiled engine
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
+- `scripts/prepare_nnue_dataset.py`: sharded NNUE dataset preprocessor
+- `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets
+- `scripts/export_nnue.py`: quantized export to the generated C++ header
+- `scripts/verify_nnue_workflow.py`: end-to-end smoke check for preprocess -> train -> export -> C++
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
 
@@ -45,6 +50,7 @@ This builds:
 - `perft_diag`
 - `engine_tests`
 - `chilo`
+- `eval_fen`
 
 These targets use:
 
@@ -67,6 +73,7 @@ This builds:
 - `perft_diag_debug`
 - `engine_tests_debug`
 - `chilo_debug`
+- `eval_fen_debug`
 
 These targets use:
 
@@ -89,6 +96,7 @@ This builds:
 - `perft_diag_validate`
 - `engine_tests_validate`
 - `chilo_validate`
+- `eval_fen_validate`
 
 These targets use:
 
@@ -112,6 +120,7 @@ This builds:
 - `perft_diag.exe`
 - `engine_tests.exe`
 - `chilo.exe`
+- `eval_fen.exe`
 
 These targets use the MinGW-w64 POSIX cross-compiler and try to produce self-contained `.exe` files.
 They are also stripped at link time to keep the shipped binaries smaller.
@@ -193,6 +202,14 @@ Current engine behavior:
 - quiescence search with SEE-filtered captures and MVV-LVA ordering
 - no UCI options yet
 
+### Eval CLI
+
+Evaluate one or more FENs directly with the compiled engine:
+
+```bash
+./eval_fen "4k3/8/8/8/8/8/8/3QK3 w - - 0 1"
+```
+
 ### Tests
 
 Run the optimized test binary:
@@ -219,6 +236,55 @@ python3 scripts/benchmark_fixed_depth.py \
   --runs 5 \
   --warmups 1 \
   --output-dir /tmp/chilo-bench/results
+```
+
+### NNUE Python Workflow
+
+Create the local Python environment with CPU-only PyTorch:
+
+```bash
+make python-env
+source .venv/bin/activate
+```
+
+Preprocess one or more collector CSV files into a sharded dataset:
+
+```bash
+.venv/bin/python scripts/prepare_nnue_dataset.py \
+  --input data/run1.csv data/run2.csv \
+  --output-dir data/nnue_dataset \
+  --samples-per-shard 1000000 \
+  --validation-fraction 0.05 \
+  --overwrite
+```
+
+Train the current tiny NNUE on the sharded dataset:
+
+```bash
+.venv/bin/python scripts/train_nnue.py \
+  --dataset data/nnue_dataset \
+  --output-dir data/nnue_training \
+  --epochs 8 \
+  --batch-size 256
+```
+
+Export the best checkpoint back into the generated C++ weights:
+
+```bash
+.venv/bin/python scripts/export_nnue.py \
+  --checkpoint data/nnue_training/best.pt \
+  --dataset-dir data/nnue_dataset \
+  --validation-samples 256 \
+  --tolerance 8 \
+  --output-header generated_nnue_weights.h \
+  --output-manifest generated_nnue_manifest.json
+```
+
+Run the Python smoke tests and the end-to-end training/export/C++ verification:
+
+```bash
+make nnue-python-tests
+make nnue-verify
 ```
 
 If no custom positions are provided, the script uses the current default set:
