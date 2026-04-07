@@ -507,6 +507,10 @@ int testSearchSampleHook() {
         if (moveToUCI(rootMove.move) != bestMove || !rootMove.hasEval) continue;
         if (rootMove.evalFen == capture.lastSample.evalFen &&
             rootMove.evalScore == capture.lastSample.score) {
+            if (rootMove.evalInCheck || rootMove.evalIsTerminal) {
+                std::cout << "  FAIL (quiet sample unexpectedly marked as in-check or terminal)\n";
+                return 1;
+            }
             matchedBestMove = true;
             break;
         }

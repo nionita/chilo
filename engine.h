@@ -76,6 +76,8 @@ struct RootMoveResult {
     int evalScore;
     Color evalSideToMove;
     bool hasEval;
+    bool evalInCheck;
+    bool evalIsTerminal;
     std::string evalFen;
 };
 

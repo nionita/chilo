@@ -57,6 +57,8 @@ struct SearchLeaf {
     Position pos{};
     int score = 0;
     bool valid = false;
+    bool inCheck = false;
+    bool terminal = false;
 };
 
 std::atomic<bool> g_stopRequested{false};
@@ -81,11 +83,13 @@ bool isValidMove(const Move& move) {
     return move.from != move.to || move.promotion != EMPTY || move.isEnPassant || move.isCastle || move.isDoublePush;
 }
 
-void setLeaf(SearchLeaf* leaf, const Position& pos, int score) {
+void setLeaf(SearchLeaf* leaf, const Position& pos, int score, bool inCheck = false, bool terminal = false) {
     if (leaf == nullptr) return;
     leaf->pos = pos;
     leaf->score = score;
     leaf->valid = true;
+    leaf->inCheck = inCheck;
+    leaf->terminal = terminal;
 }
 
 Color opposite(Color side) {
@@ -444,11 +448,11 @@ int terminalScore(const Position& pos, int ply) {
 int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes, SearchLeaf* leaf) {
     if (shouldStop()) {
         int score = evaluate(pos);
-        setLeaf(leaf, pos, score);
+        setLeaf(leaf, pos, score, inCheck(pos, pos.sideToMove), false);
         return score;
     }
     if (isDrawByFiftyMove(pos)) {
-        setLeaf(leaf, pos, 0);
+        setLeaf(leaf, pos, 0, inCheck(pos, pos.sideToMove), true);
         return 0;
     }
 
@@ -460,12 +464,12 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes, Sea
     if (!inCheckNow) {
         standPat = evaluate(pos);
         if (standPat >= beta) {
-            setLeaf(leaf, pos, standPat);
+            setLeaf(leaf, pos, standPat, false, false);
             return beta;
         }
         if (standPat > alpha) {
             alpha = standPat;
-            setLeaf(&bestLeaf, pos, standPat);
+            setLeaf(&bestLeaf, pos, standPat, false, false);
         }
     }
 
@@ -474,10 +478,10 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes, Sea
     if (moveCount == 0) {
         if (inCheckNow) {
             int score = terminalScore(pos, ply);
-            setLeaf(leaf, pos, score);
+            setLeaf(leaf, pos, score, true, true);
             return score;
         }
-        setLeaf(leaf, pos, standPat);
+        setLeaf(leaf, pos, standPat, false, false);
         return alpha;
     }
 
@@ -490,7 +494,7 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes, Sea
         }
         moveCount = filteredCount;
         if (moveCount == 0) {
-            setLeaf(leaf, pos, standPat);
+            setLeaf(leaf, pos, standPat, false, false);
             return alpha;
         }
     }
@@ -528,7 +532,7 @@ int quiescence(Position& pos, int ply, int alpha, int beta, uint64_t& nodes, Sea
 
     if (leaf != nullptr) {
         if (bestLeaf.valid) *leaf = bestLeaf;
-        else if (!inCheckNow) setLeaf(leaf, pos, standPat);
+        else if (!inCheckNow) setLeaf(leaf, pos, standPat, false, false);
         else leaf->valid = false;
     }
     return alpha;
@@ -540,11 +544,11 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
     pvLength[ply] = 0;
     if (shouldStop()) {
         int score = evaluate(pos);
-        setLeaf(leaf, pos, score);
+        setLeaf(leaf, pos, score, inCheck(pos, pos.sideToMove), false);
         return score;
     }
     if (allowDrawChecks && (isDrawByFiftyMove(pos) || isDrawByRepetition(pos))) {
-        setLeaf(leaf, pos, 0);
+        setLeaf(leaf, pos, 0, inCheck(pos, pos.sideToMove), true);
         return 0;
     }
 
@@ -580,7 +584,7 @@ int alphaBeta(Position& pos, int depth, int ply, int alpha, int beta, bool isPv,
     int moveCount = genLegalMoves(pos, moves);
     if (moveCount == 0) {
         int score = terminalScore(pos, ply);
-        setLeaf(leaf, pos, score);
+        setLeaf(leaf, pos, score, inCheckNow, true);
         return score;
     }
 
@@ -805,6 +809,8 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                 rootResult.evalScore = childLeaf.score;
                 rootResult.evalSideToMove = childLeaf.pos.sideToMove;
                 rootResult.hasEval = childLeaf.valid;
+                rootResult.evalInCheck = childLeaf.inCheck;
+                rootResult.evalIsTerminal = childLeaf.terminal;
                 if (childLeaf.valid) rootResult.evalFen = positionToFEN(childLeaf.pos);
                 iterationRootResults.push_back(std::move(rootResult));
             }

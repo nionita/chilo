@@ -3,10 +3,13 @@
 #include <cctype>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -34,6 +37,8 @@ struct PendingSample {
     int score = 0;
     Color evalSideToMove = WHITE;
 };
+
+constexpr int PROGRESS_REPORT_INTERVAL_GAMES = 100;
 
 std::string trim(const std::string& text) {
     std::size_t start = 0;
@@ -230,6 +235,53 @@ int sampleResultFromPerspective(int whiteResult, Color perspective) {
     return perspective == WHITE ? whiteResult : -whiteResult;
 }
 
+bool shouldKeepSample(const RootMoveResult& rootMove) {
+    return rootMove.hasEval && !rootMove.evalInCheck && !rootMove.evalIsTerminal;
+}
+
+std::string formatDuration(std::chrono::seconds duration) {
+    long long totalSeconds = duration.count();
+    long long hours = totalSeconds / 3600;
+    long long minutes = (totalSeconds % 3600) / 60;
+    long long seconds = totalSeconds % 60;
+
+    std::ostringstream out;
+    out << std::setfill('0') << std::setw(2) << hours
+        << ":" << std::setw(2) << minutes
+        << ":" << std::setw(2) << seconds;
+    return out.str();
+}
+
+std::string formatRate(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << value;
+    return out.str();
+}
+
+void printProgress(int completedGames, int totalGames, int totalSamples,
+                   std::chrono::steady_clock::time_point startTime) {
+    using namespace std::chrono;
+
+    auto elapsed = duration_cast<seconds>(steady_clock::now() - startTime);
+    double elapsedSeconds = std::max(1.0, static_cast<double>(elapsed.count()));
+    double gamesPerSecond = completedGames / elapsedSeconds;
+    double samplesPerSecond = totalSamples / elapsedSeconds;
+
+    std::string eta = "unknown";
+    if (gamesPerSecond > 0.0 && totalGames >= completedGames) {
+        int remainingGames = totalGames - completedGames;
+        auto etaSeconds = seconds(static_cast<long long>(std::llround(remainingGames / gamesPerSecond)));
+        eta = formatDuration(etaSeconds);
+    }
+
+    std::cout << "Progress: " << completedGames << "/" << totalGames
+              << " games, " << totalSamples << " samples, elapsed "
+              << formatDuration(elapsed)
+              << ", " << formatRate(gamesPerSecond) << " games/s"
+              << ", " << formatRate(samplesPerSecond) << " samples/s"
+              << ", ETA " << eta << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -269,6 +321,8 @@ int main(int argc, char** argv) {
     std::mt19937_64 rng(options.seed);
     int totalGames = 0;
     int totalSamples = 0;
+    const int scheduledGames = static_cast<int>(fens.size()) * options.gamesPerFen;
+    auto startTime = std::chrono::steady_clock::now();
 
     for (const std::string& fen : fens) {
         for (int gameIndex = 0; gameIndex < options.gamesPerFen; gameIndex++) {
@@ -295,7 +349,7 @@ int main(int argc, char** argv) {
                 Move chosenMove = chooseMove(result, ply, options, rng);
                 const RootMoveResult* chosenRoot = findRootMoveResult(result, chosenMove);
                 if (chosenRoot != nullptr &&
-                    chosenRoot->hasEval &&
+                    shouldKeepSample(*chosenRoot) &&
                     result.depth >= options.minSampleDepth) {
                     gameSamples.push_back({positionToFEN(pos), chosenRoot->evalFen, result.depth,
                                            chosenRoot->evalScore, chosenRoot->evalSideToMove});
@@ -320,10 +374,15 @@ int main(int argc, char** argv) {
 
             totalGames++;
             totalSamples += static_cast<int>(gameSamples.size());
+            if (totalGames % PROGRESS_REPORT_INTERVAL_GAMES == 0) {
+                printProgress(totalGames, scheduledGames, totalSamples, startTime);
+            }
         }
     }
 
+    auto totalElapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - startTime);
     std::cout << "Completed " << totalGames << " game(s), wrote " << totalSamples
-              << " sample row(s)\n";
+              << " sample row(s), elapsed " << formatDuration(totalElapsed) << "\n";
     return 0;
 }
