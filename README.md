@@ -25,6 +25,8 @@ Small chess engine project with:
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
 
+Build outputs live under `build/`, and the checked-in NNUE export lives under `generated/`.
+
 ## Build
 
 The project uses `g++` and `make`.
@@ -44,7 +46,7 @@ Build the fast binaries used for normal perft runs:
 make
 ```
 
-This builds:
+This builds under `build/release/`:
 
 - `perft`
 - `perft_diag`
@@ -67,7 +69,7 @@ Build non-optimized binaries with debug symbols:
 make debug
 ```
 
-This builds:
+This builds under `build/debug/`:
 
 - `perft_debug`
 - `perft_diag_debug`
@@ -90,7 +92,7 @@ Build binaries with the expensive full-state restoration check enabled:
 make validate
 ```
 
-This builds:
+This builds under `build/validate/`:
 
 - `perft_validate`
 - `perft_diag_validate`
@@ -114,7 +116,7 @@ Build Windows 64-bit release binaries from Linux:
 make windows64
 ```
 
-This builds:
+This builds under `build/win64/`:
 
 - `perft.exe`
 - `perft_diag.exe`
@@ -130,14 +132,14 @@ They are also stripped at link time to keep the shipped binaries smaller.
 ### Perft CLI
 
 ```bash
-./perft "<fen>" <depth> [divide]
+build/release/perft "<fen>" <depth> [divide]
 ```
 
 Examples:
 
 ```bash
-./perft "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" 5
-./perft "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" 2 divide
+build/release/perft "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" 5
+build/release/perft "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" 2 divide
 ```
 
 The output includes:
@@ -151,15 +153,15 @@ The output includes:
 Use the diagnostic helper to print sorted divide counts at any node reachable by a legal UCI move path:
 
 ```bash
-./perft_diag "<fen>" <depth> [move1,move2,...]
+build/release/perft_diag "<fen>" <depth> [move1,move2,...]
 ```
 
 Examples:
 
 ```bash
-./perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2
-./perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2 c4f7
-./perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2 c4f7,e8f7
+build/release/perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2
+build/release/perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2 c4f7
+build/release/perft_diag "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8" 2 c4f7,e8f7
 ```
 
 This is intended for isolating a bad subtree by comparing one branch at a time against a trusted reference.
@@ -169,7 +171,7 @@ This is intended for isolating a bad subtree by comparing one branch at a time a
 Run the UCI engine:
 
 ```bash
-./chilo
+build/release/chilo
 ```
 
 Supported commands:
@@ -207,7 +209,7 @@ Current engine behavior:
 Evaluate one or more FENs directly with the compiled engine:
 
 ```bash
-./eval_fen "4k3/8/8/8/8/8/8/3QK3 w - - 0 1"
+build/release/eval_fen "4k3/8/8/8/8/8/8/3QK3 w - - 0 1"
 ```
 
 ### Tests
@@ -215,13 +217,13 @@ Evaluate one or more FENs directly with the compiled engine:
 Run the optimized test binary:
 
 ```bash
-./engine_tests
+build/release/engine_tests
 ```
 
 Run the validation test binary:
 
 ```bash
-./engine_tests_validate
+build/validate/engine_tests_validate
 ```
 
 ### Search Benchmarking
@@ -276,8 +278,8 @@ Export the best checkpoint back into the generated C++ weights:
   --dataset-dir data/nnue_dataset \
   --validation-samples 256 \
   --tolerance 8 \
-  --output-header generated_nnue_weights.h \
-  --output-manifest generated_nnue_manifest.json
+  --output-header generated/generated_nnue_weights.h \
+  --output-manifest generated/generated_nnue_manifest.json
 ```
 
 Run the Python smoke tests and the end-to-end training/export/C++ verification:
@@ -311,9 +313,9 @@ make clean           # remove build artifacts
 
 ## Notes
 
-- Use `perft` for benchmarking.
+- Use `build/release/perft` for benchmarking.
 - Use `scripts/benchmark_fixed_depth.py` when comparing fixed-depth search speed between engine versions.
-- Use `perft_debug` for ordinary debugging.
-- Use `perft_validate` only when investigating `doMove()` / `undo()` state corruption or move-generation bugs.
-- Use `chilo` or `chilo_validate` when testing UCI integration or shallow playing strength.
-- Use `file chilo.exe` after `make windows64` if you want a quick confirmation that the output is a PE32+ Windows binary.
+- Use `build/debug/perft_debug` for ordinary debugging.
+- Use `build/validate/perft_validate` only when investigating `doMove()` / `undo()` state corruption or move-generation bugs.
+- Use `build/release/chilo` or `build/validate/chilo_validate` when testing UCI integration or shallow playing strength.
+- Use `file build/win64/chilo.exe` after `make windows64` if you want a quick confirmation that the output is a PE32+ Windows binary.

@@ -56,7 +56,7 @@ bool movesEqual(const Move& a, const Move& b) {
 
 void printUsage() {
     std::cout
-        << "Usage: ./selfplay_collect --fen-file <path> --output <path> [options]\n"
+        << "Usage: selfplay_collect --fen-file <path> --output <path> [options]\n"
         << "Options:\n"
         << "  --games-per-fen <N>      Number of self-play games per input FEN (default: 1)\n"
         << "  --depth <N>              Fixed search depth when --movetime is not set (default: 6)\n"

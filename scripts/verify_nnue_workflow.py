@@ -13,8 +13,10 @@ from export_nnue import load_torch_checkpoint, quantize_weights
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-GENERATED_HEADER = ROOT_DIR / "generated_nnue_weights.h"
-GENERATED_MANIFEST = ROOT_DIR / "generated_nnue_manifest.json"
+GENERATED_DIR = ROOT_DIR / "generated"
+GENERATED_HEADER = GENERATED_DIR / "generated_nnue_weights.h"
+GENERATED_MANIFEST = GENERATED_DIR / "generated_nnue_manifest.json"
+BUILD_DEBUG_DIR = ROOT_DIR / "build" / "debug"
 
 
 def run(*args: str) -> None:
@@ -102,7 +104,7 @@ def main() -> int:
 
             run("make", "eval_fen_debug")
             run("make", "engine_tests_debug")
-            run(str(ROOT_DIR / "engine_tests_debug"))
+            run(str(BUILD_DEBUG_DIR / "engine_tests_debug"))
 
             contract = load_contract()
             _, float_weights = load_torch_checkpoint(checkpoint_path)
@@ -113,7 +115,7 @@ def main() -> int:
                 "4k3/8/8/8/3N4/8/8/4K3 w - - 0 1",
             ]
             completed = subprocess.run(
-                [str(ROOT_DIR / "eval_fen_debug"), *test_fens],
+                [str(BUILD_DEBUG_DIR / "eval_fen_debug"), *test_fens],
                 cwd=ROOT_DIR,
                 check=True,
                 capture_output=True,

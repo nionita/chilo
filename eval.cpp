@@ -1,5 +1,5 @@
 #include "engine.h"
-#include "generated_nnue_weights.h"
+#include "generated/generated_nnue_weights.h"
 
 #include <algorithm>
 #include <cstdint>

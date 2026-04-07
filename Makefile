@@ -4,38 +4,81 @@ EXTRA_CPPFLAGS ?=
 WIN64_CXX := x86_64-w64-mingw32-g++-posix
 WIN64_CXXFLAGS := $(CXXFLAGS)
 WIN64_LDFLAGS := -static -static-libgcc -static-libstdc++ -s
+BUILD_DIR := build
+RELEASE_DIR := $(BUILD_DIR)/release
+DEBUG_DIR := $(BUILD_DIR)/debug
+VALIDATE_DIR := $(BUILD_DIR)/validate
+WIN64_DIR := $(BUILD_DIR)/win64
+GENERATED_DIR := generated
 
 ENGINE_SRC := attack.cpp movegen.cpp make_unmake.cpp perft_lib.cpp eval.cpp search.cpp
-ENGINE_OBJ := $(ENGINE_SRC:.cpp=.o)
-ENGINE_DEBUG_OBJ := $(ENGINE_SRC:.cpp=.debug.o)
-ENGINE_VALIDATE_OBJ := $(ENGINE_SRC:.cpp=.validate.o)
-ENGINE_WIN64_OBJ := $(ENGINE_SRC:.cpp=.win64.o)
+ENGINE_NAMES := $(basename $(ENGINE_SRC))
+ENGINE_OBJ := $(addprefix $(RELEASE_DIR)/,$(addsuffix .o,$(ENGINE_NAMES)))
+ENGINE_DEBUG_OBJ := $(addprefix $(DEBUG_DIR)/,$(addsuffix .debug.o,$(ENGINE_NAMES)))
+ENGINE_VALIDATE_OBJ := $(addprefix $(VALIDATE_DIR)/,$(addsuffix .validate.o,$(ENGINE_NAMES)))
+ENGINE_WIN64_OBJ := $(addprefix $(WIN64_DIR)/,$(addsuffix .win64.o,$(ENGINE_NAMES)))
 PERFT_SRC := perft.cpp
 PERFT_DIAG_SRC := perft_diag.cpp
 TEST_SRC := engine_tests.cpp
 CHILO_SRC := chilo.cpp
 SELFPLAY_SRC := selfplay_collect.cpp
 EVAL_FEN_SRC := eval_fen.cpp
-ENGINE_HEADERS := engine.h chess_position.h chess_tables.h generated_nnue_weights.h
+ENGINE_HEADERS := engine.h chess_position.h chess_tables.h $(GENERATED_DIR)/generated_nnue_weights.h
 VENV_PYTHON := .venv/bin/python
+RELEASE_BINS := $(RELEASE_DIR)/perft $(RELEASE_DIR)/perft_diag $(RELEASE_DIR)/engine_tests $(RELEASE_DIR)/chilo $(RELEASE_DIR)/selfplay_collect $(RELEASE_DIR)/eval_fen
+DEBUG_BINS := $(DEBUG_DIR)/perft_debug $(DEBUG_DIR)/perft_diag_debug $(DEBUG_DIR)/engine_tests_debug $(DEBUG_DIR)/chilo_debug $(DEBUG_DIR)/selfplay_collect_debug $(DEBUG_DIR)/eval_fen_debug
+VALIDATE_BINS := $(VALIDATE_DIR)/perft_validate $(VALIDATE_DIR)/perft_diag_validate $(VALIDATE_DIR)/engine_tests_validate $(VALIDATE_DIR)/chilo_validate $(VALIDATE_DIR)/selfplay_collect_validate $(VALIDATE_DIR)/eval_fen_validate
+WIN64_BINS := $(WIN64_DIR)/perft.exe $(WIN64_DIR)/perft_diag.exe $(WIN64_DIR)/engine_tests.exe $(WIN64_DIR)/chilo.exe $(WIN64_DIR)/selfplay_collect.exe $(WIN64_DIR)/eval_fen.exe
 
-.PHONY: all clean release debug validate windows64 tests tests-debug tests-validate python-env nnue-python-tests nnue-verify
+.PHONY: all clean release debug validate windows64 tests tests-debug tests-validate python-env nnue-python-tests nnue-verify \
+	perft perft_diag engine_tests chilo selfplay_collect eval_fen \
+	perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug \
+	perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
+	perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe
 
 all: release tests
 
-release: perft perft_diag engine_tests chilo selfplay_collect eval_fen
+release: $(RELEASE_BINS)
 
-debug: perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug
+debug: $(DEBUG_BINS)
 
-validate: perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate
+validate: $(VALIDATE_BINS)
 
-windows64: perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe
+windows64: $(WIN64_BINS)
 
-tests: engine_tests
+tests: $(RELEASE_DIR)/engine_tests
 
-tests-debug: engine_tests_debug
+tests-debug: $(DEBUG_DIR)/engine_tests_debug
 
-tests-validate: engine_tests_validate
+tests-validate: $(VALIDATE_DIR)/engine_tests_validate
+
+perft: $(RELEASE_DIR)/perft
+perft_diag: $(RELEASE_DIR)/perft_diag
+engine_tests: $(RELEASE_DIR)/engine_tests
+chilo: $(RELEASE_DIR)/chilo
+selfplay_collect: $(RELEASE_DIR)/selfplay_collect
+eval_fen: $(RELEASE_DIR)/eval_fen
+
+perft_debug: $(DEBUG_DIR)/perft_debug
+perft_diag_debug: $(DEBUG_DIR)/perft_diag_debug
+engine_tests_debug: $(DEBUG_DIR)/engine_tests_debug
+chilo_debug: $(DEBUG_DIR)/chilo_debug
+selfplay_collect_debug: $(DEBUG_DIR)/selfplay_collect_debug
+eval_fen_debug: $(DEBUG_DIR)/eval_fen_debug
+
+perft_validate: $(VALIDATE_DIR)/perft_validate
+perft_diag_validate: $(VALIDATE_DIR)/perft_diag_validate
+engine_tests_validate: $(VALIDATE_DIR)/engine_tests_validate
+chilo_validate: $(VALIDATE_DIR)/chilo_validate
+selfplay_collect_validate: $(VALIDATE_DIR)/selfplay_collect_validate
+eval_fen_validate: $(VALIDATE_DIR)/eval_fen_validate
+
+perft.exe: $(WIN64_DIR)/perft.exe
+perft_diag.exe: $(WIN64_DIR)/perft_diag.exe
+engine_tests.exe: $(WIN64_DIR)/engine_tests.exe
+chilo.exe: $(WIN64_DIR)/chilo.exe
+selfplay_collect.exe: $(WIN64_DIR)/selfplay_collect.exe
+eval_fen.exe: $(WIN64_DIR)/eval_fen.exe
 
 python-env:
 	bash ./scripts/setup_python_env.sh
@@ -46,89 +89,93 @@ nnue-python-tests:
 nnue-verify:
 	$(VENV_PYTHON) scripts/verify_nnue_workflow.py
 
-perft: $(PERFT_SRC) $(ENGINE_OBJ)
+$(RELEASE_DIR) $(DEBUG_DIR) $(VALIDATE_DIR) $(WIN64_DIR):
+	mkdir -p $@
+
+$(RELEASE_DIR)/perft: $(PERFT_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(PERFT_SRC) $(ENGINE_OBJ)
 
-perft_diag: $(PERFT_DIAG_SRC) $(ENGINE_OBJ)
+$(RELEASE_DIR)/perft_diag: $(PERFT_DIAG_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(PERFT_DIAG_SRC) $(ENGINE_OBJ)
 
-engine_tests: $(TEST_SRC) $(ENGINE_OBJ)
+$(RELEASE_DIR)/engine_tests: $(TEST_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(TEST_SRC) $(ENGINE_OBJ)
 
-chilo: $(CHILO_SRC) $(ENGINE_OBJ)
+$(RELEASE_DIR)/chilo: $(CHILO_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(CHILO_SRC) $(ENGINE_OBJ)
 
-selfplay_collect: $(SELFPLAY_SRC) $(ENGINE_OBJ)
+$(RELEASE_DIR)/selfplay_collect: $(SELFPLAY_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(SELFPLAY_SRC) $(ENGINE_OBJ)
 
-eval_fen: $(EVAL_FEN_SRC) $(ENGINE_OBJ)
+$(RELEASE_DIR)/eval_fen: $(EVAL_FEN_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(EVAL_FEN_SRC) $(ENGINE_OBJ)
 
-perft_debug: $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
+$(DEBUG_DIR)/perft_debug: $(PERFT_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
 
-perft_diag_debug: $(PERFT_DIAG_SRC) $(ENGINE_DEBUG_OBJ)
+$(DEBUG_DIR)/perft_diag_debug: $(PERFT_DIAG_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(PERFT_DIAG_SRC) $(ENGINE_DEBUG_OBJ)
 
-engine_tests_debug: $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
+$(DEBUG_DIR)/engine_tests_debug: $(TEST_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(TEST_SRC) $(ENGINE_DEBUG_OBJ)
 
-chilo_debug: $(CHILO_SRC) $(ENGINE_DEBUG_OBJ)
+$(DEBUG_DIR)/chilo_debug: $(CHILO_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(CHILO_SRC) $(ENGINE_DEBUG_OBJ)
 
-selfplay_collect_debug: $(SELFPLAY_SRC) $(ENGINE_DEBUG_OBJ)
+$(DEBUG_DIR)/selfplay_collect_debug: $(SELFPLAY_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(SELFPLAY_SRC) $(ENGINE_DEBUG_OBJ)
 
-eval_fen_debug: $(EVAL_FEN_SRC) $(ENGINE_DEBUG_OBJ)
+$(DEBUG_DIR)/eval_fen_debug: $(EVAL_FEN_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(EVAL_FEN_SRC) $(ENGINE_DEBUG_OBJ)
 
-perft_validate: $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
+$(VALIDATE_DIR)/perft_validate: $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
 
-perft_diag_validate: $(PERFT_DIAG_SRC) $(ENGINE_VALIDATE_OBJ)
+$(VALIDATE_DIR)/perft_diag_validate: $(PERFT_DIAG_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_DIAG_SRC) $(ENGINE_VALIDATE_OBJ)
 
-engine_tests_validate: $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
+$(VALIDATE_DIR)/engine_tests_validate: $(TEST_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(TEST_SRC) $(ENGINE_VALIDATE_OBJ)
 
-chilo_validate: $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ)
+$(VALIDATE_DIR)/chilo_validate: $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(CHILO_SRC) $(ENGINE_VALIDATE_OBJ)
 
-selfplay_collect_validate: $(SELFPLAY_SRC) $(ENGINE_VALIDATE_OBJ)
+$(VALIDATE_DIR)/selfplay_collect_validate: $(SELFPLAY_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(SELFPLAY_SRC) $(ENGINE_VALIDATE_OBJ)
 
-eval_fen_validate: $(EVAL_FEN_SRC) $(ENGINE_VALIDATE_OBJ)
+$(VALIDATE_DIR)/eval_fen_validate: $(EVAL_FEN_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(EVAL_FEN_SRC) $(ENGINE_VALIDATE_OBJ)
 
-perft.exe: $(PERFT_SRC) $(ENGINE_WIN64_OBJ)
+$(WIN64_DIR)/perft.exe: $(PERFT_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(PERFT_SRC) $(ENGINE_WIN64_OBJ)
 
-perft_diag.exe: $(PERFT_DIAG_SRC) $(ENGINE_WIN64_OBJ)
+$(WIN64_DIR)/perft_diag.exe: $(PERFT_DIAG_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(PERFT_DIAG_SRC) $(ENGINE_WIN64_OBJ)
 
-engine_tests.exe: $(TEST_SRC) $(ENGINE_WIN64_OBJ)
+$(WIN64_DIR)/engine_tests.exe: $(TEST_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(TEST_SRC) $(ENGINE_WIN64_OBJ)
 
-chilo.exe: $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
+$(WIN64_DIR)/chilo.exe: $(CHILO_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(CHILO_SRC) $(ENGINE_WIN64_OBJ)
 
-selfplay_collect.exe: $(SELFPLAY_SRC) $(ENGINE_WIN64_OBJ)
+$(WIN64_DIR)/selfplay_collect.exe: $(SELFPLAY_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(SELFPLAY_SRC) $(ENGINE_WIN64_OBJ)
 
-eval_fen.exe: $(EVAL_FEN_SRC) $(ENGINE_WIN64_OBJ)
+$(WIN64_DIR)/eval_fen.exe: $(EVAL_FEN_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(EVAL_FEN_SRC) $(ENGINE_WIN64_OBJ)
 
-%.o: %.cpp $(ENGINE_HEADERS)
+$(RELEASE_DIR)/%.o: %.cpp $(ENGINE_HEADERS) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
-%.debug.o: %.cpp $(ENGINE_HEADERS)
+$(DEBUG_DIR)/%.debug.o: %.cpp $(ENGINE_HEADERS) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -c -o $@ $<
 
-%.validate.o: %.cpp $(ENGINE_HEADERS)
+$(VALIDATE_DIR)/%.validate.o: %.cpp $(ENGINE_HEADERS) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -c -o $@ $<
 
-%.win64.o: %.cpp $(ENGINE_HEADERS)
+$(WIN64_DIR)/%.win64.o: %.cpp $(ENGINE_HEADERS) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
 clean:
-	rm -f perft perft_diag engine_tests chilo selfplay_collect eval_fen perft_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug perft_tests_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate perft_tests_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe perft_tests.exe $(ENGINE_OBJ) $(ENGINE_DEBUG_OBJ) $(ENGINE_VALIDATE_OBJ) $(ENGINE_WIN64_OBJ)
+	rm -rf $(BUILD_DIR)
+	rm -f perft perft_diag engine_tests chilo selfplay_collect eval_fen perft_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug perft_tests_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate perft_tests_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe perft_tests.exe attack.o movegen.o make_unmake.o perft_lib.o eval.o search.o attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o eval.debug.o search.debug.o attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o eval.validate.o search.validate.o attack.win64.o movegen.win64.o make_unmake.win64.o perft_lib.win64.o eval.win64.o search.win64.o

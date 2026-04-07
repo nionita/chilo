@@ -1,3 +1,4 @@
+build/
 perft
 perft_diag
 engine_tests

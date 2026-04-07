@@ -5,7 +5,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: ./eval_fen \"<fen>\" [more_fens...]\n";
+        std::cerr << "Usage: eval_fen \"<fen>\" [more_fens...]\n";
         return 1;
     }
 
