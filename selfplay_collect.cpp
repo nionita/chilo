@@ -239,6 +239,10 @@ bool shouldKeepSample(const RootMoveResult& rootMove) {
     return rootMove.hasEval && !rootMove.evalInCheck && !rootMove.evalIsTerminal;
 }
 
+bool shouldKeepBestMoveSample(const SearchResult& result) {
+    return result.bestMoveHasEval && !result.bestMoveEvalInCheck && !result.bestMoveEvalIsTerminal;
+}
+
 std::string formatDuration(std::chrono::seconds duration) {
     long long totalSeconds = duration.count();
     long long hours = totalSeconds / 3600;
@@ -314,10 +318,6 @@ int main(int argc, char** argv) {
         debugOutput << "root_fen,eval_fen,depth,score,result\n";
     }
 
-    SearchLimits searchLimits{options.depth, options.movetimeMs, nullptr, nullptr};
-    searchLimits.collectRootMoveResults = true;
-    searchLimits.minSampleDepth = options.minSampleDepth;
-
     std::mt19937_64 rng(options.seed);
     int totalGames = 0;
     int totalSamples = 0;
@@ -339,6 +339,10 @@ int main(int argc, char** argv) {
                     break;
                 }
 
+                SearchLimits searchLimits{options.depth, options.movetimeMs, nullptr, nullptr};
+                searchLimits.minSampleDepth = options.minSampleDepth;
+                searchLimits.collectRootMoveResults = ply < options.samplePlies;
+                searchLimits.collectBestMoveLeaf = true;
                 SearchResult result = searchBestMove(pos, searchLimits);
                 if (!result.hasMove) {
                     if (!classifyTerminal(pos, false, whiteResult)) whiteResult = 0;
@@ -347,12 +351,19 @@ int main(int argc, char** argv) {
                 }
 
                 Move chosenMove = chooseMove(result, ply, options, rng);
-                const RootMoveResult* chosenRoot = findRootMoveResult(result, chosenMove);
-                if (chosenRoot != nullptr &&
-                    shouldKeepSample(*chosenRoot) &&
-                    result.depth >= options.minSampleDepth) {
-                    gameSamples.push_back({positionToFEN(pos), chosenRoot->evalFen, result.depth,
-                                           chosenRoot->evalScore, chosenRoot->evalSideToMove});
+                const bool sampledRootChoice = ply < options.samplePlies;
+                if (sampledRootChoice) {
+                    const RootMoveResult* chosenRoot = findRootMoveResult(result, chosenMove);
+                    if (chosenRoot != nullptr &&
+                        shouldKeepSample(*chosenRoot) &&
+                        result.depth >= options.minSampleDepth) {
+                        gameSamples.push_back({positionToFEN(pos), chosenRoot->evalFen, result.depth,
+                                               chosenRoot->evalScore, chosenRoot->evalSideToMove});
+                    }
+                } else if (shouldKeepBestMoveSample(result) &&
+                           result.depth >= options.minSampleDepth) {
+                    gameSamples.push_back({positionToFEN(pos), result.bestMoveEvalFen, result.depth,
+                                           result.bestMoveEvalScore, result.bestMoveEvalSideToMove});
                 }
 
                 Position before = pos;

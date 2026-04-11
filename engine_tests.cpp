@@ -472,7 +472,7 @@ int testSearchSampleHook() {
 
     SampleCapture capture;
     SearchLimits limits{1, 0, nullptr, nullptr};
-    limits.collectRootMoveResults = true;
+    limits.collectBestMoveLeaf = true;
     limits.minSampleDepth = 1;
     limits.sampleCallback = recordSearchSample;
     limits.sampleUserData = &capture;
@@ -494,21 +494,44 @@ int testSearchSampleHook() {
         std::cout << "  FAIL (sample payload is incomplete)\n";
         return 1;
     }
+    if (!result.bestMoveHasEval || result.bestMoveEvalFen != capture.lastSample.evalFen ||
+        result.bestMoveEvalScore != capture.lastSample.score) {
+        std::cout << "  FAIL (best move eval payload did not match the sample callback)\n";
+        return 1;
+    }
+    if (!result.rootMoveResults.empty()) {
+        std::cout << "  FAIL (best-move-only collection should not populate all root move results)\n";
+        return 1;
+    }
 
     Position evalPos = parseFEN(capture.lastSample.evalFen);
     if (!representationConsistent(evalPos)) {
         std::cout << "  FAIL (sample eval FEN does not rebuild a consistent position)\n";
         return 1;
     }
+    if (result.bestMoveEvalInCheck || result.bestMoveEvalIsTerminal) {
+        std::cout << "  FAIL (quiet sample unexpectedly marked as in-check or terminal)\n";
+        return 1;
+    }
+
+    resetDrawHistory(p);
+    SearchLimits rootLimits{1, 0, nullptr, nullptr};
+    rootLimits.collectRootMoveResults = true;
+    rootLimits.minSampleDepth = 1;
+    SearchResult rootResult = searchBestMove(p, rootLimits);
+    if (!rootResult.completed || rootResult.rootMoveResults.empty()) {
+        std::cout << "  FAIL (exact root collection did not populate root move results)\n";
+        return 1;
+    }
 
     bool matchedBestMove = false;
-    std::string bestMove = moveToUCI(result.bestMove);
-    for (const RootMoveResult& rootMove : result.rootMoveResults) {
+    std::string bestMove = moveToUCI(rootResult.bestMove);
+    for (const RootMoveResult& rootMove : rootResult.rootMoveResults) {
         if (moveToUCI(rootMove.move) != bestMove || !rootMove.hasEval) continue;
-        if (rootMove.evalFen == capture.lastSample.evalFen &&
-            rootMove.evalScore == capture.lastSample.score) {
+        if (rootMove.evalFen == rootResult.bestMoveEvalFen &&
+            rootMove.evalScore == rootResult.bestMoveEvalScore) {
             if (rootMove.evalInCheck || rootMove.evalIsTerminal) {
-                std::cout << "  FAIL (quiet sample unexpectedly marked as in-check or terminal)\n";
+                std::cout << "  FAIL (quiet root result unexpectedly marked as in-check or terminal)\n";
                 return 1;
             }
             matchedBestMove = true;
@@ -516,14 +539,14 @@ int testSearchSampleHook() {
         }
     }
     if (!matchedBestMove) {
-        std::cout << "  FAIL (sample callback did not match the best move root sample)\n";
+        std::cout << "  FAIL (best move eval did not match the exact root result)\n";
         return 1;
     }
 
     resetDrawHistory(p);
     SampleCapture filteredCapture;
     SearchLimits filteredLimits{1, 0, nullptr, nullptr};
-    filteredLimits.collectRootMoveResults = true;
+    filteredLimits.collectBestMoveLeaf = true;
     filteredLimits.minSampleDepth = 2;
     filteredLimits.sampleCallback = recordSearchSample;
     filteredLimits.sampleUserData = &filteredCapture;

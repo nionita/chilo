@@ -92,6 +92,28 @@ void setLeaf(SearchLeaf* leaf, const Position& pos, int score, bool inCheck = fa
     leaf->terminal = terminal;
 }
 
+void clearBestMoveEval(SearchResult& result) {
+    result.bestMoveEvalScore = 0;
+    result.bestMoveEvalSideToMove = WHITE;
+    result.bestMoveHasEval = false;
+    result.bestMoveEvalInCheck = false;
+    result.bestMoveEvalIsTerminal = false;
+    result.bestMoveEvalFen.clear();
+}
+
+void setBestMoveEval(SearchResult& result, const SearchLeaf& leaf) {
+    if (!leaf.valid) {
+        clearBestMoveEval(result);
+        return;
+    }
+    result.bestMoveEvalScore = leaf.score;
+    result.bestMoveEvalSideToMove = leaf.pos.sideToMove;
+    result.bestMoveHasEval = true;
+    result.bestMoveEvalInCheck = leaf.inCheck;
+    result.bestMoveEvalIsTerminal = leaf.terminal;
+    result.bestMoveEvalFen = positionToFEN(leaf.pos);
+}
+
 Color opposite(Color side) {
     return side == WHITE ? BLACK : WHITE;
 }
@@ -713,8 +735,10 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_useDeadline = limits.movetimeMs > 0;
     if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
     auto startTime = std::chrono::steady_clock::now();
-    const bool collectRootDetails = limits.collectRootMoveResults || limits.sampleCallback != nullptr;
-    const std::string rootFen = collectRootDetails ? positionToFEN(pos) : std::string();
+    const bool collectRootDetails = limits.collectRootMoveResults;
+    const bool collectBestMoveLeaf = limits.collectBestMoveLeaf || limits.collectRootMoveResults ||
+                                     limits.sampleCallback != nullptr;
+    const std::string rootFen = limits.sampleCallback != nullptr ? positionToFEN(pos) : std::string();
 
     if (++g_ttGeneration == 0) g_ttGeneration = 1;
     clearSearchHeuristics();
@@ -730,6 +754,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     result.elapsedMs = 0;
     result.completed = true;
     result.hasMove = false;
+    clearBestMoveEval(result);
 
     Move rootMoves[MAX_MOVES];
     int rootCount = genLegalMoves(pos, rootMoves);
@@ -765,6 +790,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         int bestPvLength = 1;
         uint64_t iterationNodes = 0;
         bool interrupted = false;
+        SearchLeaf bestMoveLeaf{};
         std::vector<RootMoveResult> iterationRootResults;
         if (collectRootDetails) iterationRootResults.reserve(rootCount);
 
@@ -784,14 +810,16 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                                    iterationNodes, pvTable, pvLength, &childLeaf);
             } else {
                 if (i == 0) {
+                    SearchLeaf* childLeafOut = collectBestMoveLeaf ? &childLeaf : nullptr;
                     score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true, true,
-                                       iterationNodes, pvTable, pvLength, nullptr);
+                                       iterationNodes, pvTable, pvLength, childLeafOut);
                 } else {
                     score = -alphaBeta(pos, depth - 1, 1, -alpha - 1, -alpha, false, true, true,
                                        iterationNodes, pvTable, pvLength, nullptr);
                     if (score > alpha) {
+                        SearchLeaf* childLeafOut = collectBestMoveLeaf ? &childLeaf : nullptr;
                         score = -alphaBeta(pos, depth - 1, 1, -beta, -alpha, true, true, true,
-                                           iterationNodes, pvTable, pvLength, nullptr);
+                                           iterationNodes, pvTable, pvLength, childLeafOut);
                     }
                 }
             }
@@ -817,6 +845,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             if (score > bestScore) {
                 bestScore = score;
                 bestMove = move;
+                bestMoveLeaf = childLeaf;
                 bestPv[0] = move;
                 bestPvLength = 1;
                 for (int j = 0; j < pvLength[1] && j + 1 < MAX_SEARCH_DEPTH; j++) {
@@ -844,6 +873,8 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                                .count();
         result.completed = true;
         result.rootMoveResults = std::move(iterationRootResults);
+        if (collectBestMoveLeaf) setBestMoveEval(result, bestMoveLeaf);
+        else clearBestMoveEval(result);
 
         storeTT(pos.hashKey, depth, 0, bestScore, TT_EXACT, bestMove);
 
@@ -852,13 +883,10 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
 
     if (limits.sampleCallback != nullptr &&
         result.completed &&
-        result.depth >= limits.minSampleDepth) {
-        for (const RootMoveResult& rootMove : result.rootMoveResults) {
-            if (!movesEqual(rootMove.move, result.bestMove) || !rootMove.hasEval) continue;
-            SearchSample sample{rootFen, rootMove.evalFen, result.depth, rootMove.evalScore};
-            limits.sampleCallback(sample, limits.sampleUserData);
-            break;
-        }
+        result.depth >= limits.minSampleDepth &&
+        result.bestMoveHasEval) {
+        SearchSample sample{rootFen, result.bestMoveEvalFen, result.depth, result.bestMoveEvalScore};
+        limits.sampleCallback(sample, limits.sampleUserData);
     }
 
     return result;

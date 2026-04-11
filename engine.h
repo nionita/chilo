@@ -87,6 +87,7 @@ struct SearchLimits {
     SearchInfoCallback infoCallback;
     void* infoUserData;
     bool collectRootMoveResults = false;
+    bool collectBestMoveLeaf = false;
     int minSampleDepth = 0;
     SearchSampleCallback sampleCallback = nullptr;
     void* sampleUserData = nullptr;
@@ -102,6 +103,12 @@ struct SearchResult {
     uint64_t elapsedMs;
     bool completed;
     bool hasMove;
+    int bestMoveEvalScore;
+    Color bestMoveEvalSideToMove;
+    bool bestMoveHasEval;
+    bool bestMoveEvalInCheck;
+    bool bestMoveEvalIsTerminal;
+    std::string bestMoveEvalFen;
     std::vector<RootMoveResult> rootMoveResults;
 };
 

@@ -3,8 +3,10 @@
 Small chess engine project with:
 
 - a perft driver and diagnostics for move-generation validation
-- a minimal evaluation and alpha-beta search
+- a tiny embedded NNUE evaluator and alpha-beta search
 - a basic UCI engine binary for GUI integration
+- a self-play training-data collector
+- a Python NNUE training/export pipeline
 
 ## Files
 
@@ -191,10 +193,7 @@ Current engine behavior:
 
 - legal-move filtering on top of the existing pseudo-legal generator
 - compact 4-byte `Move` representation
-- tapered middlegame/endgame evaluation driven by non-pawn material phase
-- MG/EG PST, mobility, doubled/isolated/passed pawns, bishop pair, rook open/semi-open files
-- king safety from pawn shield + attack zone, plus endgame king activity and richer passed-pawn scoring
-- fixed side-to-move tempo bonus
+- tiny embedded NNUE-style evaluation with generated weights from `generated/`
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering
 - TT probe before the quiescence handoff so deeper stored entries can skip frontier QS
@@ -203,6 +202,17 @@ Current engine behavior:
 - repetition-draw detection in main search and 50-move draw detection in main search + QS
 - quiescence search with SEE-filtered captures and MVV-LVA ordering
 - no UCI options yet
+
+### Self-Play Collection
+
+`selfplay_collect` reads one FEN per line, runs self-play from each start position, and writes `eval_fen,score,result` rows.
+
+Important behavior:
+
+- it records evaluated leaf positions rather than the root position
+- it skips noisy leaves that are terminal or in check
+- it uses exact all-root scores only during the opening stochastic sampling window (`--sample-plies`)
+- after that window it returns to normal root PVS and records only the chosen move's evaluated leaf
 
 ### Eval CLI
 
