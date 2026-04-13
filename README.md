@@ -20,9 +20,11 @@ Small chess engine project with:
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
+- `scripts/dedup_training_csv.py`: exact-row CSV dedup for large collector outputs using external `sort`
 - `scripts/prepare_nnue_dataset.py`: sharded NNUE dataset preprocessor
 - `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets
 - `scripts/export_nnue.py`: quantized export to the generated C++ header
+- `scripts/run_nnue_workflow.py`: orchestration helper for dedup -> prepare -> train -> export
 - `scripts/verify_nnue_workflow.py`: end-to-end smoke check for preprocess -> train -> export -> C++
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
@@ -259,6 +261,18 @@ make python-env
 source .venv/bin/activate
 ```
 
+For raw collector outputs, optional exact-row dedup is handled as a separate external-sort step:
+
+```bash
+.venv/bin/python scripts/dedup_training_csv.py \
+  --input data/run1.csv data/run2.csv \
+  --output data/merged-dedup.csv \
+  --sort-buffer-size 50% \
+  --overwrite
+```
+
+This keeps dedup outside the trainer/preprocessor and scales better for large multi-file corpora. It removes only exact duplicate `eval_fen,score,result` rows; it does not collapse positions by FEN alone.
+
 Preprocess one or more collector CSV files into a sharded dataset:
 
 ```bash
@@ -269,6 +283,8 @@ Preprocess one or more collector CSV files into a sharded dataset:
   --validation-fraction 0.05 \
   --overwrite
 ```
+
+The preprocessor accepts both normal headered collector CSVs and headerless `sort | uniq` outputs that still have raw `eval_fen,score,result` rows.
 
 Train the current tiny NNUE on the sharded dataset:
 
@@ -298,6 +314,28 @@ Run the Python smoke tests and the end-to-end training/export/C++ verification:
 make nnue-python-tests
 make nnue-verify
 ```
+
+For repeated operator runs, use the orchestration wrapper instead of typing each phase manually:
+
+```bash
+.venv/bin/python scripts/run_nnue_workflow.py \
+  --input /tmp/chilo-uniq.csv \
+  --output-root /tmp/chilo-train1 \
+  --dedup-mode none \
+  --samples-per-shard 1000000 \
+  --epochs 2 \
+  --batch-size 256 \
+  --device cpu
+```
+
+It can also:
+
+- reuse an existing prepared dataset via `--dataset`
+- run exact-row dedup first via `--dedup-mode exact-row`
+- export to custom locations via `--output-header` / `--output-manifest`
+- temporarily swap the generated engine weights and run `engine_tests_debug` via `--verify-engine`
+
+The workflow wrapper defaults to a looser export drift tolerance (`--tolerance 256`) than the low-level exporter so short real-data training runs can still complete a first quantized export.
 
 If no custom positions are provided, the script uses the current default set:
 - `startpos`

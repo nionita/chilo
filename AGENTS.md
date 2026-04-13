@@ -49,9 +49,11 @@
 │   └── win64/
 ├── scripts/
 │   ├── benchmark_fixed_depth.py
+│   ├── dedup_training_csv.py
 │   ├── nnue_contract.json
 │   ├── nnue_common.py
 │   ├── prepare_nnue_dataset.py
+│   ├── run_nnue_workflow.py
 │   ├── train_nnue.py
 │   ├── export_nnue.py
 │   ├── verify_nnue_workflow.py
@@ -67,9 +69,12 @@
 - `eval_fen.cpp` exists mainly for Python-to-C++ NNUE parity checks.
 - `selfplay_collect.cpp` is the training-data collector. It records evaluated leaf positions, skips noisy leaves that are terminal or in check, prints progress/ETA during long runs, and only requests exact all-root scores during the opening stochastic sampling window; later plies use normal root PVS plus best-move leaf retention.
 - The dataset pipeline is sharded now. Do not assume one CSV in and one `samples.npy` out:
-- `prepare_nnue_dataset.py` takes many CSVs and writes a dataset directory with `manifest.json` plus shard `.npy` files
+- `dedup_training_csv.py` is the scalable exact-row dedup step for raw collector CSVs. Keep dedup outside the trainer and preprocessor; do not collapse by FEN alone unless that policy changes explicitly.
+- `prepare_nnue_dataset.py` takes many CSVs and writes a dataset directory with `manifest.json` plus shard `.npy` files. It accepts both normal headered collector CSVs and headerless `sort | uniq` outputs.
 - `train_nnue.py` streams shards instead of loading one monolithic dataset
 - `export_nnue.py` validates against the sharded dataset manifest before generating C++ weights
+- `run_nnue_workflow.py` is the operator wrapper for dedup -> prepare -> train -> export, with optional temporary engine verification against the exported weights
+- `run_nnue_workflow.py` uses a pragmatic default export tolerance (`256`) so short real-data training runs can usually produce a first quantized export without extra flags.
 - The repo keeps a checked-in generated NNUE export so the engine builds without running Python first.
 - C++ build outputs now live under `build/`, split by mode. Do not put new binaries or object-file targets back in the repo root.
 

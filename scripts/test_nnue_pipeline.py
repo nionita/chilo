@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import subprocess
 import sys
@@ -24,6 +25,8 @@ from nnue_common import (
     load_contract,
     load_dataset_manifest,
 )
+
+TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
 
 
 class NnuePipelineTest(unittest.TestCase):
@@ -109,6 +112,138 @@ class NnuePipelineTest(unittest.TestCase):
             self.assertIn('kContractId[] = "chilo.tiny_nnue.v1"', header_text)
             export_manifest = json.loads(export_manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(export_manifest["validation"]["max_abs_diff"], 0.0)
+
+    def test_prepare_headerless_input(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            csv_path = temp_dir / "samples-headerless.csv"
+            csv_path.write_text(
+                "4k3/8/8/8/8/8/8/3QK3 w - - 0 1,901,1\n"
+                "4k3/8/8/8/8/8/8/4K3 w - - 0 1,0,0\n",
+                encoding="utf-8",
+            )
+
+            dataset_dir = temp_dir / "dataset"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "prepare_nnue_dataset.py"),
+                    "--input",
+                    str(csv_path),
+                    "--output-dir",
+                    str(dataset_dir),
+                    "--samples-per-shard",
+                    "2",
+                    "--overwrite",
+                ],
+                check=True,
+            )
+
+            _, manifest = load_dataset_manifest(dataset_dir)
+            self.assertEqual(manifest["total_samples"], 2)
+
+    def test_dedup_training_csv(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            csv_a = temp_dir / "a.csv"
+            csv_b = temp_dir / "b.csv"
+            output_csv = temp_dir / "dedup.csv"
+
+            for path, rows in (
+                (
+                    csv_a,
+                    [
+                        ["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"],
+                        ["4k3/8/8/8/8/8/8/4K3 w - - 0 1", "0", "0"],
+                    ],
+                ),
+                (
+                    csv_b,
+                    [
+                        ["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"],
+                        ["4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", "31", "0"],
+                    ],
+                ),
+            ):
+                with path.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.writer(handle)
+                    writer.writerow(["eval_fen", "score", "result"])
+                    writer.writerows(rows)
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "dedup_training_csv.py"),
+                    "--input",
+                    str(csv_a),
+                    str(csv_b),
+                    "--output",
+                    str(output_csv),
+                    "--report-every",
+                    "1",
+                    "--overwrite",
+                ],
+                check=True,
+            )
+
+            with output_csv.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.reader(handle))
+            self.assertEqual(rows[0], ["eval_fen", "score", "result"])
+            self.assertEqual(len(rows) - 1, 3)
+
+    @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
+    def test_run_nnue_workflow(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            csv_path = temp_dir / "samples.csv"
+            with csv_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["eval_fen", "score", "result"])
+                writer.writerow(["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"])
+                writer.writerow(["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"])
+                writer.writerow(["4k3/8/8/8/8/8/8/4K3 w - - 0 1", "0", "0"])
+                writer.writerow(["4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", "31", "0"])
+
+            output_root = temp_dir / "workflow"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "run_nnue_workflow.py"),
+                    "--input",
+                    str(csv_path),
+                    "--output-root",
+                    str(output_root),
+                    "--dedup-mode",
+                    "exact-row",
+                    "--samples-per-shard",
+                    "2",
+                    "--validation-fraction",
+                    "0.5",
+                    "--epochs",
+                    "1",
+                    "--batch-size",
+                    "2",
+                    "--shuffle-buffer-size",
+                    "4",
+                    "--report-batches",
+                    "1",
+                    "--validation-samples",
+                    "3",
+                    "--tolerance",
+                    "8",
+                ],
+                check=True,
+            )
+
+            summary = json.loads((output_root / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertIn("dedup_output", summary)
+            self.assertTrue((output_root / "dataset" / "manifest.json").exists())
+            self.assertTrue((output_root / "training" / "best.pt").exists())
+            self.assertTrue((output_root / "export" / "generated_nnue_weights.h").exists())
+            self.assertTrue((output_root / "export" / "generated_nnue_manifest.json").exists())
+
+            _, manifest = load_dataset_manifest(output_root / "dataset")
+            self.assertEqual(manifest["total_samples"], 3)
 
 
 if __name__ == "__main__":

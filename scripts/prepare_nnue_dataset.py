@@ -21,6 +21,8 @@ from nnue_common import (
     load_contract,
 )
 
+EXPECTED_COLUMNS = ("eval_fen", "score", "result")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a sharded NNUE dataset cache from self-play CSV files.")
@@ -108,16 +110,35 @@ def main() -> int:
 
     for path in input_paths:
         with path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            expected = {"eval_fen", "score", "result"}
-            if reader.fieldnames is None or not expected.issubset(reader.fieldnames):
-                raise ValueError(f"{path} does not contain the required columns {sorted(expected)}")
+            sample = handle.read(4096)
+            handle.seek(0)
+            sniffer = csv.Sniffer()
+            has_header = sniffer.has_header(sample) if sample else False
 
-            for row_index, row in enumerate(reader, start=2):
+            if has_header:
+                reader = csv.DictReader(handle)
+                if reader.fieldnames is None or tuple(reader.fieldnames[:3]) != EXPECTED_COLUMNS:
+                    raise ValueError(f"{path} does not contain the required columns {list(EXPECTED_COLUMNS)}")
+                row_iter = (
+                    (row_index, row["eval_fen"], row["score"], row["result"])
+                    for row_index, row in enumerate(reader, start=2)
+                )
+            else:
+                reader = csv.reader(handle)
+                def iter_headerless_rows():
+                    for row_index, row in enumerate(reader, start=1):
+                        if not row:
+                            continue
+                        if len(row) != 3:
+                            raise ValueError(f"{path}:{row_index}: expected exactly 3 columns in headerless input")
+                        yield row_index, row[0], row[1], row[2]
+                row_iter = iter_headerless_rows()
+
+            for row_index, eval_fen, score_text, result_text in row_iter:
                 try:
-                    score = int(row["score"])
-                    result = int(row["result"])
-                    encoded = encode_sample(row["eval_fen"], score, result)
+                    score = int(score_text)
+                    result = int(result_text)
+                    encoded = encode_sample(eval_fen, score, result)
                 except Exception as exc:
                     raise ValueError(f"{path}:{row_index}: {exc}") from exc
 
