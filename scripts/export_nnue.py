@@ -18,6 +18,9 @@ from nnue_common import (
     relative_feature,
 )
 
+DEFAULT_INPUT_SCALE = 64
+DEFAULT_OUTPUT_SCALE = 32
+
 
 def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.ndarray | int]]:
     try:
@@ -39,18 +42,27 @@ def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.n
     return contract, weights
 
 
-def quantize_weights(weights: Dict[str, np.ndarray | int]) -> Dict[str, np.ndarray | int]:
+def quantize_weights(weights: Dict[str, np.ndarray | int], input_scale: int, output_scale: int) -> Dict[str, np.ndarray | int]:
+    if input_scale <= 0 or output_scale <= 0:
+        raise SystemExit("input_scale and output_scale must be positive integers.")
     quantized = {}
-    for name in ("input_weights", "hidden_bias", "output_weights"):
-        rounded = np.rint(np.asarray(weights[name], dtype=np.float64))
+    for name in ("input_weights", "hidden_bias"):
+        rounded = np.rint(np.asarray(weights[name], dtype=np.float64) * input_scale)
         if np.any(rounded < np.iinfo(np.int16).min) or np.any(rounded > np.iinfo(np.int16).max):
             raise SystemExit(f"{name} does not fit in int16 after rounding; export refused.")
         quantized[name] = rounded.astype(np.int16)
 
-    output_bias = int(round(float(weights["output_bias"])))
-    if output_bias < np.iinfo(np.int16).min or output_bias > np.iinfo(np.int16).max:
-        raise SystemExit("output_bias does not fit in int16 after rounding; export refused.")
+    rounded_output_weights = np.rint(np.asarray(weights["output_weights"], dtype=np.float64) * output_scale)
+    if np.any(rounded_output_weights < np.iinfo(np.int16).min) or np.any(rounded_output_weights > np.iinfo(np.int16).max):
+        raise SystemExit("output_weights do not fit in int16 after scaled rounding; export refused.")
+    quantized["output_weights"] = rounded_output_weights.astype(np.int16)
+
+    output_bias = int(round(float(weights["output_bias"]) * input_scale * output_scale))
+    if output_bias < np.iinfo(np.int32).min or output_bias > np.iinfo(np.int32).max:
+        raise SystemExit("output_bias does not fit in int32 after scaled rounding; export refused.")
     quantized["output_bias"] = output_bias
+    quantized["input_scale"] = int(input_scale)
+    quantized["output_scale"] = int(output_scale)
     return quantized
 
 
@@ -88,13 +100,7 @@ def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weig
             activated = np.clip(hidden, 0.0, float(clip_max))
             perspective_scores.append(output_bias_float + float((activated * output_weights_float).sum()))
         float_score = 0.5 * (perspective_scores[0] - perspective_scores[1])
-        quantized_score = integer_model_eval(
-            quantized_weights,
-            side_to_move,
-            pieces,
-            squares,
-            clip_max,
-        )
+        quantized_score = integer_model_eval(quantized_weights, side_to_move, pieces, squares, clip_max)
         diffs.append(abs(float_score - quantized_score))
 
     max_abs_diff = float(max(diffs))
@@ -137,6 +143,8 @@ inline constexpr char kContractSha256[] = "{contract['contract_sha256']}";
 inline constexpr int kVersion = {int(contract['version'])};
 inline constexpr int kHiddenSize = {int(contract['hidden_size'])};
 inline constexpr int kClipMax = {int(contract['clip_max'])};
+inline constexpr int kInputScale = {int(weights['input_scale'])};
+inline constexpr int kOutputScale = {int(weights['output_scale'])};
 inline constexpr int kPerspectiveCount = {int(contract['perspectives'])};
 inline constexpr int kPiecePlaneCount = {int(contract['piece_planes'])};
 inline constexpr int kSquareCount = {int(contract['board_squares'])};
@@ -145,7 +153,7 @@ struct TinyNnueData {{
     int16_t inputWeights[kPerspectiveCount][kPiecePlaneCount][kSquareCount][kHiddenSize];
     int16_t hiddenBias[kHiddenSize];
     int16_t outputWeights[kHiddenSize];
-    int16_t outputBias;
+    int32_t outputBias;
 }};
 
 inline constexpr TinyNnueData kTinyNnue = {{
@@ -171,6 +179,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", default=None, help="Optional sharded dataset root or manifest used to validate quantization drift.")
     parser.add_argument("--validation-samples", type=int, default=256, help="Maximum number of validation positions to sample from the dataset.")
     parser.add_argument("--tolerance", type=float, default=0.0, help="Maximum allowed max absolute drift during quantization validation.")
+    parser.add_argument("--input-scale", type=int, default=DEFAULT_INPUT_SCALE, help="Scale factor applied to input weights and hidden bias before integer export.")
+    parser.add_argument("--output-scale", type=int, default=DEFAULT_OUTPUT_SCALE, help="Scale factor applied to output weights before integer export.")
     parser.add_argument("--output-header", required=True, help="Path to write the generated_nnue_weights.h file.")
     parser.add_argument("--output-manifest", required=True, help="Path to write the export manifest JSON.")
     args = parser.parse_args()
@@ -194,7 +204,7 @@ def main() -> int:
         if checkpoint_contract["contract_sha256"] != contract["contract_sha256"]:
             raise SystemExit("Checkpoint contract_sha256 does not match the requested export contract.")
 
-    quantized_weights = quantize_weights(float_weights)
+    quantized_weights = quantize_weights(float_weights, args.input_scale, args.output_scale)
     validation = {"validation_samples": 0, "validation_split": "none", "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
     if args.dataset_dir:
         validation = validate_dataset(
@@ -210,14 +220,16 @@ def main() -> int:
     output_manifest = Path(args.output_manifest)
     write_header(output_header, contract, quantized_weights)
     manifest = {
-        "format": "chilo.nnue_export.v2",
+        "format": "chilo.nnue_export.v3",
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
         "architecture": contract["architecture"],
         "hidden_size": int(contract["hidden_size"]),
         "clip_max": int(contract["clip_max"]),
         "source": source,
-        "quantization": "round_to_int16",
+        "quantization": "scaled_int16",
+        "input_scale": int(args.input_scale),
+        "output_scale": int(args.output_scale),
         "validation": validation,
     }
     output_manifest.write_text(compact_json(manifest), encoding="utf-8")

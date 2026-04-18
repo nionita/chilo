@@ -23,7 +23,7 @@ Small chess engine project with:
 - `scripts/dedup_training_csv.py`: exact-row CSV dedup for large collector outputs using external `sort`
 - `scripts/prepare_nnue_dataset.py`: sharded NNUE dataset preprocessor
 - `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets
-- `scripts/export_nnue.py`: quantized export to the generated C++ header
+- `scripts/export_nnue.py`: scaled quantized export to the generated C++ header
 - `scripts/run_nnue_workflow.py`: orchestration helper for dedup -> prepare -> train -> export
 - `scripts/verify_nnue_workflow.py`: end-to-end smoke check for preprocess -> train -> export -> C++
 - `engine_development_notes.md`: implementation history, findings, and performance notes
@@ -196,6 +196,7 @@ Current engine behavior:
 - legal-move filtering on top of the existing pseudo-legal generator
 - compact 4-byte `Move` representation
 - tiny embedded NNUE-style evaluation with generated weights from `generated/`
+- generated NNUE exports use configurable scaled integer quantization; the chosen scales are recorded in `generated/generated_nnue_manifest.json`
 - NNUE perspectives are active/passive (side to move / opponent), not fixed white/black
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering

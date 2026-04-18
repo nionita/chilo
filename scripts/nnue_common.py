@@ -375,6 +375,14 @@ def trunc_divide_by_two(value: int) -> int:
     return value // 2 if value >= 0 else -((-value) // 2)
 
 
+def round_divide(value: int, divisor: int) -> int:
+    if divisor <= 0:
+        raise ValueError("divisor must be positive")
+    if value >= 0:
+        return (value + divisor // 2) // divisor
+    return -(((-value) + divisor // 2) // divisor)
+
+
 def integer_model_eval(
     weights: Dict[str, np.ndarray | int],
     side_to_move: int,
@@ -383,18 +391,22 @@ def integer_model_eval(
     clip_max: int,
 ) -> int:
     input_weights = weights["input_weights"]
-    hidden_bias = weights["hidden_bias"].astype(np.int32)
-    output_weights = weights["output_weights"].astype(np.int32)
+    hidden_bias = weights["hidden_bias"].astype(np.int64)
+    output_weights = weights["output_weights"].astype(np.int64)
     output_bias = int(weights["output_bias"])
+    input_scale = int(weights.get("input_scale", 1))
+    output_scale = int(weights.get("output_scale", 1))
+    scaled_clip_max = clip_max * input_scale
+    total_scale = 2 * input_scale * output_scale
 
     perspective_scores: List[int] = []
     for perspective in (0, 1):
         hidden = hidden_bias.copy()
         for piece, square in zip(pieces, squares):
             relative_piece_value, relative_square = relative_feature(side_to_move, perspective, piece, square)
-            hidden += input_weights[perspective, relative_piece_value, relative_square].astype(np.int32)
-        activated = np.clip(hidden, 0, clip_max)
+            hidden += input_weights[perspective, relative_piece_value, relative_square].astype(np.int64)
+        activated = np.clip(hidden, 0, scaled_clip_max)
         score = output_bias + int((activated * output_weights).sum())
         perspective_scores.append(score)
 
-    return trunc_divide_by_two(perspective_scores[0] - perspective_scores[1])
+    return round_divide(perspective_scores[0] - perspective_scores[1], total_scale)

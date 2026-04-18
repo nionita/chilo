@@ -66,6 +66,7 @@
 
 - The evaluator is no longer the old handcrafted tapered eval. `eval.cpp` runs inference only; the embedded weights come from `generated/generated_nnue_weights.h`.
 - The training/export contract is explicit. Keep `eval.cpp`, `generated/generated_nnue_weights.h`, `generated/generated_nnue_manifest.json`, and `scripts/nnue_contract.json` in sync.
+- Integer export is scale-driven now. `scripts/export_nnue.py` writes input/output quantization scales into the generated header/manifest, and `eval.cpp` must use the same scaled clip/divide math as the Python parity path.
 - The Tiny NNUE uses active/passive perspectives. Perspective `0` is the side to move and perspective `1` is the opponent; raw board pieces are remapped to relative friendly/enemy planes at inference/training time.
 - `eval_fen.cpp` exists mainly for Python-to-C++ NNUE parity checks.
 - `selfplay_collect.cpp` is the training-data collector. It records evaluated leaf positions, skips noisy leaves that are terminal or in check, prints progress/ETA during long runs, and only requests exact all-root scores during the opening stochastic sampling window; later plies use normal root PVS plus best-move leaf retention.

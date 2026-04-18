@@ -9,6 +9,10 @@ namespace {
 
 constexpr int NNUE_HIDDEN_SIZE = chilo::nnue_generated::kHiddenSize;
 constexpr int NNUE_CLIP_MAX = chilo::nnue_generated::kClipMax;
+constexpr int NNUE_INPUT_SCALE = chilo::nnue_generated::kInputScale;
+constexpr int NNUE_OUTPUT_SCALE = chilo::nnue_generated::kOutputScale;
+constexpr int NNUE_SCALED_CLIP_MAX = NNUE_CLIP_MAX * NNUE_INPUT_SCALE;
+constexpr int64_t NNUE_FINAL_DIVISOR = static_cast<int64_t>(2) * NNUE_INPUT_SCALE * NNUE_OUTPUT_SCALE;
 
 static_assert(std::string_view(chilo::nnue_generated::kContractId) == "chilo.tiny_nnue.v2",
               "Unexpected generated NNUE contract id");
@@ -29,7 +33,7 @@ const chilo::nnue_generated::TinyNnueData& tinyNnue() {
 }
 
 int clippedRelu(int value) {
-    return std::clamp(value, 0, NNUE_CLIP_MAX);
+    return std::clamp(value, 0, NNUE_SCALED_CLIP_MAX);
 }
 
 Color oppositeColor(Color color) {
@@ -50,7 +54,13 @@ int relativePiecePlane(Piece piece, Color color) {
     return pieceColor(piece) == color ? baseType : baseType + 6;
 }
 
-int perspectiveScore(const Position& pos, int perspective) {
+int roundDivide(int64_t value, int64_t divisor) {
+    assert(divisor > 0);
+    if (value >= 0) return static_cast<int>((value + divisor / 2) / divisor);
+    return -static_cast<int>(((-value) + divisor / 2) / divisor);
+}
+
+int64_t perspectiveScore(const Position& pos, int perspective) {
     const auto& net = tinyNnue();
     int hidden[NNUE_HIDDEN_SIZE];
     for (int i = 0; i < NNUE_HIDDEN_SIZE; ++i) hidden[i] = net.hiddenBias[i];
@@ -66,15 +76,15 @@ int perspectiveScore(const Position& pos, int perspective) {
         for (int i = 0; i < NNUE_HIDDEN_SIZE; ++i) hidden[i] += weights[i];
     }
 
-    int score = net.outputBias;
-    for (int i = 0; i < NNUE_HIDDEN_SIZE; ++i) score += clippedRelu(hidden[i]) * net.outputWeights[i];
+    int64_t score = net.outputBias;
+    for (int i = 0; i < NNUE_HIDDEN_SIZE; ++i) score += static_cast<int64_t>(clippedRelu(hidden[i])) * net.outputWeights[i];
     return score;
 }
 
 }  // namespace
 
 int evaluate(const Position& pos) {
-    int activePerspective = perspectiveScore(pos, 0);
-    int passivePerspective = perspectiveScore(pos, 1);
-    return (activePerspective - passivePerspective) / 2;
+    int64_t activePerspective = perspectiveScore(pos, 0);
+    int64_t passivePerspective = perspectiveScore(pos, 1);
+    return roundDivide(activePerspective - passivePerspective, NNUE_FINAL_DIVISOR);
 }

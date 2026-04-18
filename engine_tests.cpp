@@ -610,7 +610,7 @@ int testEvaluation() {
         }
     }
 
-    const int queenUpExpected = 904;
+    const int queenUpExpected = 905;
     if (evaluate(whiteBetter) != queenUpExpected) {
         std::cout << "  FAIL (fixed-score regression mismatch, expected " << queenUpExpected
                   << ", got " << evaluate(whiteBetter) << ")\n";

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import shutil
 import subprocess
 import sys
@@ -108,7 +109,12 @@ def main() -> int:
 
             contract = load_contract()
             _, float_weights = load_torch_checkpoint(checkpoint_path)
-            quantized = quantize_weights(float_weights)
+            export_manifest = json.loads(read_text(exported_manifest))
+            quantized = quantize_weights(
+                float_weights,
+                int(export_manifest["input_scale"]),
+                int(export_manifest["output_scale"]),
+            )
             test_fens = [
                 "4k3/8/8/8/8/8/8/3QK3 w - - 0 1",
                 "4k3/8/8/8/8/8/8/3QK3 b - - 0 1",
