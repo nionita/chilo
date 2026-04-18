@@ -57,6 +57,7 @@ bool isDrawByRepetition(const Position& pos);
 
 int evaluate(const Position& pos);
 int staticExchangeEval(const Position& pos, const Move& move);
+bool loadNnueWeightsFile(const std::string& path, std::string& error);
 
 struct SearchResult;
 using SearchInfoCallback = void (*)(const SearchResult&, void*);

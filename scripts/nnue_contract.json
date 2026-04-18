@@ -2,7 +2,7 @@
   "contract_id": "chilo.tiny_nnue.v2",
   "version": 2,
   "architecture": "TinyNnue",
-  "hidden_size": 16,
+  "default_hidden_size": 64,
   "clip_max": 255,
   "perspectives": 2,
   "piece_planes": 13,

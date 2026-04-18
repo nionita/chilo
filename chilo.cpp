@@ -1,6 +1,7 @@
 #include "engine.h"
 
 #include <atomic>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -10,7 +11,7 @@
 namespace {
 
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const char* CHILO_VERSION = "0.5.0";
+const char* CHILO_VERSION = "0.6.0";
 
 struct GoCommandOptions {
     int depth = 0;
@@ -32,6 +33,34 @@ std::vector<std::string> tokenize(const std::string& line) {
     std::string token;
     while (iss >> token) tokens.push_back(token);
     return tokens;
+}
+
+std::filesystem::path sidecarWeightsPath(const char* argv0) {
+    std::filesystem::path executablePath = std::filesystem::absolute(std::filesystem::path(argv0));
+    return executablePath.parent_path() / (executablePath.stem().string() + ".bin");
+}
+
+bool loadStartupWeights(const std::string* explicitWeightsPath, const std::filesystem::path& sidecarPath) {
+    std::string error;
+    if (explicitWeightsPath != nullptr) {
+        if (!loadNnueWeightsFile(*explicitWeightsPath, error)) {
+            std::cerr << "fatal: failed to load NNUE weights from " << *explicitWeightsPath << ": " << error << "\n";
+            return false;
+        }
+        std::cerr << "info string loaded NNUE weights from " << *explicitWeightsPath << "\n";
+        return true;
+    }
+
+    std::error_code existsError;
+    if (std::filesystem::exists(sidecarPath, existsError) && !existsError) {
+        if (!loadNnueWeightsFile(sidecarPath.string(), error)) {
+            std::cerr << "info string failed to load sidecar NNUE weights from " << sidecarPath
+                      << ": " << error << "; using built-in weights\n";
+            return true;
+        }
+        std::cerr << "info string loaded sidecar NNUE weights from " << sidecarPath << "\n";
+    }
+    return true;
 }
 
 std::string bestMoveString(const SearchResult& result) {
@@ -197,12 +226,26 @@ SearchLimits parseGoCommand(const std::vector<std::string>& tokens, const Positi
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc > 1) {
-        std::string arg = argv[1];
+    std::string explicitWeightsPath;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
         if (arg == "--version" || arg == "-v") {
             std::cout << CHILO_VERSION << "\n";
             return 0;
         }
+        if (arg == "--weights") {
+            if (i + 1 >= argc) {
+                std::cerr << "fatal: --weights requires a file path\n";
+                return 1;
+            }
+            explicitWeightsPath = argv[++i];
+        }
+    }
+
+    std::filesystem::path sidecarPath = sidecarWeightsPath(argv[0]);
+    const std::string* explicitWeights = explicitWeightsPath.empty() ? nullptr : &explicitWeightsPath;
+    if (!loadStartupWeights(explicitWeights, sidecarPath)) {
+        return 1;
     }
 
     Position currentPos = parseFEN(STARTPOS_FEN);

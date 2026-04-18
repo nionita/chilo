@@ -89,6 +89,7 @@ class NnuePipelineTest(unittest.TestCase):
 
             header_path = temp_dir / "generated_nnue_weights.h"
             export_manifest_path = temp_dir / "generated_nnue_manifest.json"
+            export_bin_path = temp_dir / "weights.bin"
             subprocess.run(
                 [
                     sys.executable,
@@ -104,20 +105,25 @@ class NnuePipelineTest(unittest.TestCase):
                     str(header_path),
                     "--output-manifest",
                     str(export_manifest_path),
+                    "--output-bin",
+                    str(export_bin_path),
                 ],
                 check=True,
             )
 
             header_text = header_path.read_text(encoding="utf-8")
             self.assertIn('kContractId[] = "chilo.tiny_nnue.v2"', header_text)
+            self.assertIn("inline constexpr int kHiddenSize = 64;", header_text)
             self.assertIn("inline constexpr int kInputScale = 64;", header_text)
             self.assertIn("inline constexpr int kOutputScale = 32;", header_text)
             export_manifest = json.loads(export_manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(export_manifest["format"], "chilo.nnue_export.v3")
+            self.assertEqual(export_manifest["format"], "chilo.nnue_export.v4")
+            self.assertEqual(export_manifest["hidden_size"], 64)
             self.assertEqual(export_manifest["quantization"], "scaled_int16")
             self.assertEqual(export_manifest["input_scale"], 64)
             self.assertEqual(export_manifest["output_scale"], 32)
             self.assertEqual(export_manifest["validation"]["max_abs_diff"], 0.0)
+            self.assertTrue(export_bin_path.exists())
 
     def test_prepare_headerless_input(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -227,6 +233,8 @@ class NnuePipelineTest(unittest.TestCase):
                     "0.5",
                     "--epochs",
                     "1",
+                    "--hidden-size",
+                    "16",
                     "--batch-size",
                     "2",
                     "--shuffle-buffer-size",
@@ -247,6 +255,7 @@ class NnuePipelineTest(unittest.TestCase):
             self.assertTrue((output_root / "training" / "best.pt").exists())
             self.assertTrue((output_root / "export" / "generated_nnue_weights.h").exists())
             self.assertTrue((output_root / "export" / "generated_nnue_manifest.json").exists())
+            self.assertTrue((output_root / "export" / "weights.bin").exists())
 
             _, manifest = load_dataset_manifest(output_root / "dataset")
             self.assertEqual(manifest["total_samples"], 3)

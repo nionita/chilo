@@ -12,6 +12,7 @@ import numpy as np
 from nnue_common import (
     build_seeded_weights,
     compact_json,
+    contract_hidden_size,
     load_contract,
     load_dataset_manifest,
     shard_metas_for_split,
@@ -46,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--init", choices=("seeded", "random"), default="seeded")
+    parser.add_argument("--hidden-size", type=int, default=0, help="Hidden layer size for the trained NNUE. Defaults to the contract's default hidden size.")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--shuffle-buffer-size", type=int, default=8192)
     parser.add_argument("--report-batches", type=int, default=200, help="Print a progress line every N training batches.")
@@ -66,6 +68,9 @@ def main() -> int:
         raise SystemExit("--report-batches must be positive.")
 
     contract = load_contract(Path(args.contract) if args.contract else None)
+    hidden_size = args.hidden_size if args.hidden_size > 0 else contract_hidden_size(contract)
+    if hidden_size <= 0:
+        raise SystemExit("--hidden-size must be positive.")
     manifest_path, manifest = load_dataset_manifest(Path(args.dataset), contract)
 
     train_shards = shard_metas_for_split(manifest, "train")
@@ -149,9 +154,8 @@ def main() -> int:
                     yield self._record_to_sample(record)
 
     class TinyNnueModel(nn.Module):
-        def __init__(self, contract_data: dict, init_mode: str):
+        def __init__(self, contract_data: dict, hidden_size: int, init_mode: str):
             super().__init__()
-            hidden_size = int(contract_data["hidden_size"])
             self.clip_max = float(contract_data["clip_max"])
             self.register_buffer("square_mirror_mask", torch.tensor(56, dtype=torch.int64))
             self.input_weights = nn.Parameter(torch.zeros(2, 13, 64, hidden_size, dtype=torch.float32))
@@ -160,7 +164,7 @@ def main() -> int:
             self.output_bias = nn.Parameter(torch.zeros(1, dtype=torch.float32))
 
             if init_mode == "seeded":
-                seeded = build_seeded_weights(contract_data)
+                seeded = build_seeded_weights(contract_data, hidden_size)
                 self.input_weights.data.copy_(torch.from_numpy(seeded["input_weights"].astype(np.float32)))
                 self.hidden_bias.data.copy_(torch.from_numpy(seeded["hidden_bias"].astype(np.float32)))
                 self.output_weights.data.copy_(torch.from_numpy(seeded["output_weights"].astype(np.float32)))
@@ -234,7 +238,7 @@ def main() -> int:
         return torch.mean((pred - target) ** 2)
 
     device = torch.device(args.device)
-    model = TinyNnueModel(contract, args.init).to(device)
+    model = TinyNnueModel(contract, hidden_size, args.init).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
     output_dir = Path(args.output_dir)
@@ -313,6 +317,11 @@ def main() -> int:
 
         checkpoint = {
             "contract": {key: value for key, value in contract.items() if key not in ("contract_path",)},
+            "model": {
+                "architecture": contract["architecture"],
+                "hidden_size": hidden_size,
+                "clip_max": int(contract["clip_max"]),
+            },
             "dataset": {
                 "manifest_path": str(manifest_path.resolve()),
                 "train_shards": len(train_shards),
@@ -345,6 +354,7 @@ def main() -> int:
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
         "dataset_manifest": str(manifest_path.resolve()),
+        "hidden_size": hidden_size,
         "train_shards": len(train_shards),
         "val_shards": len(val_shards),
         "train_samples": train_samples,

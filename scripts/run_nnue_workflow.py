@@ -55,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--result-weight", type=float, default=0.25)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--init", choices=("seeded", "random"), default="seeded")
+    parser.add_argument("--hidden-size", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--shuffle-buffer-size", type=int, default=8192)
     parser.add_argument("--report-batches", type=int, default=200)
@@ -64,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tolerance", type=float, default=256.0)
     parser.add_argument("--output-header", default=None)
     parser.add_argument("--output-manifest", default=None)
+    parser.add_argument("--output-bin", default=None)
 
     parser.add_argument("--verify-engine", action="store_true")
     return parser.parse_args()
@@ -204,6 +206,8 @@ def main() -> int:
             args.device,
             "--init",
             args.init,
+            "--hidden-size",
+            str(args.hidden_size),
             "--num-workers",
             str(args.num_workers),
             "--shuffle-buffer-size",
@@ -220,8 +224,10 @@ def main() -> int:
         if not args.skip_export:
             export_header = Path(args.output_header) if args.output_header else output_root / "export" / "generated_nnue_weights.h"
             export_manifest = Path(args.output_manifest) if args.output_manifest else output_root / "export" / "generated_nnue_manifest.json"
+            export_bin = Path(args.output_bin) if args.output_bin else output_root / "export" / "weights.bin"
             export_header.parent.mkdir(parents=True, exist_ok=True)
             export_manifest.parent.mkdir(parents=True, exist_ok=True)
+            export_bin.parent.mkdir(parents=True, exist_ok=True)
 
             export_cmd = [
                 python_exe,
@@ -238,12 +244,15 @@ def main() -> int:
                 str(export_header),
                 "--output-manifest",
                 str(export_manifest),
+                "--output-bin",
+                str(export_bin),
             ]
             if args.contract:
                 export_cmd.extend(["--contract", args.contract])
             run_step(summary, "export", export_cmd)
             summary["export_header"] = str(export_header.resolve())
             summary["export_manifest"] = str(export_manifest.resolve())
+            summary["export_bin"] = str(export_bin.resolve())
 
             if args.verify_engine:
                 verify_engine_with_export(summary, export_header, export_manifest)

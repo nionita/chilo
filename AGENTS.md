@@ -64,17 +64,17 @@
 
 ## Important Specifics
 
-- The evaluator is no longer the old handcrafted tapered eval. `eval.cpp` runs inference only; the embedded weights come from `generated/generated_nnue_weights.h`.
+- The evaluator is no longer the old handcrafted tapered eval. `eval.cpp` runs inference only. The compiled engine has a built-in fallback net from `generated/generated_nnue_weights.h`, but it can also load a runtime `.bin` weights artifact with a different hidden size.
 - The training/export contract is explicit. Keep `eval.cpp`, `generated/generated_nnue_weights.h`, `generated/generated_nnue_manifest.json`, and `scripts/nnue_contract.json` in sync.
-- Integer export is scale-driven now. `scripts/export_nnue.py` writes input/output quantization scales into the generated header/manifest, and `eval.cpp` must use the same scaled clip/divide math as the Python parity path.
+- Integer export is scale-driven now. `scripts/export_nnue.py` writes input/output quantization scales and hidden size into the generated manifest/header or runtime `.bin`, and `eval.cpp` must use the same scaled clip/divide math as the Python parity path.
 - The Tiny NNUE uses active/passive perspectives. Perspective `0` is the side to move and perspective `1` is the opponent; raw board pieces are remapped to relative friendly/enemy planes at inference/training time.
 - `eval_fen.cpp` exists mainly for Python-to-C++ NNUE parity checks.
 - `selfplay_collect.cpp` is the training-data collector. It records evaluated leaf positions, skips noisy leaves that are terminal or in check, prints progress/ETA during long runs, and only requests exact all-root scores during the opening stochastic sampling window; later plies use normal root PVS plus best-move leaf retention.
 - The dataset pipeline is sharded now. Do not assume one CSV in and one `samples.npy` out:
 - `dedup_training_csv.py` is the scalable exact-row dedup step for raw collector CSVs. Keep dedup outside the trainer and preprocessor; do not collapse by FEN alone unless that policy changes explicitly.
-- `prepare_nnue_dataset.py` takes many CSVs and writes a dataset directory with `manifest.json` plus shard `.npy` files. It accepts both normal headered collector CSVs and headerless `sort | uniq` outputs.
-- `train_nnue.py` streams shards instead of loading one monolithic dataset
-- `export_nnue.py` validates against the sharded dataset manifest before generating C++ weights
+- `prepare_nnue_dataset.py` takes many CSVs and writes a dataset directory with `manifest.json` plus shard `.npy` files. It accepts both normal headered collector CSVs and headerless `sort | uniq` outputs. Hidden size is not part of dataset preparation.
+- `train_nnue.py` streams shards instead of loading one monolithic dataset, and hidden size is chosen here
+- `export_nnue.py` validates against the sharded dataset manifest before generating the built-in C++ header or a runtime-loadable `.bin` weights file
 - `run_nnue_workflow.py` is the operator wrapper for dedup -> prepare -> train -> export, with optional temporary engine verification against the exported weights
 - `run_nnue_workflow.py` uses a pragmatic default export tolerance (`256`) so short real-data training runs can usually produce a first quantized export without extra flags.
 - The repo keeps a checked-in generated NNUE export so the engine builds without running Python first.
@@ -96,7 +96,7 @@
 - This workspace often fails basic shell commands inside the sandbox with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. If that happens, rerun the command with escalation instead of wasting time debugging the command itself.
 - The repo root may still contain stale legacy build outputs from older layouts. Prefer the files under `build/`.
 - `.venv/` is local-only. Use it for the NNUE scripts; do not depend on system `torch`.
-- `generated/generated_nnue_weights.h` is generated data. If the model contract changes, regenerate it instead of editing numbers by hand.
+- `generated/generated_nnue_weights.h` is generated data for the built-in fallback net. Runtime `.bin` files can override it at startup via `--weights` or a same-basename sidecar.
 
 ## Likely Next Work
 

@@ -14,6 +14,8 @@ MAX_PIECES = 32
 DATASET_FORMAT = "chilo.nnue_dataset.v2"
 DATASET_MANIFEST_NAME = "manifest.json"
 SHARD_DIR_NAME = "shards"
+DEFAULT_HIDDEN_SIZE = 64
+CONTRACT_HASH_EXCLUDED_KEYS = {"hidden_size", "default_hidden_size", "contract_path", "contract_sha256"}
 
 PIECE_FROM_FEN = {
     "P": 1,
@@ -46,14 +48,26 @@ def load_contract(path: Path | None = None) -> Dict[str, object]:
     contract_path = Path(path) if path is not None else DEFAULT_CONTRACT_PATH
     with contract_path.open("r", encoding="utf-8") as handle:
         contract = json.load(handle)
+    contract["default_hidden_size"] = int(contract.get("default_hidden_size", contract.get("hidden_size", DEFAULT_HIDDEN_SIZE)))
     contract["contract_sha256"] = contract_sha256(contract)
     contract["contract_path"] = str(contract_path)
     return contract
 
 
 def contract_sha256(contract: Dict[str, object]) -> str:
-    canonical = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+    normalized = {key: value for key, value in contract.items() if key not in CONTRACT_HASH_EXCLUDED_KEYS}
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def contract_hidden_size(contract: Dict[str, object]) -> int:
+    return int(contract.get("hidden_size", contract.get("default_hidden_size", DEFAULT_HIDDEN_SIZE)))
+
+
+def feature_contract_compatible(reference_contract: Dict[str, object], candidate_contract: Dict[str, object]) -> bool:
+    if candidate_contract.get("contract_id") != reference_contract.get("contract_id"):
+        return False
+    return contract_sha256(candidate_contract) == contract_sha256(reference_contract)
 
 
 def json_dtype_descr(dtype: np.dtype) -> object:
@@ -111,8 +125,6 @@ def load_dataset_manifest(path: Path, contract: Dict[str, object] | None = None)
     if contract is not None:
         if manifest.get("contract_id") != contract["contract_id"]:
             raise ValueError("Dataset contract_id does not match the current trainer contract.")
-        if manifest.get("contract_sha256") != contract["contract_sha256"]:
-            raise ValueError("Dataset contract_sha256 does not match the current trainer contract.")
         if manifest.get("dtype_descr") != json_dtype_descr(DATASET_DTYPE):
             raise ValueError("Dataset dtype does not match the expected sparse sample dtype.")
 
@@ -302,8 +314,10 @@ def pawn_advance_weight(square: int) -> int:
     return (square >> 3) * 4
 
 
-def build_seeded_weights(contract: Dict[str, object]) -> Dict[str, np.ndarray | int]:
-    hidden_size = int(contract["hidden_size"])
+def build_seeded_weights(contract: Dict[str, object], hidden_size: int | None = None) -> Dict[str, np.ndarray | int]:
+    hidden_size = contract_hidden_size(contract) if hidden_size is None else int(hidden_size)
+    if hidden_size < 16:
+        raise ValueError("Seeded NNUE initialization requires hidden_size >= 16.")
     input_weights = np.zeros((2, 13, 64, hidden_size), dtype=np.int16)
     hidden_bias = np.zeros((hidden_size,), dtype=np.int16)
     output_weights = np.zeros((hidden_size,), dtype=np.int16)

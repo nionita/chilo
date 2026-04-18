@@ -22,14 +22,15 @@ Small chess engine project with:
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
 - `scripts/dedup_training_csv.py`: exact-row CSV dedup for large collector outputs using external `sort`
 - `scripts/prepare_nnue_dataset.py`: sharded NNUE dataset preprocessor
-- `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets
-- `scripts/export_nnue.py`: scaled quantized export to the generated C++ header
+- `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets; hidden size is chosen here, not in dataset prep
+- `scripts/export_nnue.py`: scaled quantized export to the generated C++ header and/or a runtime-loadable `.bin` artifact
 - `scripts/run_nnue_workflow.py`: orchestration helper for dedup -> prepare -> train -> export
 - `scripts/verify_nnue_workflow.py`: end-to-end smoke check for preprocess -> train -> export -> C++
 - `engine_development_notes.md`: implementation history, findings, and performance notes
 - `Makefile`: build targets for optimized, debug, and validation builds
 
 Build outputs live under `build/`, and the checked-in NNUE export lives under `generated/`.
+The built-in generated export is the fallback default; the engine can also load an explicit `--weights` file or a same-basename sidecar `.bin` beside the executable.
 
 ## Build
 
@@ -178,6 +179,14 @@ Run the UCI engine:
 build/release/chilo
 ```
 
+Optional runtime weights override:
+
+```bash
+build/release/chilo --weights /path/to/weights.bin
+```
+
+If no explicit `--weights` path is given, `chilo` checks for a same-basename `.bin` sidecar in the executable directory, for example `chilo.exe` -> `chilo.bin`.
+
 Supported commands:
 
 - `uci`
@@ -196,7 +205,7 @@ Current engine behavior:
 - legal-move filtering on top of the existing pseudo-legal generator
 - compact 4-byte `Move` representation
 - tiny embedded NNUE-style evaluation with generated weights from `generated/`
-- generated NNUE exports use configurable scaled integer quantization; the chosen scales are recorded in `generated/generated_nnue_manifest.json`
+- generated NNUE exports use configurable scaled integer quantization; the chosen scales and hidden size are recorded in `generated/generated_nnue_manifest.json`
 - NNUE perspectives are active/passive (side to move / opponent), not fixed white/black
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering

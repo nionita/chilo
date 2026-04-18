@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,9 +13,6 @@ from export_nnue import load_torch_checkpoint, quantize_weights
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-GENERATED_DIR = ROOT_DIR / "generated"
-GENERATED_HEADER = GENERATED_DIR / "generated_nnue_weights.h"
-GENERATED_MANIFEST = GENERATED_DIR / "generated_nnue_manifest.json"
 BUILD_DEBUG_DIR = ROOT_DIR / "build" / "debug"
 
 
@@ -69,6 +65,8 @@ def main() -> int:
             str(training_dir),
             "--epochs",
             "2",
+            "--hidden-size",
+            "16",
             "--batch-size",
             "2",
             "--shuffle-buffer-size",
@@ -79,6 +77,7 @@ def main() -> int:
 
         exported_header = export_dir / "generated_nnue_weights.h"
         exported_manifest = export_dir / "generated_nnue_manifest.json"
+        exported_bin = export_dir / "weights.bin"
         checkpoint_path = training_dir / "best.pt"
         run(
             sys.executable,
@@ -95,67 +94,59 @@ def main() -> int:
             str(exported_header),
             "--output-manifest",
             str(exported_manifest),
+            "--output-bin",
+            str(exported_bin),
         )
+        run("make", "eval_fen_debug")
+        run("make", "engine_tests_debug")
+        run(str(BUILD_DEBUG_DIR / "engine_tests_debug"))
 
-        original_header = read_text(GENERATED_HEADER)
-        original_manifest = read_text(GENERATED_MANIFEST)
-        try:
-            GENERATED_HEADER.write_text(read_text(exported_header), encoding="utf-8")
-            GENERATED_MANIFEST.write_text(read_text(exported_manifest), encoding="utf-8")
+        contract = load_contract()
+        _, float_weights = load_torch_checkpoint(checkpoint_path)
+        export_manifest = json.loads(read_text(exported_manifest))
+        quantized = quantize_weights(
+            float_weights,
+            int(export_manifest["input_scale"]),
+            int(export_manifest["output_scale"]),
+        )
+        test_fens = [
+            "4k3/8/8/8/8/8/8/3QK3 w - - 0 1",
+            "4k3/8/8/8/8/8/8/3QK3 b - - 0 1",
+            "4k3/8/8/8/3N4/8/8/4K3 w - - 0 1",
+        ]
+        completed = subprocess.run(
+            [str(BUILD_DEBUG_DIR / "eval_fen_debug"), "--weights", str(exported_bin), *test_fens],
+            cwd=ROOT_DIR,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        cpp_scores = [int(line) for line in completed.stdout.strip().splitlines()]
+        python_scores = []
+        for fen in test_fens:
+            fields = fen.split()
+            board = fields[0]
+            side_to_move = 0 if fields[1] == "w" else 1
+            pieces = []
+            squares = []
+            for rank_index, rank_text in enumerate(board.split("/")):
+                board_rank = 7 - rank_index
+                file_index = 0
+                for ch in rank_text:
+                    if ch.isdigit():
+                        file_index += int(ch)
+                        continue
+                    piece = {
+                        "P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6,
+                        "p": 7, "n": 8, "b": 9, "r": 10, "q": 11, "k": 12,
+                    }[ch]
+                    pieces.append(piece)
+                    squares.append(board_rank * 8 + file_index)
+                    file_index += 1
+            python_scores.append(integer_model_eval(quantized, side_to_move, pieces, squares, int(contract["clip_max"])))
 
-            run("make", "eval_fen_debug")
-            run("make", "engine_tests_debug")
-            run(str(BUILD_DEBUG_DIR / "engine_tests_debug"))
-
-            contract = load_contract()
-            _, float_weights = load_torch_checkpoint(checkpoint_path)
-            export_manifest = json.loads(read_text(exported_manifest))
-            quantized = quantize_weights(
-                float_weights,
-                int(export_manifest["input_scale"]),
-                int(export_manifest["output_scale"]),
-            )
-            test_fens = [
-                "4k3/8/8/8/8/8/8/3QK3 w - - 0 1",
-                "4k3/8/8/8/8/8/8/3QK3 b - - 0 1",
-                "4k3/8/8/8/3N4/8/8/4K3 w - - 0 1",
-            ]
-            completed = subprocess.run(
-                [str(BUILD_DEBUG_DIR / "eval_fen_debug"), *test_fens],
-                cwd=ROOT_DIR,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            cpp_scores = [int(line) for line in completed.stdout.strip().splitlines()]
-            python_scores = []
-            for fen in test_fens:
-                fields = fen.split()
-                board = fields[0]
-                side_to_move = 0 if fields[1] == "w" else 1
-                pieces = []
-                squares = []
-                for rank_index, rank_text in enumerate(board.split("/")):
-                    board_rank = 7 - rank_index
-                    file_index = 0
-                    for ch in rank_text:
-                        if ch.isdigit():
-                            file_index += int(ch)
-                            continue
-                        piece = {
-                            "P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6,
-                            "p": 7, "n": 8, "b": 9, "r": 10, "q": 11, "k": 12,
-                        }[ch]
-                        pieces.append(piece)
-                        squares.append(board_rank * 8 + file_index)
-                        file_index += 1
-                python_scores.append(integer_model_eval(quantized, side_to_move, pieces, squares, int(contract["clip_max"])))
-
-            if cpp_scores != python_scores:
-                raise SystemExit(f"C++ / Python eval mismatch: cpp={cpp_scores} python={python_scores}")
-        finally:
-            GENERATED_HEADER.write_text(original_header, encoding="utf-8")
-            GENERATED_MANIFEST.write_text(original_manifest, encoding="utf-8")
+        if cpp_scores != python_scores:
+            raise SystemExit(f"C++ / Python eval mismatch: cpp={cpp_scores} python={python_scores}")
 
     return 0
 
