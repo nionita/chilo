@@ -1,6 +1,6 @@
 {
-  "contract_id": "chilo.tiny_nnue.v1",
-  "version": 1,
+  "contract_id": "chilo.tiny_nnue.v2",
+  "version": 2,
   "architecture": "TinyNnue",
   "hidden_size": 16,
   "clip_max": 255,
@@ -22,7 +22,7 @@
     11,
     12
   ],
-  "piece_enum": {
+  "board_piece_enum": {
     "EMPTY": 0,
     "W_PAWN": 1,
     "W_KNIGHT": 2,
@@ -41,9 +41,28 @@
     "WHITE": 0,
     "BLACK": 1
   },
+  "input_plane_enum": {
+    "EMPTY": 0,
+    "FRIENDLY_PAWN": 1,
+    "FRIENDLY_KNIGHT": 2,
+    "FRIENDLY_BISHOP": 3,
+    "FRIENDLY_ROOK": 4,
+    "FRIENDLY_QUEEN": 5,
+    "FRIENDLY_KING": 6,
+    "ENEMY_PAWN": 7,
+    "ENEMY_KNIGHT": 8,
+    "ENEMY_BISHOP": 9,
+    "ENEMY_ROOK": 10,
+    "ENEMY_QUEEN": 11,
+    "ENEMY_KING": 12
+  },
   "square_indexing": "a1=0, h1=7, a8=56, h8=63",
-  "black_piece_normalization": "mirror_square=(7-rank)*8+file",
-  "input_layout": "input_weights[perspective][piece][square][hidden]",
+  "perspective_semantics": {
+    "0": "active_side_to_move",
+    "1": "passive_opponent"
+  },
+  "square_normalization": "normalize relative to perspective color; black perspective uses mirror_square=(7-rank)*8+file",
+  "input_layout": "input_weights[perspective][relative_piece][normalized_square][hidden]",
   "activation": "clipped_relu",
-  "output_formula": "score=(white_perspective-black_perspective)/2; return side_to_move==WHITE ? score : -score"
+  "output_formula": "score=(active_perspective-passive_perspective)/2"
 }

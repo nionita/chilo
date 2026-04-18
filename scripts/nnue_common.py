@@ -153,6 +153,18 @@ def piece_color(piece: int) -> int:
     return 0 if piece <= 6 else 1
 
 
+def opposite_color(color: int) -> int:
+    if color not in (0, 1):
+        raise ValueError(f"Unexpected color value {color}")
+    return 1 - color
+
+
+def perspective_color(side_to_move: int, perspective: int) -> int:
+    if perspective not in (0, 1):
+        raise ValueError(f"Unexpected perspective value {perspective}")
+    return side_to_move if perspective == 0 else opposite_color(side_to_move)
+
+
 def piece_type(piece: int) -> int:
     if piece == 0:
         return 0
@@ -175,8 +187,20 @@ def mirror_square(square: int) -> int:
     return (7 - rank) * 8 + file
 
 
-def normalized_square(piece: int, square: int) -> int:
-    return square if piece <= 6 else mirror_square(square)
+def normalize_square_for_color(square: int, color: int) -> int:
+    return square if color == 0 else mirror_square(square)
+
+
+def relative_piece(piece: int, color: int) -> int:
+    if piece == 0:
+        return 0
+    base_type = piece_type(piece)
+    return base_type if piece_color(piece) == color else base_type + 6
+
+
+def relative_feature(side_to_move: int, perspective: int, piece: int, square: int) -> Tuple[int, int]:
+    color = perspective_color(side_to_move, perspective)
+    return relative_piece(piece, color), normalize_square_for_color(square, color)
 
 
 def parse_fen_sparse(fen: str) -> Tuple[int, List[int], List[int]]:
@@ -320,21 +344,20 @@ def build_seeded_weights(contract: Dict[str, object]) -> Dict[str, np.ndarray | 
 
     for perspective in range(2):
         for piece in range(1, 13):
-            friendly = piece_color(piece) == perspective
+            friendly = piece <= 6
             piece_type_value = piece_type(piece)
             for square in range(64):
-                norm_square = normalized_square(piece, square)
                 weights = input_weights[perspective, piece, square]
                 if 1 <= piece_type_value <= 5:
                     unit = friendly_count_base + (piece_type_value - 1) if friendly else enemy_count_base + (piece_type_value - 1)
                     weights[unit] = 1
 
                 pst_unit = friendly_pst_unit if friendly else enemy_pst_unit
-                weights[pst_unit] += piece_square_weight(piece_type_value, norm_square)
+                weights[pst_unit] += piece_square_weight(piece_type_value, square)
 
                 if piece_type_value == 1:
                     pawn_unit = friendly_pawn_advance_unit if friendly else enemy_pawn_advance_unit
-                    weights[pawn_unit] += pawn_advance_weight(norm_square)
+                    weights[pawn_unit] += pawn_advance_weight(square)
 
                 if piece_type_value == 3:
                     pair_unit = friendly_bishop_pair_unit if friendly else enemy_bishop_pair_unit
@@ -368,10 +391,10 @@ def integer_model_eval(
     for perspective in (0, 1):
         hidden = hidden_bias.copy()
         for piece, square in zip(pieces, squares):
-            hidden += input_weights[perspective, piece, square].astype(np.int32)
+            relative_piece_value, relative_square = relative_feature(side_to_move, perspective, piece, square)
+            hidden += input_weights[perspective, relative_piece_value, relative_square].astype(np.int32)
         activated = np.clip(hidden, 0, clip_max)
         score = output_bias + int((activated * output_weights).sum())
         perspective_scores.append(score)
 
-    combined = trunc_divide_by_two(perspective_scores[0] - perspective_scores[1])
-    return combined if side_to_move == 0 else -combined
+    return trunc_divide_by_two(perspective_scores[0] - perspective_scores[1])

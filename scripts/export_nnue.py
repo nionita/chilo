@@ -15,6 +15,7 @@ from nnue_common import (
     iter_dataset_records,
     load_contract,
     load_dataset_manifest,
+    relative_feature,
 )
 
 
@@ -74,6 +75,7 @@ def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weig
         return {"validation_samples": 0, "validation_split": "none", "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
 
     for record in records:
+        side_to_move = int(record["side_to_move"])
         pieces = record["pieces"][: int(record["piece_count"])].tolist()
         squares = record["squares"][: int(record["piece_count"])].tolist()
 
@@ -81,14 +83,14 @@ def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weig
         for perspective in (0, 1):
             hidden = hidden_bias_float.copy()
             for piece, square in zip(pieces, squares):
-                hidden += input_weights_float[perspective, piece, square]
+                relative_piece_value, relative_square = relative_feature(side_to_move, perspective, piece, square)
+                hidden += input_weights_float[perspective, relative_piece_value, relative_square]
             activated = np.clip(hidden, 0.0, float(clip_max))
             perspective_scores.append(output_bias_float + float((activated * output_weights_float).sum()))
-        combined = 0.5 * (perspective_scores[0] - perspective_scores[1])
-        float_score = combined if int(record["side_to_move"]) == 0 else -combined
+        float_score = 0.5 * (perspective_scores[0] - perspective_scores[1])
         quantized_score = integer_model_eval(
             quantized_weights,
-            int(record["side_to_move"]),
+            side_to_move,
             pieces,
             squares,
             clip_max,

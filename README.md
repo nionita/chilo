@@ -196,6 +196,7 @@ Current engine behavior:
 - legal-move filtering on top of the existing pseudo-legal generator
 - compact 4-byte `Move` representation
 - tiny embedded NNUE-style evaluation with generated weights from `generated/`
+- NNUE perspectives are active/passive (side to move / opponent), not fixed white/black
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering
 - TT probe before the quiescence handoff so deeper stored entries can skip frontier QS

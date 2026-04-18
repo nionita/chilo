@@ -40,7 +40,7 @@ class NnuePipelineTest(unittest.TestCase):
         pieces = record["pieces"][: int(record["piece_count"])].tolist()
         squares = record["squares"][: int(record["piece_count"])].tolist()
         score = integer_model_eval(seeded, int(record["side_to_move"]), pieces, squares, int(contract["clip_max"]))
-        self.assertEqual(score, 901)
+        self.assertEqual(score, 904)
 
     def test_assign_shard_splits(self):
         splits = assign_shard_splits(total_shards=10, validation_fraction=0.2, seed=7)
@@ -109,7 +109,7 @@ class NnuePipelineTest(unittest.TestCase):
             )
 
             header_text = header_path.read_text(encoding="utf-8")
-            self.assertIn('kContractId[] = "chilo.tiny_nnue.v1"', header_text)
+            self.assertIn('kContractId[] = "chilo.tiny_nnue.v2"', header_text)
             export_manifest = json.loads(export_manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(export_manifest["validation"]["max_abs_diff"], 0.0)
 
