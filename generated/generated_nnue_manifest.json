@@ -4,16 +4,16 @@
   "contract_id": "chilo.tiny_nnue.v2",
   "contract_sha256": "0be30f4b0dd806fac04ee9863cc15fd18dbdb15842087cb87d1c07f3bb26318b",
   "format": "chilo.nnue_export.v4",
-  "hidden_size": 64,
-  "input_scale": 64,
-  "output_bin": null,
+  "hidden_size": 24,
+  "input_scale": 128,
+  "output_bin": "/home/nicu/NNUE/nnue3/export/t11/chilo-dyn-t11.bin",
   "output_scale": 32,
   "quantization": "scaled_int16",
-  "source": "seeded",
+  "source": "/home/nicu/NNUE/nnue3/training/t11/best.pt",
   "validation": {
-    "max_abs_diff": 0.0,
-    "mean_abs_diff": 0.0,
-    "validation_samples": 0,
-    "validation_split": "none"
+    "max_abs_diff": 41.35295601952254,
+    "mean_abs_diff": 6.023622956626248,
+    "validation_samples": 2048,
+    "validation_split": "val"
   }
 }
