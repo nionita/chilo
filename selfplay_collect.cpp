@@ -13,6 +13,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace {
 
 struct Options {
@@ -27,7 +33,8 @@ struct Options {
     int samplePlies = 10;
     int maxPlies = 300;
     double temperatureCp = 15.0;
-    uint64_t seed = 1;
+    uint64_t seed = 0;
+    bool seedProvided = false;
 };
 
 struct PendingSample {
@@ -66,7 +73,7 @@ void printUsage() {
         << "  --temperature-cp <X>     Softmax temperature in centipawns (default: 15)\n"
         << "  --sample-plies <N>       Only sample root moves for the first N plies (default: 10)\n"
         << "  --max-plies <N>          Declare a draw after this many plies (default: 300)\n"
-        << "  --seed <N>               RNG seed for reproducible self-play (default: 1)\n"
+        << "  --seed <N>               RNG seed for reproducible self-play (default: time/process-derived)\n"
         << "  --debug-output <path>    Optional richer CSV: root_fen,eval_fen,depth,score,result\n";
 }
 
@@ -147,6 +154,7 @@ bool parseArgs(int argc, char** argv, Options& options) {
         } else if (arg == "--seed") {
             const char* value = requireValue("--seed");
             if (value == nullptr || !parseUInt64(value, options.seed)) return false;
+            options.seedProvided = true;
         } else if (arg == "--help" || arg == "-h") {
             printUsage();
             return false;
@@ -158,6 +166,35 @@ bool parseArgs(int argc, char** argv, Options& options) {
 
     if (options.fenFilePath.empty() || options.outputPath.empty()) return false;
     return true;
+}
+
+uint64_t splitmix64(uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+uint64_t currentProcessId() {
+#ifdef _WIN32
+    return static_cast<uint64_t>(_getpid());
+#else
+    return static_cast<uint64_t>(getpid());
+#endif
+}
+
+uint64_t generateDefaultSeed() {
+    auto wall = std::chrono::system_clock::now().time_since_epoch().count();
+    auto steady = std::chrono::steady_clock::now().time_since_epoch().count();
+    uint64_t seed = static_cast<uint64_t>(wall);
+    seed ^= splitmix64(static_cast<uint64_t>(steady));
+    seed ^= splitmix64(currentProcessId());
+    return splitmix64(seed);
+}
+
+bool fileExists(const std::string& path) {
+    std::ifstream input(path);
+    return input.good();
 }
 
 std::vector<std::string> loadFens(const std::string& path) {
@@ -300,6 +337,23 @@ int main(int argc, char** argv) {
         std::cerr << "No input FENs found in " << options.fenFilePath << "\n";
         return 1;
     }
+
+    if (!options.debugOutputPath.empty() && options.outputPath == options.debugOutputPath) {
+        std::cerr << "Output file and debug output file must be different paths\n";
+        return 1;
+    }
+    if (fileExists(options.outputPath)) {
+        std::cerr << "Output file already exists: " << options.outputPath << "\n";
+        return 1;
+    }
+    if (!options.debugOutputPath.empty() && fileExists(options.debugOutputPath)) {
+        std::cerr << "Debug output file already exists: " << options.debugOutputPath << "\n";
+        return 1;
+    }
+    if (!options.seedProvided) {
+        options.seed = generateDefaultSeed();
+    }
+    std::cout << "Using RNG seed " << options.seed << "\n";
 
     std::ofstream output(options.outputPath);
     if (!output) {
