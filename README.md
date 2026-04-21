@@ -11,23 +11,27 @@ Small chess engine project with:
 ## Files
 
 - `engine.h`: public engine API
+- `chess.h`: compatibility umbrella include
+- `chess_position.h`, `chess_tables.h`: position/types layer and precomputed attack tables
 - `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, `perft_lib.cpp`: move-generation and perft core
-- `eval.cpp`: static evaluation
+- `eval.cpp`: NNUE static evaluation, generated fallback weights, and runtime weight loading
 - `search.cpp`: iterative-deepening alpha-beta search
 - `chilo.cpp`: UCI engine binary entry point
+- `selfplay_collect.cpp`: self-play training-data collector
 - `eval_fen.cpp`: tiny CLI for evaluating one or more FENs with the compiled engine
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
 - `scripts/dedup_training_csv.py`: exact-row CSV dedup for large collector outputs using external `sort`
+- `scripts/nnue_contract.json`: feature/model contract shared by training, export, and C++ inference
 - `scripts/prepare_nnue_dataset.py`: sharded NNUE dataset preprocessor
 - `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets; hidden size is chosen here, not in dataset prep
 - `scripts/export_nnue.py`: scaled quantized export to the generated C++ header and/or a runtime-loadable `.bin` artifact
 - `scripts/run_nnue_workflow.py`: orchestration helper for dedup -> prepare -> train -> export
 - `scripts/verify_nnue_workflow.py`: end-to-end smoke check for preprocess -> train -> export -> C++
-- `engine_development_notes.md`: implementation history, findings, and performance notes
-- `Makefile`: build targets for optimized, debug, and validation builds
+- `engine_development_notes.md`: compact current-state notes and workflow reminders
+- `Makefile`: build targets for release, debug, validation, Windows, and NNUE workflow checks
 
 Build outputs live under `build/`, and the checked-in NNUE export lives under `generated/`.
 The built-in generated export is the fallback default; the engine can also load an explicit `--weights` file or a same-basename sidecar `.bin` beside the executable.
@@ -57,6 +61,7 @@ This builds under `build/release/`:
 - `perft_diag`
 - `engine_tests`
 - `chilo`
+- `selfplay_collect`
 - `eval_fen`
 
 These targets use:
@@ -80,6 +85,7 @@ This builds under `build/debug/`:
 - `perft_diag_debug`
 - `engine_tests_debug`
 - `chilo_debug`
+- `selfplay_collect_debug`
 - `eval_fen_debug`
 
 These targets use:
@@ -103,6 +109,7 @@ This builds under `build/validate/`:
 - `perft_diag_validate`
 - `engine_tests_validate`
 - `chilo_validate`
+- `selfplay_collect_validate`
 - `eval_fen_validate`
 
 These targets use:
@@ -127,6 +134,7 @@ This builds under `build/win64/`:
 - `perft_diag.exe`
 - `engine_tests.exe`
 - `chilo.exe`
+- `selfplay_collect.exe`
 - `eval_fen.exe`
 
 These targets use the MinGW-w64 POSIX cross-compiler and try to produce self-contained `.exe` files.
@@ -179,10 +187,11 @@ Run the UCI engine:
 build/release/chilo
 ```
 
-Optional runtime weights override:
+Optional command-line helpers:
 
 ```bash
 build/release/chilo --weights /path/to/weights.bin
+build/release/chilo --version
 ```
 
 If no explicit `--weights` path is given, `chilo` checks for a same-basename `.bin` sidecar in the executable directory, for example `chilo.exe` -> `chilo.bin`.
@@ -204,7 +213,8 @@ Current engine behavior:
 
 - legal-move filtering on top of the existing pseudo-legal generator
 - compact 4-byte `Move` representation
-- tiny embedded NNUE-style evaluation with generated weights from `generated/`
+- Tiny NNUE evaluation with generated fallback weights from `generated/`
+- optional runtime NNUE `.bin` loading with the same feature contract and arbitrary hidden size
 - generated NNUE exports use configurable scaled integer quantization; the chosen scales and hidden size are recorded in `generated/generated_nnue_manifest.json`
 - NNUE perspectives are active/passive (side to move / opponent), not fixed white/black
 - iterative-deepening negamax alpha-beta
@@ -214,18 +224,31 @@ Current engine behavior:
 - PVS, null-move pruning, 3-tier LMR, and futility pruning through depth 3
 - repetition-draw detection in main search and 50-move draw detection in main search + QS
 - quiescence search with SEE-filtered captures and MVV-LVA ordering
-- no UCI options yet
+- no UCI `setoption` options yet
 
 ### Self-Play Collection
 
 `selfplay_collect` reads one FEN per line, runs self-play from each start position, and writes `eval_fen,score,result` rows.
 
+Example:
+
+```bash
+build/release/selfplay_collect \
+  --fen-file data/start.fen \
+  --output data/selfplay.csv \
+  --depth 6 \
+  --games-per-fen 1
+```
+
 Important behavior:
 
 - it records evaluated leaf positions rather than the root position
 - it skips noisy leaves that are terminal or in check
+- it refuses to overwrite an existing output or debug-output file
+- if `--seed` is omitted, it uses a time/process-derived RNG seed and prints it at startup
 - it uses exact all-root scores only during the opening stochastic sampling window (`--sample-plies`)
 - after that window it returns to normal root PVS and records only the chosen move's evaluated leaf
+- it prints periodic progress lines with games, collected samples, elapsed time, rate, and ETA
 
 ### Eval CLI
 
@@ -233,7 +256,10 @@ Evaluate one or more FENs directly with the compiled engine:
 
 ```bash
 build/release/eval_fen "4k3/8/8/8/8/8/8/3QK3 w - - 0 1"
+build/release/eval_fen --weights /path/to/weights.bin "4k3/8/8/8/8/8/8/3QK3 w - - 0 1"
 ```
+
+Like `chilo`, `eval_fen` also checks for a same-basename sidecar `.bin` if no explicit `--weights` path is given.
 
 ### Tests
 
@@ -304,19 +330,23 @@ Train the current tiny NNUE on the sharded dataset:
   --dataset data/nnue_dataset \
   --output-dir data/nnue_training \
   --epochs 8 \
-  --batch-size 256
+  --batch-size 256 \
+  --hidden-size 64
 ```
 
-Export the best checkpoint back into the generated C++ weights:
+The default hidden size comes from `scripts/nnue_contract.json` and is currently `64`. Prepared datasets are feature caches and are not tied to a hidden size; checkpoints and exported weights are.
+
+Export the best checkpoint back into generated C++ fallback weights and/or a runtime-loadable `.bin`:
 
 ```bash
 .venv/bin/python scripts/export_nnue.py \
   --checkpoint data/nnue_training/best.pt \
   --dataset-dir data/nnue_dataset \
   --validation-samples 256 \
-  --tolerance 8 \
+  --tolerance 256 \
   --output-header generated/generated_nnue_weights.h \
-  --output-manifest generated/generated_nnue_manifest.json
+  --output-manifest generated/generated_nnue_manifest.json \
+  --output-bin data/nnue_training/weights.bin
 ```
 
 Run the Python smoke tests and the end-to-end training/export/C++ verification:
@@ -348,7 +378,7 @@ It can also:
 
 The workflow wrapper defaults to a looser export drift tolerance (`--tolerance 256`) than the low-level exporter so short real-data training runs can still complete a first quantized export.
 
-If no custom positions are provided, the script uses the current default set:
+`make nnue-verify` uses the current default parity positions:
 - `startpos`
 - one complex middlegame
 - one tactical position
@@ -363,10 +393,11 @@ make EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1
 ## Common Targets
 
 ```bash
-make                 # optimized perft + diagnostics + tests
+make                 # optimized release binaries plus release tests
 make debug           # debug binaries
 make validate        # debug binaries with full state validation
 make windows64       # Windows x64 release binaries (.exe) via MinGW-w64
+make selfplay_collect # build only the release self-play collector
 make clean           # remove build artifacts
 ```
 

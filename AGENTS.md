@@ -54,6 +54,7 @@
 │   ├── nnue_common.py
 │   ├── prepare_nnue_dataset.py
 │   ├── run_nnue_workflow.py
+│   ├── test_nnue_pipeline.py
 │   ├── train_nnue.py
 │   ├── export_nnue.py
 │   ├── verify_nnue_workflow.py
@@ -70,12 +71,14 @@
 - The Tiny NNUE uses active/passive perspectives. Perspective `0` is the side to move and perspective `1` is the opponent; raw board pieces are remapped to relative friendly/enemy planes at inference/training time.
 - `eval_fen.cpp` exists mainly for Python-to-C++ NNUE parity checks.
 - `selfplay_collect.cpp` is the training-data collector. It records evaluated leaf positions, skips noisy leaves that are terminal or in check, prints progress/ETA during long runs, and only requests exact all-root scores during the opening stochastic sampling window; later plies use normal root PVS plus best-move leaf retention.
-- The dataset pipeline is sharded now. Do not assume one CSV in and one `samples.npy` out:
+- `selfplay_collect.cpp` refuses to overwrite existing output/debug-output files. If `--seed` is not provided, it derives a seed from time and process id and prints it so runs can be reproduced later.
+- The dataset pipeline is sharded now. Do not assume one CSV in and one `samples.npy` out.
 - `dedup_training_csv.py` is the scalable exact-row dedup step for raw collector CSVs. Keep dedup outside the trainer and preprocessor; do not collapse by FEN alone unless that policy changes explicitly.
 - `prepare_nnue_dataset.py` takes many CSVs and writes a dataset directory with `manifest.json` plus shard `.npy` files. It accepts both normal headered collector CSVs and headerless `sort | uniq` outputs. Hidden size is not part of dataset preparation.
-- `train_nnue.py` streams shards instead of loading one monolithic dataset, and hidden size is chosen here
-- `export_nnue.py` validates against the sharded dataset manifest before generating the built-in C++ header or a runtime-loadable `.bin` weights file
-- `run_nnue_workflow.py` is the operator wrapper for dedup -> prepare -> train -> export, with optional temporary engine verification against the exported weights
+- `train_nnue.py` streams shards instead of loading one monolithic dataset, and hidden size is chosen there. The contract default hidden size is currently `64`.
+- `export_nnue.py` validates against the sharded dataset manifest before generating the built-in C++ header and/or a runtime-loadable `.bin` weights file.
+- Runtime `.bin` exports use the same feature contract but can have a different hidden size than the built-in fallback. Explicit `--weights` load failures are fatal; same-basename sidecar load failures fall back to built-in weights.
+- `run_nnue_workflow.py` is the operator wrapper for dedup -> prepare -> train -> export, with optional temporary engine verification against the exported weights.
 - `run_nnue_workflow.py` uses a pragmatic default export tolerance (`256`) so short real-data training runs can usually produce a first quantized export without extra flags.
 - The repo keeps a checked-in generated NNUE export so the engine builds without running Python first.
 - C++ build outputs now live under `build/`, split by mode. Do not put new binaries or object-file targets back in the repo root.
