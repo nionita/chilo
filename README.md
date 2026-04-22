@@ -31,7 +31,7 @@ Small chess engine project with:
 - `scripts/run_nnue_workflow.py`: orchestration helper for dedup -> prepare -> train -> export
 - `scripts/verify_nnue_workflow.py`: end-to-end smoke check for preprocess -> train -> export -> C++
 - `engine_development_notes.md`: compact current-state notes and workflow reminders
-- `Makefile`: build targets for release, debug, validation, Windows, and NNUE workflow checks
+- `Makefile`: build targets for release, AVX2 release, debug, validation, Windows, and NNUE workflow checks
 
 Build outputs live under `build/`, and the checked-in NNUE export lives under `generated/`.
 The built-in generated export is the fallback default; the engine can also load an explicit `--weights` file or a same-basename sidecar `.bin` beside the executable.
@@ -70,6 +70,23 @@ These targets use:
 - `-DNDEBUG`
 
 That means assertions are disabled and the binaries are suitable for performance measurement.
+
+### AVX2 optimized build
+
+Build Linux release binaries for newer x86-64 CPUs with AVX2:
+
+```bash
+make release-avx2
+```
+
+This builds under `build/release-avx2/` and uses:
+
+- `-O3`
+- `-DNDEBUG`
+- `-DCHILO_AVX2`
+- `-mavx2`
+
+These binaries are not generic x64 binaries. They require an AVX2-capable CPU and may fail with an illegal-instruction error on older machines.
 
 ### Debug build
 
@@ -139,6 +156,14 @@ This builds under `build/win64/`:
 
 These targets use the MinGW-w64 POSIX cross-compiler and try to produce self-contained `.exe` files.
 They are also stripped at link time to keep the shipped binaries smaller.
+
+Build Windows 64-bit AVX2 release binaries from Linux:
+
+```bash
+make windows64-avx2
+```
+
+This builds under `build/win64-avx2/`. These `.exe` files require an AVX2-capable CPU.
 
 ## Run
 
@@ -394,9 +419,11 @@ make EXTRA_CPPFLAGS=-DCHILO_TT_ALWAYS_OVERWRITE=1
 
 ```bash
 make                 # optimized release binaries plus release tests
+make release-avx2    # optimized Linux binaries requiring AVX2
 make debug           # debug binaries
 make validate        # debug binaries with full state validation
 make windows64       # Windows x64 release binaries (.exe) via MinGW-w64
+make windows64-avx2  # Windows x64 release binaries (.exe) requiring AVX2
 make selfplay_collect # build only the release self-play collector
 make clean           # remove build artifacts
 ```
@@ -404,8 +431,10 @@ make clean           # remove build artifacts
 ## Notes
 
 - Use `build/release/perft` for benchmarking.
+- Use `build/release-avx2/chilo` or `build/win64-avx2/chilo.exe` only on AVX2-capable machines.
 - Use `scripts/benchmark_fixed_depth.py` when comparing fixed-depth search speed between engine versions.
 - Use `build/debug/perft_debug` for ordinary debugging.
 - Use `build/validate/perft_validate` only when investigating `doMove()` / `undo()` state corruption or move-generation bugs.
 - Use `build/release/chilo` or `build/validate/chilo_validate` when testing UCI integration or shallow playing strength.
 - Use `file build/win64/chilo.exe` after `make windows64` if you want a quick confirmation that the output is a PE32+ Windows binary.
+- Use `file build/win64-avx2/chilo.exe` after `make windows64-avx2` for the AVX2 Windows binary.

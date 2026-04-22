@@ -10,6 +10,13 @@
 #include <string_view>
 #include <vector>
 
+#if defined(CHILO_AVX2)
+#if !defined(__AVX2__)
+#error "CHILO_AVX2 requires compiling with AVX2 enabled"
+#endif
+#include <immintrin.h>
+#endif
+
 namespace {
 
 using chilo::nnue_generated::TinyNnueData;
@@ -281,11 +288,35 @@ int roundDivide(int64_t value, int64_t divisor) {
 }
 
 void addWeightsToLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
+#if defined(CHILO_AVX2)
+    int i = 0;
+    for (; i + 8 <= hiddenSize; i += 8) {
+        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
+        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+        __m256i laneValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
+        laneValues = _mm256_add_epi32(laneValues, expandedWeights);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+    }
+    for (; i < hiddenSize; ++i) lane[i] += weights[i];
+#else
     for (int i = 0; i < hiddenSize; ++i) lane[i] += weights[i];
+#endif
 }
 
 void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
+#if defined(CHILO_AVX2)
+    int i = 0;
+    for (; i + 8 <= hiddenSize; i += 8) {
+        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
+        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+        __m256i laneValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
+        laneValues = _mm256_sub_epi32(laneValues, expandedWeights);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+    }
+    for (; i < hiddenSize; ++i) lane[i] -= weights[i];
+#else
     for (int i = 0; i < hiddenSize; ++i) lane[i] -= weights[i];
+#endif
 }
 
 void updateAccumulatorFeatureUnchecked(const RuntimeNnue& net, NnueAccumulator& acc, Piece piece, int sq, bool add) {

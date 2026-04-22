@@ -44,9 +44,11 @@
 │   └── generated_nnue_manifest.json
 ├── build/
 │   ├── release/
+│   ├── release-avx2/
 │   ├── debug/
 │   ├── validate/
-│   └── win64/
+│   ├── win64/
+│   └── win64-avx2/
 ├── scripts/
 │   ├── benchmark_fixed_depth.py
 │   ├── dedup_training_csv.py
@@ -87,13 +89,15 @@
 ## Build And Test Shortcuts
 
 - `make` builds release binaries.
+- `make release-avx2` builds Linux release binaries with `-DCHILO_AVX2 -mavx2`; these require AVX2-capable CPUs.
 - `make debug` builds debug binaries.
 - `make validate` builds with expensive state-restoration checks.
 - `make windows64` cross-builds Windows release binaries.
+- `make windows64-avx2` cross-builds Windows release binaries with `-DCHILO_AVX2 -mavx2`; these require AVX2-capable CPUs.
 - `make python-env` creates `.venv` and installs CPU-only PyTorch plus Python requirements.
 - `make nnue-python-tests` runs the Python pipeline smoke tests.
 - `make nnue-verify` runs preprocess -> train -> export -> rebuild -> C++/Python parity verification.
-- Built artifacts land under `build/release`, `build/debug`, `build/validate`, and `build/win64`.
+- Built artifacts land under `build/release`, `build/release-avx2`, `build/debug`, `build/validate`, `build/win64`, and `build/win64-avx2`.
 
 ## Environment Gotchas
 

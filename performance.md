@@ -112,11 +112,41 @@ Reported engine times with identical node counts:
 | tactical depth 11 | 2391 ms | 2109 ms |
 | sparse KQK depth 12 | 48 ms | 49 ms |
 
+## 2026-04-22 AVX2 Build Variant
+
+An optional compile-time AVX2 path was added for accumulator lane add/subtract. The portable build remains the default; AVX2 binaries are built with `-DCHILO_AVX2 -mavx2` and require AVX2-capable CPUs.
+
+The same `gprof` workload searched the same node counts and produced the same PVs. The generated report was written locally to `/tmp/chilo-gprof-after-avx2.txt`.
+
+Top flat-profile self time for the AVX2 build:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 17.17% |
+| `undo` | 10.98% |
+| `updateAccumulatorFeatureUnchecked` | 10.78% |
+| `orderMoves` | 9.18% |
+| `inCheck` | 6.39% |
+| `alphaBeta` | 5.79% |
+| `quiescence` | 5.59% self |
+| `genPseudoMoves` | 5.19% |
+| `genLegalPseudoMoves` | 4.59% |
+| `evaluateWithAccumulator` | 4.39% |
+
+`updateAccumulatorFeatureUnchecked` dropped from `13.77%` to `10.78%` of sampled self time. Total sampled time stayed at about `5.01s`, which is likely within `gprof` sampling noise at this workload size, but reported engine times improved with identical node counts:
+
+| Position | Portable | AVX2 |
+| --- | ---: | ---: |
+| start position depth 11 | 3396 ms | 3209 ms |
+| middlegame depth 11 | 3922 ms | 3681 ms |
+| tactical depth 11 | 2109 ms | 1983 ms |
+| sparse KQK depth 12 | 49 ms | 47 ms |
+
 ## Likely Optimization Directions
 
 1. Make NNUE delta apply/undo cheaper.
 
-   The wrapper cleanup and portable four-lane reshape have been done. Remaining candidate changes: precompute per-feature lane offsets in `NnueMoveDelta`, add optional hidden-size specializations, or add an optional AVX2 path for modern amd64 builds.
+   The wrapper cleanup, portable four-lane reshape, and optional AVX2 build path have been done. Remaining candidate changes: precompute per-feature lane offsets in `NnueMoveDelta` or add hidden-size specializations.
 
 2. Reduce legal move generation overhead.
 

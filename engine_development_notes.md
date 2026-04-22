@@ -13,6 +13,7 @@ This file is a compact current-state note, not a full chronological bug log. For
 - `chilo.cpp`, `selfplay_collect.cpp`, `eval_fen.cpp`, `perft.cpp`, and `perft_diag.cpp` are separate frontends over the shared engine objects.
 
 Normal C++ build outputs live under `build/release`, `build/debug`, `build/validate`, and `build/win64`.
+Optional AVX2-specific release outputs live under `build/release-avx2` and `build/win64-avx2`; those binaries require AVX2-capable CPUs.
 
 ## NNUE State
 
@@ -66,9 +67,11 @@ Use `make validate` when investigating state corruption. It is intentionally muc
 ## Useful Workflows
 
 - `make` builds optimized release binaries and the release test binary.
+- `make release-avx2` builds optimized Linux binaries with `-DCHILO_AVX2 -mavx2`.
 - `make debug` builds debug binaries.
 - `make validate` builds validation binaries with `CHESS_VALIDATE_STATE`.
 - `make windows64` cross-builds Windows `.exe` binaries with MinGW-w64.
+- `make windows64-avx2` cross-builds Windows `.exe` binaries with `-DCHILO_AVX2 -mavx2`.
 - `make nnue-python-tests` runs Python pipeline unit tests.
 - `make nnue-verify` runs preprocess -> train -> export -> rebuild -> C++/Python parity verification.
 - `python3 scripts/benchmark_fixed_depth.py` compares two UCI binaries at fixed depth.
