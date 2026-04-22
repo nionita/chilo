@@ -2,7 +2,7 @@
 
 This file records measured speed findings and likely optimization directions. Keep it factual: update the numbers when the engine or workload changes.
 
-## 2026-04-22 Profile Run
+## 2026-04-22 Baseline Profile Run
 
 `perf` could not be used on this machine because `/proc/sys/kernel/perf_event_paranoid` is `4`. The fallback run used an optimized `gprof` binary:
 
@@ -48,11 +48,43 @@ Quiescence search dominates inclusive time. Most accumulator apply/undo calls ha
 
 NPS alone can hide some changes because not every early return is counted as a searched node. Fixed-depth wall time with identical node counts is more reliable for small speed comparisons.
 
+## 2026-04-22 Delta Apply/Undo Optimization
+
+The first optimization changed NNUE delta apply/undo so that runtime-net lookup and accumulator validity checks happen once per `NnueMoveDelta`, not once per feature change. It also split add/subtract paths to avoid `sign * weight` in the hidden loop.
+
+The same `gprof` workload searched the same node counts and produced the same PVs. The generated report was written locally to `/tmp/chilo-gprof-after-delta-opt.txt`.
+
+Top flat-profile self time after the change:
+
+| Function | Self time |
+| --- | ---: |
+| `updateAccumulatorFeatureUnchecked` | 32.66% |
+| `doMove` | 14.02% |
+| `undo` | 6.79% |
+| `quiescence` | 6.07% self |
+| `evaluateWithAccumulator` | 5.78% |
+| `orderMoves` | 4.77% |
+| `inCheck` | 4.34% |
+| `genPseudoMoves` | 3.76% |
+| `genLegalPseudoMoves` | 3.03% |
+| `probeTT` | 2.60% |
+
+The wrapper functions themselves dropped to `0.58%` for `applyNnueDelta` and `0.72%` for `undoNnueDelta`. The remaining NNUE accumulator cost is now the unavoidable lane update loop plus offset calculation in `updateAccumulatorFeatureUnchecked`.
+
+The total sampled time for this instrumented workload moved from about `7.34s` to `6.92s`, roughly a `5.7%` reduction. Reported engine times also improved with identical node counts:
+
+| Position | Before | After |
+| --- | ---: | ---: |
+| start position depth 11 | 4127 ms | 3956 ms |
+| middlegame depth 11 | 4753 ms | 4627 ms |
+| tactical depth 11 | 2471 ms | 2391 ms |
+| sparse KQK depth 12 | 51 ms | 48 ms |
+
 ## Likely Optimization Directions
 
 1. Make NNUE delta apply/undo cheaper.
 
-   Candidate changes: avoid repeated `currentNnue()` and accumulator-validity checks in the inner feature update path, precompute per-feature lane offsets in `NnueMoveDelta`, and consider specialized code paths for common hidden sizes.
+   The first wrapper-level cleanup has been done. Remaining candidate changes: explicitly update the four fixed accumulator lanes without nested loops, precompute per-feature lane offsets in `NnueMoveDelta`, and consider specialized code paths for common hidden sizes.
 
 2. Reduce legal move generation overhead.
 

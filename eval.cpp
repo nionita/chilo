@@ -280,18 +280,19 @@ int roundDivide(int64_t value, int64_t divisor) {
     return -static_cast<int>(((-value) + divisor / 2) / divisor);
 }
 
-void updateAccumulatorFeature(NnueAccumulator& acc, Piece piece, int sq, int sign) {
+void updateAccumulatorFeatureUnchecked(const RuntimeNnue& net, NnueAccumulator& acc, Piece piece, int sq, bool add) {
     assert(piece != EMPTY);
-    assert(sign == 1 || sign == -1);
-    const RuntimeNnue& net = currentNnue();
-    if (!accumulatorMatchesCurrentNet(acc, net)) return;
 
     for (int colorValue = WHITE; colorValue <= BLACK; ++colorValue) {
         Color color = static_cast<Color>(colorValue);
         for (int perspective = 0; perspective < net.perspectiveCount; ++perspective) {
             const int16_t* weights = net.inputWeights.data() + inputWeightOffset(net, perspective, color, piece, sq);
             int32_t* lane = acc.values.data() + accumulatorOffset(net, color, perspective);
-            for (int i = 0; i < net.hiddenSize; ++i) lane[i] += sign * weights[i];
+            if (add) {
+                for (int i = 0; i < net.hiddenSize; ++i) lane[i] += weights[i];
+            } else {
+                for (int i = 0; i < net.hiddenSize; ++i) lane[i] -= weights[i];
+            }
         }
     }
 }
@@ -397,7 +398,7 @@ void initNnueAccumulator(const Position& pos, NnueAccumulator& acc) {
     while (occupied) {
         int sq = popLsb(occupied);
         Piece piece = pieceAt(pos, sq);
-        updateAccumulatorFeature(acc, piece, sq, 1);
+        updateAccumulatorFeatureUnchecked(net, acc, piece, sq, true);
     }
 }
 
@@ -406,16 +407,22 @@ NnueMoveDelta makeNnueMoveDelta(const Position& pos, const Move& move) {
 }
 
 void applyNnueDelta(NnueAccumulator& acc, const NnueMoveDelta& delta) {
+    const RuntimeNnue& net = currentNnue();
+    if (!accumulatorMatchesCurrentNet(acc, net)) return;
+
     for (int i = 0; i < delta.count; ++i) {
         const NnueFeatureDelta& change = delta.changes[i];
-        updateAccumulatorFeature(acc, change.piece, change.square, change.sign);
+        updateAccumulatorFeatureUnchecked(net, acc, change.piece, change.square, change.sign > 0);
     }
 }
 
 void undoNnueDelta(NnueAccumulator& acc, const NnueMoveDelta& delta) {
+    const RuntimeNnue& net = currentNnue();
+    if (!accumulatorMatchesCurrentNet(acc, net)) return;
+
     for (int i = static_cast<int>(delta.count) - 1; i >= 0; --i) {
         const NnueFeatureDelta& change = delta.changes[i];
-        updateAccumulatorFeature(acc, change.piece, change.square, -change.sign);
+        updateAccumulatorFeatureUnchecked(net, acc, change.piece, change.square, change.sign < 0);
     }
 }
 
