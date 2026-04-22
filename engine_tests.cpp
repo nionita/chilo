@@ -746,6 +746,48 @@ int testIncrementalNnueAccumulator() {
         }
     }
 
+    {
+        Position pos = parseFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
+        NnueAccumulator accumulator;
+        initNnueAccumulator(pos, accumulator);
+
+        std::vector<std::string> lowPieceMoves = {"e1e2", "e8e7", "e2e3"};
+        std::vector<Move> playedMoves;
+        std::vector<UndoState> undoStates;
+        std::vector<NnueMoveDelta> pendingDeltas;
+
+        for (const std::string& uci : lowPieceMoves) {
+            Move move;
+            if (!parseUCIMove(pos, uci, move)) {
+                std::cout << "  FAIL (could not parse low-piece lazy move " << uci << ")\n";
+                return 1;
+            }
+            pendingDeltas.push_back(makeNnueMoveDelta(pos, move));
+            UndoState undoState;
+            doMove(pos, move, undoState);
+            playedMoves.push_back(move);
+            undoStates.push_back(undoState);
+
+            (void)evaluate(pos);
+        }
+
+        int rebuiltLowPieceEval = evaluate(pos);
+        for (const NnueMoveDelta& delta : pendingDeltas) applyNnueDelta(accumulator, delta);
+        if (evaluateWithAccumulator(pos, accumulator) != rebuiltLowPieceEval) {
+            std::cout << "  FAIL (low-piece delayed materialization did not preserve eval parity)\n";
+            return 1;
+        }
+
+        for (int i = static_cast<int>(playedMoves.size()) - 1; i >= 0; --i) {
+            undo(pos, playedMoves[static_cast<std::size_t>(i)], undoStates[static_cast<std::size_t>(i)]);
+            undoNnueDelta(accumulator, pendingDeltas[static_cast<std::size_t>(i)]);
+            if (evaluateWithAccumulator(pos, accumulator) != evaluate(pos)) {
+                std::cout << "  FAIL (low-piece delayed accumulator mismatch after undo)\n";
+                return 1;
+            }
+        }
+    }
+
     std::cout << "  PASS\n";
     return 0;
 }

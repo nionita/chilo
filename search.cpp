@@ -17,6 +17,7 @@ constexpr int LMR_LEVEL1_MOVE_INDEX = 2;
 constexpr int LMR_LEVEL2_MOVE_INDEX = 6;
 constexpr int LMR_LEVEL3_MOVE_INDEX = 12;
 constexpr int FUTILITY_MARGIN[4] = {0, 120, 320, 550};
+constexpr int NNUE_REBUILD_PIECE_THRESHOLD = 5;
 constexpr std::size_t TT_SIZE = 1u << 20;
 
 #ifndef CHILO_TT_ALWAYS_OVERWRITE
@@ -503,6 +504,7 @@ void popSearchNnueMove(SearchNnueState& state) {
 }
 
 int evaluateSearchPosition(const Position& pos, SearchNnueState& state) {
+    if (__builtin_popcountll(pos.occupancyAll) <= NNUE_REBUILD_PIECE_THRESHOLD) return evaluate(pos);
     materializeSearchNnue(state);
     return evaluateWithAccumulator(pos, state.accumulator);
 }
