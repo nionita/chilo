@@ -56,6 +56,19 @@ bool isDrawByFiftyMove(const Position& pos);
 bool isDrawByRepetition(const Position& pos);
 
 int evaluate(const Position& pos);
+
+struct NnueAccumulator {
+    uint64_t generation = 0;
+    int hiddenSize = 0;
+    bool valid = false;
+    std::vector<int32_t> values;
+};
+
+void initNnueAccumulator(const Position& pos, NnueAccumulator& acc);
+void applyNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc);
+void undoNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc);
+int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc);
+
 int staticExchangeEval(const Position& pos, const Move& move);
 bool loadNnueWeightsFile(const std::string& path, std::string& error);
 

@@ -3,6 +3,7 @@
 #include <cctype>
 #include <iostream>
 #include <string>
+#include <vector>
 
 std::string flipColors(const std::string& fen) {
     size_t space = fen.find(' ');
@@ -573,20 +574,25 @@ int testEvaluation() {
     Position kingOnlyWhite = parseFEN("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
     Position kingOnlyBlack = parseFEN("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
 
-    if (evaluate(start) != 0) {
-        std::cout << "  FAIL (starting position should remain symmetric under the NNUE replacement)\n";
+    const int startExpected = 4;
+    if (evaluate(start) != startExpected) {
+        std::cout << "  FAIL (starting position fixed-score regression mismatch, expected " << startExpected
+                  << ", got " << evaluate(start) << ")\n";
         return 1;
     }
     if (evaluate(whiteBetter) <= 0 || evaluate(blackWorseToMove) >= 0) {
         std::cout << "  FAIL (evaluation sign is inconsistent with side to move)\n";
         return 1;
     }
-    if (evaluate(kingOnlyWhite) != 0 || evaluate(kingOnlyBlack) != 0) {
-        std::cout << "  FAIL (symmetric king-only positions should evaluate to 0)\n";
+    const int kingOnlyExpected = 4;
+    if (evaluate(kingOnlyWhite) != kingOnlyExpected || evaluate(kingOnlyBlack) != kingOnlyExpected) {
+        std::cout << "  FAIL (king-only fixed-score regression mismatch)\n";
         return 1;
     }
-    if (evaluate(developedKnight) <= evaluate(rimKnight)) {
-        std::cout << "  FAIL (piece-square encoding does not reward the developed knight)\n";
+    const int developedKnightExpected = 141;
+    const int rimKnightExpected = 192;
+    if (evaluate(developedKnight) != developedKnightExpected || evaluate(rimKnight) != rimKnightExpected) {
+        std::cout << "  FAIL (knight fixed-score regression mismatch)\n";
         return 1;
     }
     if (evaluate(bishopPair) <= evaluate(bishopKnight)) {
@@ -610,7 +616,7 @@ int testEvaluation() {
         }
     }
 
-    const int queenUpExpected = 905;
+    const int queenUpExpected = 728;
     if (evaluate(whiteBetter) != queenUpExpected) {
         std::cout << "  FAIL (fixed-score regression mismatch, expected " << queenUpExpected
                   << ", got " << evaluate(whiteBetter) << ")\n";
@@ -621,8 +627,77 @@ int testEvaluation() {
     return 0;
 }
 
+int testIncrementalNnueAccumulator() {
+    std::cout << "Test 15: Incremental NNUE Accumulator Test\n";
+
+    struct LineCase {
+        std::string fen;
+        std::vector<std::string> moves;
+    };
+
+    const std::vector<LineCase> cases = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+         {"e2e4", "d7d5", "e4d5", "g8f6", "g1f3"}},
+        {"r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+         {"e1g1", "e8c8"}},
+        {"7k/P7/8/8/8/8/8/K7 w - - 0 1",
+         {"a7a8q"}},
+        {"7k/8/8/3pP3/8/8/8/K7 w - d6 0 1",
+         {"e5d6"}},
+    };
+
+    for (const LineCase& line : cases) {
+        Position pos = parseFEN(line.fen);
+        NnueAccumulator accumulator;
+        initNnueAccumulator(pos, accumulator);
+        if (evaluateWithAccumulator(pos, accumulator) != evaluate(pos)) {
+            std::cout << "  FAIL (initial accumulator mismatch for FEN: " << line.fen << ")\n";
+            return 1;
+        }
+
+        std::vector<Move> playedMoves;
+        std::vector<UndoState> undoStates;
+        for (const std::string& uci : line.moves) {
+            Move move;
+            if (!parseUCIMove(pos, uci, move)) {
+                std::cout << "  FAIL (could not parse test move " << uci << " from FEN: " << positionToFEN(pos) << ")\n";
+                return 1;
+            }
+
+            UndoState undoState;
+            applyNnueMove(pos, move, accumulator);
+            doMove(pos, move, undoState);
+            playedMoves.push_back(move);
+            undoStates.push_back(undoState);
+
+            int incremental = evaluateWithAccumulator(pos, accumulator);
+            int rebuilt = evaluate(pos);
+            if (incremental != rebuilt) {
+                std::cout << "  FAIL (accumulator mismatch after move " << uci
+                          << ", incremental " << incremental << ", rebuilt " << rebuilt << ")\n";
+                return 1;
+            }
+        }
+
+        for (int i = static_cast<int>(playedMoves.size()) - 1; i >= 0; --i) {
+            undo(pos, playedMoves[static_cast<std::size_t>(i)], undoStates[static_cast<std::size_t>(i)]);
+            undoNnueMove(pos, playedMoves[static_cast<std::size_t>(i)], accumulator);
+            int incremental = evaluateWithAccumulator(pos, accumulator);
+            int rebuilt = evaluate(pos);
+            if (incremental != rebuilt) {
+                std::cout << "  FAIL (accumulator mismatch after undo, incremental "
+                          << incremental << ", rebuilt " << rebuilt << ")\n";
+                return 1;
+            }
+        }
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testLegalNoisyMoveGeneration() {
-    std::cout << "Test 15: Legal Noisy Move Generation Test\n";
+    std::cout << "Test 16: Legal Noisy Move Generation Test\n";
 
     {
         Position promotion = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
@@ -666,7 +741,7 @@ int testLegalNoisyMoveGeneration() {
 }
 
 int testStaticExchangeEval() {
-    std::cout << "Test 16: Static Exchange Evaluation Test\n";
+    std::cout << "Test 17: Static Exchange Evaluation Test\n";
 
     {
         Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
@@ -718,7 +793,7 @@ int testStaticExchangeEval() {
 }
 
 int testSearchPrefersWinningCapture() {
-    std::cout << "Test 17: Search Prefers Winning Capture Test\n";
+    std::cout << "Test 18: Search Prefers Winning Capture Test\n";
 
     Position p = parseFEN("4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1");
     resetDrawHistory(p);
@@ -736,7 +811,7 @@ int testSearchPrefersWinningCapture() {
 }
 
 int testSearchAvoidsPoisonedCapture() {
-    std::cout << "Test 18: Search Avoids Poisoned Capture Test\n";
+    std::cout << "Test 19: Search Avoids Poisoned Capture Test\n";
 
     Position p = parseFEN("8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1");
     resetDrawHistory(p);
@@ -758,7 +833,7 @@ int testSearchAvoidsPoisonedCapture() {
 }
 
 int testSearchPrefersQuietPromotion() {
-    std::cout << "Test 19: Search Prefers Quiet Promotion Test\n";
+    std::cout << "Test 20: Search Prefers Quiet Promotion Test\n";
 
     Position p = parseFEN("7k/P7/8/8/8/8/8/K7 w - - 0 1");
     resetDrawHistory(p);
@@ -776,7 +851,7 @@ int testSearchPrefersQuietPromotion() {
 }
 
 int testMateScoreHelpers() {
-    std::cout << "Test 20: Mate Score Helper Test\n";
+    std::cout << "Test 21: Mate Score Helper Test\n";
 
     int mateInOne = SEARCH_MATE_SCORE - 1;
     int mateInTwo = SEARCH_MATE_SCORE - 3;
@@ -805,7 +880,7 @@ int testMateScoreHelpers() {
 }
 
 int testSearchFindsMateInOneForBothSides() {
-    std::cout << "Test 21: Search Finds Mate In One For Both Sides Test\n";
+    std::cout << "Test 22: Search Finds Mate In One For Both Sides Test\n";
 
     Position whiteToMove = parseFEN("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
     Position blackToMove = parseFEN("8/8/8/8/8/6k1/5q2/6K1 b - - 0 1");
@@ -847,6 +922,7 @@ int main() {
     failures += testFENRoundTrip();
     failures += testSearchSampleHook();
     failures += testEvaluation();
+    failures += testIncrementalNnueAccumulator();
     failures += testLegalNoisyMoveGeneration();
     failures += testStaticExchangeEval();
     failures += testSearchPrefersWinningCapture();

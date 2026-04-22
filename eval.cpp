@@ -121,6 +121,11 @@ RuntimeNnue& currentNnue() {
     return runtime;
 }
 
+uint64_t& currentNnueGeneration() {
+    static uint64_t generation = 1;
+    return generation;
+}
+
 bool validateRuntimeNnue(const RuntimeNnue& net, std::string& error) {
     if (net.contractId != chilo::nnue_generated::kContractId) {
         error = "NNUE contract id does not match the engine";
@@ -236,10 +241,6 @@ Color oppositeColor(Color color) {
     return color == WHITE ? BLACK : WHITE;
 }
 
-Color perspectiveColor(const Position& pos, int perspective) {
-    return perspective == 0 ? pos.sideToMove : oppositeColor(pos.sideToMove);
-}
-
 int normalizeSquareForColor(int sq, Color color) {
     return color == WHITE ? sq : (sq ^ 56);
 }
@@ -250,10 +251,94 @@ int relativePiecePlane(Piece piece, Color color) {
     return pieceColor(piece) == color ? baseType : baseType + 6;
 }
 
+std::size_t inputWeightOffset(const RuntimeNnue& net, int perspective, Color color, Piece piece, int sq) {
+    int relativePiece = relativePiecePlane(piece, color);
+    int relativeSquare = normalizeSquareForColor(sq, color);
+    return (((static_cast<std::size_t>(perspective) * net.piecePlaneCount + static_cast<std::size_t>(relativePiece)) *
+                 net.squareCount +
+             static_cast<std::size_t>(relativeSquare)) *
+            net.hiddenSize);
+}
+
+std::size_t accumulatorOffset(const RuntimeNnue& net, Color color, int perspective) {
+    return (static_cast<std::size_t>(color) * net.perspectiveCount + static_cast<std::size_t>(perspective)) *
+           net.hiddenSize;
+}
+
+std::size_t accumulatorValueCount(const RuntimeNnue& net) {
+    return static_cast<std::size_t>(net.perspectiveCount) * 2 * net.hiddenSize;
+}
+
+bool accumulatorMatchesCurrentNet(const NnueAccumulator& acc, const RuntimeNnue& net) {
+    return acc.valid && acc.generation == currentNnueGeneration() && acc.hiddenSize == net.hiddenSize &&
+           acc.values.size() == accumulatorValueCount(net);
+}
+
 int roundDivide(int64_t value, int64_t divisor) {
     assert(divisor > 0);
     if (value >= 0) return static_cast<int>((value + divisor / 2) / divisor);
     return -static_cast<int>(((-value) + divisor / 2) / divisor);
+}
+
+void updateAccumulatorFeature(NnueAccumulator& acc, Piece piece, int sq, int sign) {
+    assert(piece != EMPTY);
+    assert(sign == 1 || sign == -1);
+    const RuntimeNnue& net = currentNnue();
+    if (!accumulatorMatchesCurrentNet(acc, net)) return;
+
+    for (int colorValue = WHITE; colorValue <= BLACK; ++colorValue) {
+        Color color = static_cast<Color>(colorValue);
+        for (int perspective = 0; perspective < net.perspectiveCount; ++perspective) {
+            const int16_t* weights = net.inputWeights.data() + inputWeightOffset(net, perspective, color, piece, sq);
+            int32_t* lane = acc.values.data() + accumulatorOffset(net, color, perspective);
+            for (int i = 0; i < net.hiddenSize; ++i) lane[i] += sign * weights[i];
+        }
+    }
+}
+
+void updateAccumulatorForMove(const Position& pos, const Move& move, NnueAccumulator& acc, int sign) {
+    assert(sign == 1 || sign == -1);
+    Piece movingPiece = pieceAt(pos, move.from);
+    assert(movingPiece != EMPTY);
+
+    updateAccumulatorFeature(acc, movingPiece, move.from, -sign);
+
+    if (move.isEnPassant) {
+        int capR = pos.sideToMove == WHITE ? R(move.to) - 1 : R(move.to) + 1;
+        int capSq = capR * 8 + F(move.to);
+        Piece capturedPawn = pos.sideToMove == WHITE ? B_PAWN : W_PAWN;
+        updateAccumulatorFeature(acc, capturedPawn, capSq, -sign);
+    } else {
+        Piece capturedPiece = pieceAt(pos, move.to);
+        if (capturedPiece != EMPTY) updateAccumulatorFeature(acc, capturedPiece, move.to, -sign);
+    }
+
+    Piece placedPiece = move.promotion != EMPTY ? move.promotion : movingPiece;
+    updateAccumulatorFeature(acc, placedPiece, move.to, sign);
+
+    if (move.isCastle) {
+        int rank = R(move.to);
+        Piece rook = pos.sideToMove == WHITE ? W_ROOK : B_ROOK;
+        if (F(move.to) == 6) {
+            updateAccumulatorFeature(acc, rook, rank * 8 + 7, -sign);
+            updateAccumulatorFeature(acc, rook, rank * 8 + 5, sign);
+        } else if (F(move.to) == 2) {
+            updateAccumulatorFeature(acc, rook, rank * 8 + 0, -sign);
+            updateAccumulatorFeature(acc, rook, rank * 8 + 3, sign);
+        }
+    }
+}
+
+int64_t scoreFromLane(const int32_t* hidden) {
+    const RuntimeNnue& net = currentNnue();
+
+    const int scaledClipMax = net.clipMax * net.inputScale;
+    int64_t score = net.outputBias;
+    for (int i = 0; i < net.hiddenSize; ++i) {
+        score += static_cast<int64_t>(clippedRelu(hidden[i], scaledClipMax)) *
+                 net.outputWeights[static_cast<std::size_t>(i)];
+    }
+    return score;
 }
 
 int64_t perspectiveScore(const Position& pos, int perspective) {
@@ -261,29 +346,16 @@ int64_t perspectiveScore(const Position& pos, int perspective) {
     thread_local std::vector<int32_t> hidden;
     hidden.assign(net.hiddenBias.begin(), net.hiddenBias.end());
 
-    const int scaledClipMax = net.clipMax * net.inputScale;
-    Color color = perspectiveColor(pos, perspective);
+    Color color = perspective == 0 ? pos.sideToMove : oppositeColor(pos.sideToMove);
     uint64_t occupied = pos.occupancyAll;
     while (occupied) {
         int sq = popLsb(occupied);
         Piece piece = pieceAt(pos, sq);
-        int relativePiece = relativePiecePlane(piece, color);
-        int relativeSquare = normalizeSquareForColor(sq, color);
-        std::size_t baseIndex =
-            (((static_cast<std::size_t>(perspective) * net.piecePlaneCount + static_cast<std::size_t>(relativePiece)) *
-                  net.squareCount +
-              static_cast<std::size_t>(relativeSquare)) *
-             net.hiddenSize);
-        const int16_t* weights = net.inputWeights.data() + baseIndex;
+        const int16_t* weights = net.inputWeights.data() + inputWeightOffset(net, perspective, color, piece, sq);
         for (int i = 0; i < net.hiddenSize; ++i) hidden[static_cast<std::size_t>(i)] += weights[i];
     }
 
-    int64_t score = net.outputBias;
-    for (int i = 0; i < net.hiddenSize; ++i) {
-        score += static_cast<int64_t>(clippedRelu(hidden[static_cast<std::size_t>(i)], scaledClipMax)) *
-                 net.outputWeights[static_cast<std::size_t>(i)];
-    }
-    return score;
+    return scoreFromLane(hidden.data());
 }
 
 }  // namespace
@@ -292,7 +364,54 @@ bool loadNnueWeightsFile(const std::string& path, std::string& error) {
     RuntimeNnue loaded;
     if (!loadRuntimeNnueFromFile(path, loaded, error)) return false;
     currentNnue() = std::move(loaded);
+    ++currentNnueGeneration();
     return true;
+}
+
+void initNnueAccumulator(const Position& pos, NnueAccumulator& acc) {
+    const RuntimeNnue& net = currentNnue();
+    acc.generation = currentNnueGeneration();
+    acc.hiddenSize = net.hiddenSize;
+    acc.valid = true;
+    acc.values.resize(accumulatorValueCount(net));
+
+    for (int colorValue = WHITE; colorValue <= BLACK; ++colorValue) {
+        Color color = static_cast<Color>(colorValue);
+        for (int perspective = 0; perspective < net.perspectiveCount; ++perspective) {
+            int32_t* lane = acc.values.data() + accumulatorOffset(net, color, perspective);
+            for (int i = 0; i < net.hiddenSize; ++i) lane[i] = net.hiddenBias[static_cast<std::size_t>(i)];
+        }
+    }
+
+    uint64_t occupied = pos.occupancyAll;
+    while (occupied) {
+        int sq = popLsb(occupied);
+        Piece piece = pieceAt(pos, sq);
+        updateAccumulatorFeature(acc, piece, sq, 1);
+    }
+}
+
+void applyNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc) {
+    updateAccumulatorForMove(pos, move, acc, 1);
+}
+
+void undoNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc) {
+    updateAccumulatorForMove(pos, move, acc, -1);
+}
+
+int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc) {
+    const RuntimeNnue& net = currentNnue();
+    if (!accumulatorMatchesCurrentNet(acc, net)) {
+        return evaluate(pos);
+    }
+
+    Color passiveSide = oppositeColor(pos.sideToMove);
+    const int32_t* activeHidden = acc.values.data() + accumulatorOffset(net, pos.sideToMove, 0);
+    const int32_t* passiveHidden = acc.values.data() + accumulatorOffset(net, passiveSide, 1);
+    int64_t activePerspective = scoreFromLane(activeHidden);
+    int64_t passivePerspective = scoreFromLane(passiveHidden);
+    int64_t finalDivisor = static_cast<int64_t>(2) * net.inputScale * net.outputScale;
+    return roundDivide(activePerspective - passivePerspective, finalDivisor);
 }
 
 int evaluate(const Position& pos) {
