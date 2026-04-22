@@ -9,6 +9,14 @@ from typing import Dict, Iterable, List
 
 import numpy as np
 
+try:
+    from torch.utils.data import IterableDataset, get_worker_info
+except ImportError:
+    IterableDataset = object  # type: ignore[assignment,misc]
+
+    def get_worker_info():  # type: ignore[no-redef]
+        return None
+
 from nnue_common import (
     build_seeded_weights,
     compact_json,
@@ -24,12 +32,79 @@ def load_torch():
     try:
         import torch
         from torch import nn
-        from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+        from torch.utils.data import DataLoader
     except ImportError as exc:
         raise SystemExit(
             "PyTorch is required for training. Install torch in .venv with scripts/setup_python_env.sh and rerun train_nnue.py."
         ) from exc
-    return torch, nn, IterableDataset, DataLoader, get_worker_info
+    return torch, nn, DataLoader
+
+
+class ShardedSparseDataset(IterableDataset):
+    def __init__(
+        self,
+        root: Path,
+        shard_metas: List[Dict[str, object]],
+        shuffle: bool,
+        shuffle_buffer_size: int,
+        base_seed: int,
+        epoch: int,
+    ):
+        super().__init__()
+        self.root = root
+        self.shard_metas = list(shard_metas)
+        self.shuffle = shuffle
+        self.shuffle_buffer_size = shuffle_buffer_size
+        self.base_seed = base_seed
+        self.epoch = epoch
+
+    def _worker_shards(self) -> List[Dict[str, object]]:
+        worker_info = get_worker_info()
+        if worker_info is None:
+            return list(self.shard_metas)
+        return list(self.shard_metas[worker_info.id::worker_info.num_workers])
+
+    @staticmethod
+    def _record_to_sample(record: np.void) -> Dict[str, np.ndarray | np.integer | np.floating]:
+        return {
+            "pieces": record["pieces"].astype(np.int64),
+            "squares": record["squares"].astype(np.int64),
+            "piece_count": np.int64(record["piece_count"]),
+            "side_to_move": np.int64(record["side_to_move"]),
+            "score": np.float32(record["score"]),
+            "result": np.float32(record["result"]),
+        }
+
+    def __iter__(self) -> Iterable[Dict[str, np.ndarray | np.integer | np.floating]]:
+        shard_metas = self._worker_shards()
+        worker_info = get_worker_info()
+        worker_id = 0 if worker_info is None else worker_info.id
+        rng = np.random.default_rng(self.base_seed + self.epoch * 1000003 + worker_id)
+
+        if self.shuffle:
+            shard_metas = list(shard_metas)
+            rng.shuffle(shard_metas)
+            buffer: List[Dict[str, np.ndarray | np.integer | np.floating]] = []
+            for shard_meta in shard_metas:
+                shard = np.load(shard_path_from_meta(self.root, shard_meta), mmap_mode="r")
+                for record in shard:
+                    sample = self._record_to_sample(record)
+                    if len(buffer) < self.shuffle_buffer_size:
+                        buffer.append(sample)
+                        continue
+                    replace_index = int(rng.integers(len(buffer)))
+                    yield buffer[replace_index]
+                    buffer[replace_index] = sample
+
+            while buffer:
+                pop_index = int(rng.integers(len(buffer)))
+                yield buffer.pop(pop_index)
+            return
+
+        for shard_meta in shard_metas:
+            shard = np.load(shard_path_from_meta(self.root, shard_meta), mmap_mode="r")
+            for record in shard:
+                yield self._record_to_sample(record)
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,76 +157,10 @@ def main() -> int:
     train_samples = shard_sample_total(train_shards)
     val_samples = shard_sample_total(val_shards)
 
-    torch, nn, IterableDataset, DataLoader, get_worker_info = load_torch()
+    torch, nn, DataLoader = load_torch()
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-
-    class ShardedSparseDataset(IterableDataset):
-        def __init__(
-            self,
-            root: Path,
-            shard_metas: List[Dict[str, object]],
-            shuffle: bool,
-            shuffle_buffer_size: int,
-            base_seed: int,
-            epoch: int,
-        ):
-            super().__init__()
-            self.root = root
-            self.shard_metas = list(shard_metas)
-            self.shuffle = shuffle
-            self.shuffle_buffer_size = shuffle_buffer_size
-            self.base_seed = base_seed
-            self.epoch = epoch
-
-        def _worker_shards(self) -> List[Dict[str, object]]:
-            worker_info = get_worker_info()
-            if worker_info is None:
-                return list(self.shard_metas)
-            return list(self.shard_metas[worker_info.id::worker_info.num_workers])
-
-        @staticmethod
-        def _record_to_sample(record: np.void) -> Dict[str, np.ndarray | np.integer | np.floating]:
-            return {
-                "pieces": record["pieces"].astype(np.int64),
-                "squares": record["squares"].astype(np.int64),
-                "piece_count": np.int64(record["piece_count"]),
-                "side_to_move": np.int64(record["side_to_move"]),
-                "score": np.float32(record["score"]),
-                "result": np.float32(record["result"]),
-            }
-
-        def __iter__(self) -> Iterable[Dict[str, np.ndarray | np.integer | np.floating]]:
-            shard_metas = self._worker_shards()
-            worker_info = get_worker_info()
-            worker_id = 0 if worker_info is None else worker_info.id
-            rng = np.random.default_rng(self.base_seed + self.epoch * 1000003 + worker_id)
-
-            if self.shuffle:
-                shard_metas = list(shard_metas)
-                rng.shuffle(shard_metas)
-                buffer: List[Dict[str, np.ndarray | np.integer | np.floating]] = []
-                for shard_meta in shard_metas:
-                    shard = np.load(shard_path_from_meta(self.root, shard_meta), mmap_mode="r")
-                    for record in shard:
-                        sample = self._record_to_sample(record)
-                        if len(buffer) < self.shuffle_buffer_size:
-                            buffer.append(sample)
-                            continue
-                        replace_index = int(rng.integers(len(buffer)))
-                        yield buffer[replace_index]
-                        buffer[replace_index] = sample
-
-                while buffer:
-                    pop_index = int(rng.integers(len(buffer)))
-                    yield buffer.pop(pop_index)
-                return
-
-            for shard_meta in shard_metas:
-                shard = np.load(shard_path_from_meta(self.root, shard_meta), mmap_mode="r")
-                for record in shard:
-                    yield self._record_to_sample(record)
 
     class TinyNnueModel(nn.Module):
         def __init__(self, contract_data: dict, hidden_size: int, init_mode: str):
