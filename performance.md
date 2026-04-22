@@ -80,11 +80,43 @@ The total sampled time for this instrumented workload moved from about `7.34s` t
 | tactical depth 11 | 2471 ms | 2391 ms |
 | sparse KQK depth 12 | 51 ms | 48 ms |
 
+## 2026-04-22 Portable Kernel Reshape
+
+The second optimization kept the code portable but reshaped `updateAccumulatorFeatureUnchecked`: instead of nested color/perspective loops, it now computes the four fixed accumulator lanes directly and calls small lane add/subtract helpers.
+
+The same `gprof` workload searched the same node counts and produced the same PVs. The generated report was written locally to `/tmp/chilo-gprof-after-kernel-reshape.txt`.
+
+Top flat-profile self time after the reshape:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 16.57% |
+| `updateAccumulatorFeatureUnchecked` | 13.77% |
+| `undo` | 10.98% |
+| `inCheck` | 7.78% |
+| `evaluateWithAccumulator` | 6.19% |
+| `orderMoves` | 5.79% |
+| `quiescence` | 5.19% self |
+| `probeTT` | 4.59% |
+| `genPseudoMoves` | 4.59% |
+| `genLegalPseudoMoves` | 3.59% |
+
+`updateAccumulatorFeatureUnchecked` dropped from `32.66%` to `13.77%` of sampled self time. Total sampled time for the instrumented workload moved from about `6.92s` to `5.01s`, roughly a `27.6%` reduction from the previous profile and about `31.7%` lower than the original baseline profile.
+
+Reported engine times with identical node counts:
+
+| Position | Previous | After |
+| --- | ---: | ---: |
+| start position depth 11 | 3956 ms | 3396 ms |
+| middlegame depth 11 | 4627 ms | 3922 ms |
+| tactical depth 11 | 2391 ms | 2109 ms |
+| sparse KQK depth 12 | 48 ms | 49 ms |
+
 ## Likely Optimization Directions
 
 1. Make NNUE delta apply/undo cheaper.
 
-   The first wrapper-level cleanup has been done. Remaining candidate changes: explicitly update the four fixed accumulator lanes without nested loops, precompute per-feature lane offsets in `NnueMoveDelta`, and consider specialized code paths for common hidden sizes.
+   The wrapper cleanup and portable four-lane reshape have been done. Remaining candidate changes: precompute per-feature lane offsets in `NnueMoveDelta`, add optional hidden-size specializations, or add an optional AVX2 path for modern amd64 builds.
 
 2. Reduce legal move generation overhead.
 

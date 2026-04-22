@@ -280,20 +280,54 @@ int roundDivide(int64_t value, int64_t divisor) {
     return -static_cast<int>(((-value) + divisor / 2) / divisor);
 }
 
+void addWeightsToLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
+    for (int i = 0; i < hiddenSize; ++i) lane[i] += weights[i];
+}
+
+void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
+    for (int i = 0; i < hiddenSize; ++i) lane[i] -= weights[i];
+}
+
 void updateAccumulatorFeatureUnchecked(const RuntimeNnue& net, NnueAccumulator& acc, Piece piece, int sq, bool add) {
     assert(piece != EMPTY);
+    assert(net.perspectiveCount == 2);
+    assert(net.piecePlaneCount == 13);
+    assert(net.squareCount == 64);
 
-    for (int colorValue = WHITE; colorValue <= BLACK; ++colorValue) {
-        Color color = static_cast<Color>(colorValue);
-        for (int perspective = 0; perspective < net.perspectiveCount; ++perspective) {
-            const int16_t* weights = net.inputWeights.data() + inputWeightOffset(net, perspective, color, piece, sq);
-            int32_t* lane = acc.values.data() + accumulatorOffset(net, color, perspective);
-            if (add) {
-                for (int i = 0; i < net.hiddenSize; ++i) lane[i] += weights[i];
-            } else {
-                for (int i = 0; i < net.hiddenSize; ++i) lane[i] -= weights[i];
-            }
-        }
+    const int hiddenSize = net.hiddenSize;
+    const std::size_t hidden = static_cast<std::size_t>(hiddenSize);
+    const std::size_t planeStride = static_cast<std::size_t>(net.squareCount) * hidden;
+    const std::size_t perspectiveStride = static_cast<std::size_t>(net.piecePlaneCount) * planeStride;
+
+    const int whitePlane = relativePiecePlane(piece, WHITE);
+    const int blackPlane = relativePiecePlane(piece, BLACK);
+    const int whiteSquare = normalizeSquareForColor(sq, WHITE);
+    const int blackSquare = normalizeSquareForColor(sq, BLACK);
+    const int16_t* input = net.inputWeights.data();
+
+    const int16_t* whiteActiveWeights =
+        input + static_cast<std::size_t>(whitePlane) * planeStride + static_cast<std::size_t>(whiteSquare) * hidden;
+    const int16_t* whitePassiveWeights = whiteActiveWeights + perspectiveStride;
+    const int16_t* blackActiveWeights =
+        input + static_cast<std::size_t>(blackPlane) * planeStride + static_cast<std::size_t>(blackSquare) * hidden;
+    const int16_t* blackPassiveWeights = blackActiveWeights + perspectiveStride;
+
+    int32_t* values = acc.values.data();
+    int32_t* whiteActiveLane = values;
+    int32_t* whitePassiveLane = values + hidden;
+    int32_t* blackActiveLane = values + 2 * hidden;
+    int32_t* blackPassiveLane = values + 3 * hidden;
+
+    if (add) {
+        addWeightsToLane(whiteActiveLane, whiteActiveWeights, hiddenSize);
+        addWeightsToLane(whitePassiveLane, whitePassiveWeights, hiddenSize);
+        addWeightsToLane(blackActiveLane, blackActiveWeights, hiddenSize);
+        addWeightsToLane(blackPassiveLane, blackPassiveWeights, hiddenSize);
+    } else {
+        subWeightsFromLane(whiteActiveLane, whiteActiveWeights, hiddenSize);
+        subWeightsFromLane(whitePassiveLane, whitePassiveWeights, hiddenSize);
+        subWeightsFromLane(blackActiveLane, blackActiveWeights, hiddenSize);
+        subWeightsFromLane(blackPassiveLane, blackPassiveWeights, hiddenSize);
     }
 }
 
