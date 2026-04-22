@@ -692,6 +692,60 @@ int testIncrementalNnueAccumulator() {
         }
     }
 
+    {
+        Position pos = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        Position original = pos;
+        NnueAccumulator accumulator;
+        initNnueAccumulator(pos, accumulator);
+
+        Move skippedMove;
+        if (!parseUCIMove(pos, "e2e4", skippedMove)) {
+            std::cout << "  FAIL (could not parse skipped lazy test move)\n";
+            return 1;
+        }
+        NnueMoveDelta skippedDelta = makeNnueMoveDelta(pos, skippedMove);
+        (void)skippedDelta;
+        UndoState skippedUndo;
+        doMove(pos, skippedMove, skippedUndo);
+        undo(pos, skippedMove, skippedUndo);
+        if (!positionsEqual(pos, original) || evaluateWithAccumulator(pos, accumulator) != evaluate(pos)) {
+            std::cout << "  FAIL (unmaterialized lazy delta changed accumulator state)\n";
+            return 1;
+        }
+
+        std::vector<std::string> lazyMoves = {"e2e4", "d7d5", "g1f3", "g8f6"};
+        std::vector<Move> playedMoves;
+        std::vector<UndoState> undoStates;
+        std::vector<NnueMoveDelta> pendingDeltas;
+        for (const std::string& uci : lazyMoves) {
+            Move move;
+            if (!parseUCIMove(pos, uci, move)) {
+                std::cout << "  FAIL (could not parse lazy test move " << uci << ")\n";
+                return 1;
+            }
+            pendingDeltas.push_back(makeNnueMoveDelta(pos, move));
+            UndoState undoState;
+            doMove(pos, move, undoState);
+            playedMoves.push_back(move);
+            undoStates.push_back(undoState);
+        }
+
+        for (const NnueMoveDelta& delta : pendingDeltas) applyNnueDelta(accumulator, delta);
+        if (evaluateWithAccumulator(pos, accumulator) != evaluate(pos)) {
+            std::cout << "  FAIL (lazy materialization did not match rebuilt eval)\n";
+            return 1;
+        }
+
+        for (int i = static_cast<int>(playedMoves.size()) - 1; i >= 0; --i) {
+            undo(pos, playedMoves[static_cast<std::size_t>(i)], undoStates[static_cast<std::size_t>(i)]);
+            undoNnueDelta(accumulator, pendingDeltas[static_cast<std::size_t>(i)]);
+            if (evaluateWithAccumulator(pos, accumulator) != evaluate(pos)) {
+                std::cout << "  FAIL (lazy accumulator mismatch after undo)\n";
+                return 1;
+            }
+        }
+    }
+
     std::cout << "  PASS\n";
     return 0;
 }

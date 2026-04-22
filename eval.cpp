@@ -296,37 +296,47 @@ void updateAccumulatorFeature(NnueAccumulator& acc, Piece piece, int sq, int sig
     }
 }
 
-void updateAccumulatorForMove(const Position& pos, const Move& move, NnueAccumulator& acc, int sign) {
+void appendDelta(NnueMoveDelta& delta, Piece piece, int sq, int sign) {
+    assert(piece != EMPTY);
+    assert(sq >= 0 && sq < 64);
     assert(sign == 1 || sign == -1);
+    assert(delta.count < 4);
+    delta.changes[delta.count++] = NnueFeatureDelta{piece, static_cast<uint8_t>(sq), static_cast<int8_t>(sign)};
+}
+
+NnueMoveDelta buildMoveDelta(const Position& pos, const Move& move) {
+    NnueMoveDelta delta{};
     Piece movingPiece = pieceAt(pos, move.from);
     assert(movingPiece != EMPTY);
 
-    updateAccumulatorFeature(acc, movingPiece, move.from, -sign);
+    appendDelta(delta, movingPiece, move.from, -1);
 
     if (move.isEnPassant) {
         int capR = pos.sideToMove == WHITE ? R(move.to) - 1 : R(move.to) + 1;
         int capSq = capR * 8 + F(move.to);
         Piece capturedPawn = pos.sideToMove == WHITE ? B_PAWN : W_PAWN;
-        updateAccumulatorFeature(acc, capturedPawn, capSq, -sign);
+        appendDelta(delta, capturedPawn, capSq, -1);
     } else {
         Piece capturedPiece = pieceAt(pos, move.to);
-        if (capturedPiece != EMPTY) updateAccumulatorFeature(acc, capturedPiece, move.to, -sign);
+        if (capturedPiece != EMPTY) appendDelta(delta, capturedPiece, move.to, -1);
     }
 
     Piece placedPiece = move.promotion != EMPTY ? move.promotion : movingPiece;
-    updateAccumulatorFeature(acc, placedPiece, move.to, sign);
+    appendDelta(delta, placedPiece, move.to, 1);
 
     if (move.isCastle) {
         int rank = R(move.to);
         Piece rook = pos.sideToMove == WHITE ? W_ROOK : B_ROOK;
         if (F(move.to) == 6) {
-            updateAccumulatorFeature(acc, rook, rank * 8 + 7, -sign);
-            updateAccumulatorFeature(acc, rook, rank * 8 + 5, sign);
+            appendDelta(delta, rook, rank * 8 + 7, -1);
+            appendDelta(delta, rook, rank * 8 + 5, 1);
         } else if (F(move.to) == 2) {
-            updateAccumulatorFeature(acc, rook, rank * 8 + 0, -sign);
-            updateAccumulatorFeature(acc, rook, rank * 8 + 3, sign);
+            appendDelta(delta, rook, rank * 8 + 0, -1);
+            appendDelta(delta, rook, rank * 8 + 3, 1);
         }
     }
+
+    return delta;
 }
 
 int64_t scoreFromLane(const int32_t* hidden) {
@@ -391,12 +401,30 @@ void initNnueAccumulator(const Position& pos, NnueAccumulator& acc) {
     }
 }
 
+NnueMoveDelta makeNnueMoveDelta(const Position& pos, const Move& move) {
+    return buildMoveDelta(pos, move);
+}
+
+void applyNnueDelta(NnueAccumulator& acc, const NnueMoveDelta& delta) {
+    for (int i = 0; i < delta.count; ++i) {
+        const NnueFeatureDelta& change = delta.changes[i];
+        updateAccumulatorFeature(acc, change.piece, change.square, change.sign);
+    }
+}
+
+void undoNnueDelta(NnueAccumulator& acc, const NnueMoveDelta& delta) {
+    for (int i = static_cast<int>(delta.count) - 1; i >= 0; --i) {
+        const NnueFeatureDelta& change = delta.changes[i];
+        updateAccumulatorFeature(acc, change.piece, change.square, -change.sign);
+    }
+}
+
 void applyNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc) {
-    updateAccumulatorForMove(pos, move, acc, 1);
+    applyNnueDelta(acc, makeNnueMoveDelta(pos, move));
 }
 
 void undoNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc) {
-    updateAccumulatorForMove(pos, move, acc, -1);
+    undoNnueDelta(acc, makeNnueMoveDelta(pos, move));
 }
 
 int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc) {

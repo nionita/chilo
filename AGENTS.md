@@ -66,6 +66,7 @@
 ## Important Specifics
 
 - The evaluator is no longer the old handcrafted tapered eval. `eval.cpp` runs inference only. The compiled engine has a built-in fallback net from `generated/generated_nnue_weights.h`, but it can also load a runtime `.bin` weights artifact with a different hidden size.
+- Search uses lazy NNUE accumulators. Move deltas are pushed during search and only materialized when an eval is actually needed, so TT/draw/terminal cutoffs can avoid hidden-layer updates. `evaluate(pos)` remains the full-rebuild reference path for tools and tests.
 - The training/export contract is explicit. Keep `eval.cpp`, `generated/generated_nnue_weights.h`, `generated/generated_nnue_manifest.json`, and `scripts/nnue_contract.json` in sync.
 - Integer export is scale-driven now. `scripts/export_nnue.py` writes input/output quantization scales and hidden size into the generated manifest/header or runtime `.bin`, and `eval.cpp` must use the same scaled clip/divide math as the Python parity path.
 - The Tiny NNUE uses active/passive perspectives. Perspective `0` is the side to move and perspective `1` is the opponent; raw board pieces are remapped to relative friendly/enemy planes at inference/training time.

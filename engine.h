@@ -64,7 +64,21 @@ struct NnueAccumulator {
     std::vector<int32_t> values;
 };
 
+struct NnueFeatureDelta {
+    Piece piece = EMPTY;
+    uint8_t square = 0;
+    int8_t sign = 0;
+};
+
+struct NnueMoveDelta {
+    uint8_t count = 0;
+    NnueFeatureDelta changes[4];
+};
+
 void initNnueAccumulator(const Position& pos, NnueAccumulator& acc);
+NnueMoveDelta makeNnueMoveDelta(const Position& pos, const Move& move);
+void applyNnueDelta(NnueAccumulator& acc, const NnueMoveDelta& delta);
+void undoNnueDelta(NnueAccumulator& acc, const NnueMoveDelta& delta);
 void applyNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc);
 void undoNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc);
 int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc);

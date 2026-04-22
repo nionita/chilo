@@ -24,6 +24,8 @@ The active evaluator is `TinyNnue` with active/passive perspectives:
 - square normalization mirrors black perspectives
 - the score is `(active_perspective - passive_perspective) / 2`
 
+Search evaluates through lazy NNUE accumulators: move deltas are pushed before `doMove`, but hidden sums are only updated when a node actually needs static eval. `evaluate(pos)` remains the full-rebuild reference path for tools, parity tests, and fallback cases.
+
 The feature/model contract is `scripts/nnue_contract.json`. Keep it consistent with `eval.cpp`, `scripts/nnue_common.py`, `scripts/train_nnue.py`, `scripts/export_nnue.py`, and the checked-in generated files under `generated/`.
 
 The engine always has built-in fallback weights from `generated/generated_nnue_weights.h`. It can also load a runtime `.bin` export:
