@@ -38,12 +38,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--elo1", type=float, default=None, help="Override SPRT elo1.")
     parser.add_argument("--alpha", type=float, default=None, help="Override SPRT alpha.")
     parser.add_argument("--beta", type=float, default=None, help="Override SPRT beta.")
+    parser.add_argument("--concurrency", type=int, default=None, help="Override config concurrency for this run.")
     parser.add_argument(
         "--sprt-model",
         choices=("normalized", "logistic", "bayesian"),
         default=None,
         help="Override SPRT model.",
     )
+    force_concurrency = parser.add_mutually_exclusive_group()
+    force_concurrency.add_argument("--force-concurrency", action="store_true", help="Pass fastchess -force-concurrency.")
+    force_concurrency.add_argument("--no-force-concurrency", action="store_true", help="Suppress config force_concurrency.")
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--new", action="store_true", help="Start a new run; fail if the state file exists.")
@@ -113,6 +117,27 @@ def format_number(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
+
+
+def effective_concurrency(config: Mapping[str, Any], args: argparse.Namespace) -> Optional[int]:
+    value = args.concurrency if args.concurrency is not None else config.get("concurrency")
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("concurrency must be an integer >= 1.") from exc
+    if parsed < 1:
+        raise SystemExit("concurrency must be an integer >= 1.")
+    return parsed
+
+
+def effective_force_concurrency(config: Mapping[str, Any], args: argparse.Namespace) -> bool:
+    if args.force_concurrency:
+        return True
+    if args.no_force_concurrency:
+        return False
+    return bool(config.get("force_concurrency"))
 
 
 def mapping_items(mapping: Mapping[str, Any]) -> List[str]:
@@ -409,8 +434,10 @@ def build_fastchess_argv(
     argv.extend(["-sprt", *build_sprt_items(sprt_profile)])
     append_optional_scalar(argv, "-rounds", config, "rounds")
     append_optional_scalar(argv, "-games", config, "games")
-    append_optional_scalar(argv, "-concurrency", config, "concurrency")
-    if config.get("force_concurrency"):
+    concurrency = effective_concurrency(config, args)
+    if concurrency is not None:
+        argv.extend(["-concurrency", str(concurrency)])
+    if effective_force_concurrency(config, args):
         argv.append("-force-concurrency")
     append_optional_scalar(argv, "-ratinginterval", config, "rating_interval")
     append_optional_scalar(argv, "-scoreinterval", config, "score_interval")

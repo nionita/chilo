@@ -343,8 +343,11 @@ python3 scripts/run_fastchess_sprt.py \
   --name-a base \
   --name-b candidate \
   --sprt normal \
+  --concurrency 4 \
   --dry-run
 ```
+
+`concurrency` and `force_concurrency` can live in the JSON config. For one-off runs, override them with `--concurrency N`, `--force-concurrency`, or `--no-force-concurrency`.
 
 Remove `--dry-run` to start the match. The run directory is created if needed and uses fixed filenames:
 

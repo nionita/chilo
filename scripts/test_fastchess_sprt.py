@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -14,6 +15,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import run_fastchess_sprt
+
+
+def value_after(argv: List[str], flag: str) -> str:
+    index = argv.index(flag)
+    return argv[index + 1]
 
 
 def write_config(temp_dir: Path) -> Path:
@@ -119,8 +125,74 @@ class FastchessSprtTest(unittest.TestCase):
             self.assertIn("args=--weights " + str((temp_dir / "candidate.bin").resolve()), argv)
             self.assertIn("file=" + str((temp_dir / "book.epd").resolve()), argv)
             self.assertIn("elo1=3", argv)
+            self.assertEqual(value_after(argv, "-concurrency"), "1")
             self.assertIn("outname=" + str((temp_dir / "match" / run_fastchess_sprt.STATE_FILE_NAME).resolve()), argv)
             self.assertIn("7", argv)
+
+    def test_concurrency_cli_override(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            args = run_fastchess_sprt.parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--run-dir",
+                    str(temp_dir / "match"),
+                    "--engine-a",
+                    "a",
+                    "--engine-b",
+                    "b",
+                    "--concurrency",
+                    "4",
+                ]
+            )
+            config = run_fastchess_sprt.load_config(config_path)
+            _, profile = run_fastchess_sprt.select_sprt_profile(config, None)
+            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, temp_dir / "match", "new", profile, args)
+
+            self.assertEqual(value_after(argv, "-concurrency"), "4")
+
+    def test_force_concurrency_precedence(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            config = run_fastchess_sprt.load_config(config_path)
+            config["force_concurrency"] = True
+
+            no_force_args = run_fastchess_sprt.parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--run-dir",
+                    str(temp_dir / "match"),
+                    "--engine-a",
+                    "a",
+                    "--engine-b",
+                    "b",
+                    "--no-force-concurrency",
+                ]
+            )
+            _, profile = run_fastchess_sprt.select_sprt_profile(config, None)
+            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, temp_dir / "match", "new", profile, no_force_args)
+            self.assertNotIn("-force-concurrency", argv)
+
+            config.pop("force_concurrency")
+            force_args = run_fastchess_sprt.parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--run-dir",
+                    str(temp_dir / "match"),
+                    "--engine-a",
+                    "a",
+                    "--engine-b",
+                    "b",
+                    "--force-concurrency",
+                ]
+            )
+            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, temp_dir / "match", "new", profile, force_args)
+            self.assertIn("-force-concurrency", argv)
 
     def test_run_mode_auto_resume_and_resume_requires_state(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
