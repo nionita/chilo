@@ -328,6 +328,7 @@ cp scripts/fastchess_sprt_config.example.json /tmp/chilo-sprt-config.json
 ```
 
 Then edit paths and common match settings in that copy.
+The wrapper also accepts `opening.format` set to `fen`; in that case it converts the FEN file to a normalized EPD file inside the run directory and passes that generated file to fastchess. This is useful for one-FEN-per-line books. Invalid FEN fullmove counters below `1` are written as `fmvn 1`, because fullmove `0` makes fastchess produce bogus PGN move numbers.
 
 Example dry-run:
 

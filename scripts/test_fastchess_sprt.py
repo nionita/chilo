@@ -199,6 +199,51 @@ class FastchessSprtTest(unittest.TestCase):
             self.assertIn("fastchess", stdout.getvalue())
             self.assertIn("-sprt", stdout.getvalue())
 
+    def test_fen_openings_are_normalized_to_epd(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            source = temp_dir / "book.fen"
+            source.write_text(
+                "r1b1k1nr/ppp2ppp/2p2q2/b3P3/3p4/B1P2N2/P4PPP/RN1Q1RK1 b kq - 0 0\n"
+                "8/8/8/8/8/8/4K3/4k2Q w - - 7 12\n",
+                encoding="utf-8",
+            )
+            config = {
+                "fastchess": "fastchess",
+                "opening": {
+                    "file": str(source),
+                    "format": "fen",
+                    "order": "sequential",
+                },
+                "sprt_profiles": {
+                    "normal": {
+                        "elo0": 0,
+                        "elo1": 2,
+                        "alpha": 0.05,
+                        "beta": 0.05,
+                    }
+                },
+            }
+            config_path = temp_dir / "config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            run_dir = temp_dir / "match"
+
+            opening_config, summary = run_fastchess_sprt.effective_opening_config(
+                config, config_path, run_dir, materialize=True
+            )
+
+            self.assertEqual(opening_config["format"], "epd")
+            self.assertEqual(opening_config["file"], str(run_dir / run_fastchess_sprt.NORMALIZED_OPENINGS_FILE_NAME))
+            self.assertIsNotNone(summary)
+            self.assertEqual(summary["positions"], 2)
+
+            rows = (run_dir / run_fastchess_sprt.NORMALIZED_OPENINGS_FILE_NAME).read_text(encoding="utf-8").splitlines()
+            self.assertEqual(
+                rows[0],
+                "r1b1k1nr/ppp2ppp/2p2q2/b3P3/3p4/B1P2N2/P4PPP/RN1Q1RK1 b kq - hmvc 0; fmvn 1;",
+            )
+            self.assertEqual(rows[1], "8/8/8/8/8/8/4K3/4k2Q w - - hmvc 7; fmvn 12;")
+
 
 if __name__ == "__main__":
     unittest.main()

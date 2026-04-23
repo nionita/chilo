@@ -7,8 +7,8 @@
   "autosave_interval": 20,
   "rating_interval": 10,
   "opening": {
-    "file": "/path/to/openings.epd",
-    "format": "epd",
+    "file": "/path/to/openings.fen",
+    "format": "fen",
     "order": "random"
   },
   "each": {

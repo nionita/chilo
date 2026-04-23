@@ -16,6 +16,7 @@ STATE_FILE_NAME = "fastchess_state.json"
 PGN_FILE_NAME = "games.pgn"
 LOG_FILE_NAME = "fastchess.log"
 COMMAND_FILE_NAME = "fastchess_command.json"
+NORMALIZED_OPENINGS_FILE_NAME = "openings.epd"
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -105,6 +106,77 @@ def mapping_items(mapping: Mapping[str, Any]) -> List[str]:
             continue
         items.append(f"{key}={format_value(value)}")
     return items
+
+
+def normalize_fen_opening_line(line: str, source: Path, line_number: int) -> Optional[str]:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    parts = stripped.split()
+    if len(parts) not in (4, 6):
+        raise SystemExit(f"{source}:{line_number}: expected 4-field or 6-field FEN, got {len(parts)} fields.")
+
+    board, side_to_move, castling, ep_square = parts[:4]
+    if side_to_move not in ("w", "b"):
+        raise SystemExit(f"{source}:{line_number}: invalid side-to-move field '{side_to_move}'.")
+
+    halfmove = 0
+    fullmove = 1
+    if len(parts) == 6:
+        try:
+            halfmove = int(parts[4])
+            fullmove = int(parts[5])
+        except ValueError as exc:
+            raise SystemExit(f"{source}:{line_number}: halfmove/fullmove fields must be integers.") from exc
+
+    halfmove = max(0, halfmove)
+    fullmove = max(1, fullmove)
+    return f"{board} {side_to_move} {castling} {ep_square} hmvc {halfmove}; fmvn {fullmove};"
+
+
+def write_normalized_fen_book(source: Path, output: Path) -> int:
+    written = 0
+    with source.open("r", encoding="utf-8") as input_handle, output.open("w", encoding="utf-8", newline="\n") as output_handle:
+        for line_number, line in enumerate(input_handle, start=1):
+            normalized = normalize_fen_opening_line(line, source, line_number)
+            if normalized is None:
+                continue
+            output_handle.write(normalized + "\n")
+            written += 1
+    if written == 0:
+        raise SystemExit(f"No FEN openings found in {source}.")
+    return written
+
+
+def effective_opening_config(config: Mapping[str, Any], config_path: Path, run_dir: Path, materialize: bool) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    opening = config.get("opening")
+    if opening is None:
+        return None, None
+    if not isinstance(opening, dict):
+        raise SystemExit("Config 'opening' must be an object when present.")
+
+    opening_format = opening.get("format")
+    if opening_format != "fen":
+        return opening, None
+    if "file" not in opening:
+        raise SystemExit("Config opening with format=fen must define 'file'.")
+
+    source = Path(resolve_config_file_path(str(opening["file"]), config_path.parent))
+    output = run_dir / NORMALIZED_OPENINGS_FILE_NAME
+    generated = dict(opening)
+    generated["file"] = str(output)
+    generated["format"] = "epd"
+
+    summary = {
+        "source": str(source),
+        "generated": str(output),
+        "format": "fen-to-epd",
+        "note": "FEN fullmove counters below 1 are written as fmvn 1 because FEN fullmove 0 is invalid.",
+    }
+    if materialize:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        summary["positions"] = write_normalized_fen_book(source, output)
+    return generated, summary
 
 
 def safe_name(value: str) -> str:
@@ -288,6 +360,7 @@ def build_fastchess_argv(
     run_mode: str,
     sprt_profile: Mapping[str, Any],
     args: argparse.Namespace,
+    opening_config: Any = None,
 ) -> List[str]:
     config_dir = config_path.parent
     fastchess = resolve_config_path(str(config["fastchess"]), config_dir)
@@ -306,7 +379,9 @@ def build_fastchess_argv(
             raise SystemExit("Config 'each' must be an object when present.")
         argv.extend(["-each", *mapping_items(each)])
 
-    append_opening_args(argv, config.get("opening"), config_dir)
+    if opening_config is None:
+        opening_config = config.get("opening")
+    append_opening_args(argv, opening_config, config_dir)
     append_adjudication_args(argv, config.get("adjudication"))
 
     argv.extend(["-sprt", *build_sprt_items(sprt_profile)])
@@ -363,6 +438,7 @@ def write_command_summary(
     sprt_profile: Mapping[str, Any],
     argv: Iterable[str],
     archived_files: List[Tuple[str, str]],
+    opening_summary: Optional[Mapping[str, Any]],
     args: argparse.Namespace,
 ) -> None:
     summary = {
@@ -383,6 +459,7 @@ def write_command_summary(
             "weights": str(resolve_cli_path(args.net_b)) if args.net_b else None,
         },
         "archived_files": archived_files,
+        "opening": dict(opening_summary) if opening_summary is not None else None,
         "fastchess_argv": list(argv),
     }
     path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -401,8 +478,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_mode = choose_run_mode(args, state_path)
     sprt_profile_name, base_sprt_profile = select_sprt_profile(config, args.sprt)
     sprt_profile = apply_sprt_overrides(base_sprt_profile, args)
+    opening_config, opening_summary = effective_opening_config(config, config_path, run_dir, materialize=not args.dry_run)
 
-    fastchess_argv = build_fastchess_argv(config, config_path, run_dir, run_mode, sprt_profile, args)
+    fastchess_argv = build_fastchess_argv(config, config_path, run_dir, run_mode, sprt_profile, args, opening_config)
 
     if args.dry_run:
         print(command_for_display(fastchess_argv))
@@ -422,6 +500,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         sprt_profile,
         fastchess_argv,
         archived_files,
+        opening_summary,
         args,
     )
 
