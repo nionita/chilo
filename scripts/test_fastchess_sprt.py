@@ -119,7 +119,7 @@ class FastchessSprtTest(unittest.TestCase):
             self.assertIn("args=--weights " + str((temp_dir / "candidate.bin").resolve()), argv)
             self.assertIn("file=" + str((temp_dir / "book.epd").resolve()), argv)
             self.assertIn("elo1=3", argv)
-            self.assertIn(f"outname={run_fastchess_sprt.STATE_FILE_NAME}", argv)
+            self.assertIn("outname=" + str((temp_dir / "match" / run_fastchess_sprt.STATE_FILE_NAME).resolve()), argv)
             self.assertIn("7", argv)
 
     def test_run_mode_auto_resume_and_resume_requires_state(self):
@@ -198,6 +198,94 @@ class FastchessSprtTest(unittest.TestCase):
             self.assertFalse(run_dir.exists())
             self.assertIn("fastchess", stdout.getvalue())
             self.assertIn("-sprt", stdout.getvalue())
+
+    def test_resume_state_uses_metadata_without_regular_args(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            run_dir = Path(temp_dir_name)
+            state_path = run_dir / run_fastchess_sprt.STATE_FILE_NAME
+            state_path.write_text("{}", encoding="utf-8")
+            (run_dir / run_fastchess_sprt.COMMAND_FILE_NAME).write_text(
+                json.dumps(
+                    {
+                        "config": str(run_dir / "wrapper-config.json"),
+                        "fastchess_argv": ["/usr/local/bin/fastchess", "-config", "outname=fastchess_state.json"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = run_fastchess_sprt.main(["--resume-state", str(state_path), "--dry-run"])
+
+            self.assertEqual(exit_code, 0)
+            printed = stdout.getvalue()
+            self.assertIn("/usr/local/bin/fastchess", printed)
+            self.assertIn("file=" + str(state_path.resolve()), printed)
+            self.assertIn("outname=" + str(state_path.resolve()), printed)
+            self.assertIn("stats=true", printed)
+
+    def test_command_summary_contains_recovery_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            summary_path = temp_dir / run_fastchess_sprt.COMMAND_FILE_NAME
+            args = run_fastchess_sprt.parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--run-dir",
+                    str(temp_dir / "match"),
+                    "--engine-a",
+                    "base",
+                    "--engine-b",
+                    "candidate",
+                    "--name-a",
+                    "base",
+                    "--name-b",
+                    "candidate",
+                ]
+            )
+            run_fastchess_sprt.write_command_summary(
+                summary_path,
+                config_path,
+                temp_dir / "match",
+                "new",
+                "normal",
+                {"elo0": 0, "elo1": 2, "alpha": 0.05, "beta": 0.05, "model": "normalized"},
+                ["fastchess", "-config", "outname=state.json"],
+                [],
+                None,
+                ["--config", str(config_path), "--engine-a", "base", "--engine-b", "candidate"],
+                args,
+            )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["engine_a"]["name"], "base")
+            self.assertEqual(summary["engine_b"]["name"], "candidate")
+            self.assertEqual(summary["sprt_profile"], "normal")
+            self.assertEqual(summary["state_file"], str((temp_dir / "match" / run_fastchess_sprt.STATE_FILE_NAME).resolve()))
+            self.assertIn("--resume-state", summary["resume_command"])
+            self.assertIn("wrapper_argv", summary)
+            self.assertIn("fastchess_argv", summary)
+
+    def test_keyboard_interrupt_returns_130_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            run_dir = Path(temp_dir_name)
+            state_path = run_dir / run_fastchess_sprt.STATE_FILE_NAME
+
+            def interrupting_runner(*_args, **_kwargs):
+                raise KeyboardInterrupt
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = run_fastchess_sprt.run_fastchess_process(
+                    ["fastchess", "-config", "outname=state.json"], run_dir, state_path, runner=interrupting_runner
+                )
+
+            self.assertEqual(exit_code, 130)
+            self.assertIn("--resume-state", stdout.getvalue())
+            self.assertIn(str(state_path.resolve()), stdout.getvalue())
 
     def test_fen_openings_are_normalized_to_epd(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:

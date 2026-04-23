@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -21,12 +22,12 @@ NORMALIZED_OPENINGS_FILE_NAME = "openings.epd"
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a two-engine fastchess SPRT match.")
-    parser.add_argument("--config", required=True, help="JSON wrapper configuration file.")
+    parser.add_argument("--config", default=None, help="JSON wrapper configuration file.")
     parser.add_argument("--run-dir", default=None, help="Dedicated output directory for this SPRT run.")
     parser.add_argument("--run-name", default=None, help="Run directory name under config work_root when --run-dir is omitted.")
 
-    parser.add_argument("--engine-a", required=True, help="Path to the first UCI engine.")
-    parser.add_argument("--engine-b", required=True, help="Path to the second UCI engine.")
+    parser.add_argument("--engine-a", default=None, help="Path to the first UCI engine.")
+    parser.add_argument("--engine-b", default=None, help="Path to the second UCI engine.")
     parser.add_argument("--name-a", default="engine-a", help="Unique fastchess name for engine A.")
     parser.add_argument("--name-b", default="engine-b", help="Unique fastchess name for engine B.")
     parser.add_argument("--net-a", default=None, help="Optional Chilo NNUE .bin passed to engine A as --weights.")
@@ -48,8 +49,23 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     mode.add_argument("--new", action="store_true", help="Start a new run; fail if the state file exists.")
     mode.add_argument("--force-new", action="store_true", help="Archive old run files and start a new run.")
     mode.add_argument("--resume", action="store_true", help="Resume; fail if the state file is missing.")
+    mode.add_argument("--resume-state", default=None, help="Resume using a fastchess state file and wrapper metadata from its directory.")
     parser.add_argument("--dry-run", action="store_true", help="Print the fastchess command without running it.")
     return parser.parse_args(argv)
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if args.resume_state:
+        return
+    missing = []
+    if not args.config:
+        missing.append("--config")
+    if not args.engine_a:
+        missing.append("--engine-a")
+    if not args.engine_b:
+        missing.append("--engine-b")
+    if missing:
+        raise SystemExit(f"Missing required argument(s): {', '.join(missing)}. Use --resume-state to resume from a saved fastchess state.")
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -264,6 +280,10 @@ def choose_run_mode(args: argparse.Namespace, state_path: Path) -> str:
     return "resume" if state_path.exists() else "new"
 
 
+def absolute_state_path(run_dir: Path) -> Path:
+    return (run_dir / STATE_FILE_NAME).resolve()
+
+
 def unique_backup_path(path: Path, suffix: str) -> Path:
     candidate = path.with_name(f"{path.name}.{suffix}.bak")
     counter = 2
@@ -364,6 +384,8 @@ def build_fastchess_argv(
 ) -> List[str]:
     config_dir = config_path.parent
     fastchess = resolve_config_path(str(config["fastchess"]), config_dir)
+    if args.engine_a is None or args.engine_b is None:
+        raise SystemExit("--engine-a and --engine-b are required unless --resume-state is used.")
     engine_a = resolve_cli_path(args.engine_a)
     engine_b = resolve_cli_path(args.engine_b)
     net_a = resolve_cli_path(args.net_a) if args.net_a else None
@@ -420,13 +442,52 @@ def build_fastchess_argv(
             raise SystemExit("Config 'extra_args' must be a list of strings when present.")
         argv.extend(extra_args)
 
+    state_path = absolute_state_path(run_dir)
     if run_mode == "resume":
-        argv.extend(["-config", f"file={STATE_FILE_NAME}", f"outname={STATE_FILE_NAME}", "stats=true"])
+        argv.extend(["-config", f"file={state_path}", f"outname={state_path}", "stats=true"])
     else:
-        argv.extend(["-config", f"outname={STATE_FILE_NAME}"])
+        argv.extend(["-config", f"outname={state_path}"])
     argv.extend(["-autosaveinterval", str(config.get("autosave_interval", 20))])
 
     return argv
+
+
+def load_command_summary(path: Path) -> Dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            summary = json.load(handle)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"Wrapper metadata file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in wrapper metadata file {path}: {exc}") from exc
+    if not isinstance(summary, dict):
+        raise SystemExit(f"Wrapper metadata file must contain a JSON object: {path}")
+    return summary
+
+
+def fastchess_from_summary(summary: Mapping[str, Any]) -> str:
+    argv = summary.get("fastchess_argv")
+    if isinstance(argv, list) and argv and isinstance(argv[0], str):
+        return argv[0]
+
+    config_path_value = summary.get("config")
+    if isinstance(config_path_value, str) and config_path_value:
+        config_path = Path(config_path_value)
+        config = load_config(config_path)
+        return resolve_config_path(str(config["fastchess"]), config_path.parent)
+
+    raise SystemExit("Wrapper metadata does not contain fastchess_argv or a usable config path.")
+
+
+def build_resume_state_argv(state_path: Path, summary: Mapping[str, Any]) -> List[str]:
+    resolved_state = state_path.resolve()
+    return [
+        fastchess_from_summary(summary),
+        "-config",
+        f"file={resolved_state}",
+        f"outname={resolved_state}",
+        "stats=true",
+    ]
 
 
 def write_command_summary(
@@ -439,6 +500,7 @@ def write_command_summary(
     argv: Iterable[str],
     archived_files: List[Tuple[str, str]],
     opening_summary: Optional[Mapping[str, Any]],
+    wrapper_argv: List[str],
     args: argparse.Namespace,
 ) -> None:
     summary = {
@@ -446,6 +508,8 @@ def write_command_summary(
         "config": str(config_path),
         "run_dir": str(run_dir),
         "run_mode": run_mode,
+        "state_file": str(absolute_state_path(run_dir)),
+        "resume_command": wrapper_resume_command(absolute_state_path(run_dir)),
         "sprt_profile": sprt_profile_name,
         "sprt": dict(sprt_profile),
         "engine_a": {
@@ -460,6 +524,7 @@ def write_command_summary(
         },
         "archived_files": archived_files,
         "opening": dict(opening_summary) if opening_summary is not None else None,
+        "wrapper_argv": wrapper_argv,
         "fastchess_argv": list(argv),
     }
     path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -469,12 +534,52 @@ def command_for_display(argv: Iterable[str]) -> str:
     return shlex.join(list(argv))
 
 
+def wrapper_resume_command(state_path: Path) -> str:
+    return command_for_display([sys.executable, str(Path(__file__).resolve()), "--resume-state", str(state_path.resolve())])
+
+
+def run_fastchess_process(fastchess_argv: List[str], run_dir: Path, state_path: Path, runner=subprocess.run) -> int:
+    try:
+        runner(fastchess_argv, cwd=run_dir, check=True)
+    except KeyboardInterrupt:
+        print("")
+        print("Tournament interrupted. To resume with the wrapper, run:")
+        print(wrapper_resume_command(state_path))
+        return 130
+    return 0
+
+
+def resume_from_state(args: argparse.Namespace) -> int:
+    state_path = resolve_cli_path(args.resume_state)
+    if not state_path.exists():
+        raise SystemExit(f"Cannot resume: state file does not exist: {state_path}")
+
+    run_dir = state_path.parent
+    summary = load_command_summary(run_dir / COMMAND_FILE_NAME)
+    fastchess_argv = build_resume_state_argv(state_path, summary)
+
+    if args.dry_run:
+        print(command_for_display(fastchess_argv))
+        return 0
+
+    print(f"Run directory: {run_dir}")
+    print("Mode: resume-state")
+    print(f"Command: {command_for_display(fastchess_argv)}")
+    return run_fastchess_process(fastchess_argv, run_dir, state_path)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    wrapper_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parse_args(argv)
+    validate_args(args)
+
+    if args.resume_state:
+        return resume_from_state(args)
+
     config_path = resolve_cli_path(args.config)
     config = load_config(config_path)
     run_dir = resolve_run_dir(config, config_path.parent, args)
-    state_path = run_dir / STATE_FILE_NAME
+    state_path = absolute_state_path(run_dir)
     run_mode = choose_run_mode(args, state_path)
     sprt_profile_name, base_sprt_profile = select_sprt_profile(config, args.sprt)
     sprt_profile = apply_sprt_overrides(base_sprt_profile, args)
@@ -501,14 +606,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         fastchess_argv,
         archived_files,
         opening_summary,
+        wrapper_argv,
         args,
     )
 
     print(f"Run directory: {run_dir}")
     print(f"Mode: {run_mode}")
     print(f"Command: {command_for_display(fastchess_argv)}")
-    subprocess.run(fastchess_argv, cwd=run_dir, check=True)
-    return 0
+    return run_fastchess_process(fastchess_argv, run_dir, state_path)
 
 
 if __name__ == "__main__":

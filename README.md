@@ -354,6 +354,14 @@ Remove `--dry-run` to start the match. The run directory is created if needed an
 - `fastchess_command.json` for the exact command and resolved inputs
 
 By default, the wrapper resumes when `fastchess_state.json` exists and starts a new run otherwise. Use `--new` to require a fresh run, `--resume` to require an existing state file, or `--force-new` to archive old run files and start over.
+If the run is interrupted, the wrapper exits cleanly and prints a recovery command. You can also resume from the state file path alone:
+
+```bash
+python3 scripts/run_fastchess_sprt.py \
+  --resume-state /tmp/chilo-sprt/g2t1-vs-base/fastchess_state.json
+```
+
+This reads `fastchess_command.json` from the same run directory and starts fastchess with absolute state paths, so the original engine/net/config command line does not need to be retyped.
 
 ### NNUE Python Workflow
 

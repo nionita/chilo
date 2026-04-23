@@ -85,7 +85,7 @@
 - Runtime `.bin` exports use the same feature contract but can have a different hidden size than the built-in fallback. Explicit `--weights` load failures are fatal; same-basename sidecar load failures fall back to built-in weights.
 - `run_nnue_workflow.py` is the operator wrapper for dedup -> prepare -> train -> export, with optional temporary engine verification against the exported weights.
 - `run_nnue_workflow.py` uses a pragmatic default export tolerance (`256`) so short real-data training runs can usually produce a first quantized export without extra flags.
-- `run_fastchess_sprt.py` is the operator wrapper for two-engine fastchess SPRT tests. Keep fixed tournament settings in a JSON config and put each run in a dedicated directory with the standard `fastchess_state.json` autosave/resume file. It accepts `opening.format=fen` and materializes a normalized EPD book in the run directory, clamping invalid fullmove counters below `1` to avoid bogus fastchess PGN numbering.
+- `run_fastchess_sprt.py` is the operator wrapper for two-engine fastchess SPRT tests. Keep fixed tournament settings in a JSON config and put each run in a dedicated directory with the standard `fastchess_state.json` autosave/resume file. It accepts `opening.format=fen` and materializes a normalized EPD book in the run directory, clamping invalid fullmove counters below `1` to avoid bogus fastchess PGN numbering. `--resume-state /path/to/fastchess_state.json` recovers the full wrapper context from `fastchess_command.json`.
 - The repo keeps a checked-in generated NNUE export so the engine builds without running Python first.
 - C++ build outputs now live under `build/`, split by mode. Do not put new binaries or object-file targets back in the repo root.
 
