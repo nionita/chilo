@@ -24,8 +24,10 @@ Small chess engine project with:
 - `engine_tests.cpp`: regression-style test program for engine behavior
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
 - `scripts/dedup_training_csv.py`: exact-row CSV dedup for large collector outputs using external `sort`
+- `scripts/fastchess_sprt_config.example.json`: example config for SPRT runs
 - `scripts/nnue_contract.json`: feature/model contract shared by training, export, and C++ inference
 - `scripts/prepare_nnue_dataset.py`: sharded NNUE dataset preprocessor
+- `scripts/run_fastchess_sprt.py`: fastchess SPRT wrapper for testing binaries or runtime NNUE nets
 - `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets; hidden size is chosen here, not in dataset prep
 - `scripts/export_nnue.py`: scaled quantized export to the generated C++ header and/or a runtime-loadable `.bin` artifact
 - `scripts/run_nnue_workflow.py`: orchestration helper for dedup -> prepare -> train -> export
@@ -314,6 +316,44 @@ python3 scripts/benchmark_fixed_depth.py \
   --output-dir /tmp/chilo-bench/results
 ```
 
+### Fastchess SPRT
+
+Use `scripts/run_fastchess_sprt.py` to run resumable two-engine SPRT matches through `fastchess`.
+Most fixed settings live in a JSON config; command-line options usually only select the two engines, optional runtime NNUE nets, names, run directory, and SPRT profile.
+
+Start from the example config:
+
+```bash
+cp scripts/fastchess_sprt_config.example.json /tmp/chilo-sprt-config.json
+```
+
+Then edit paths and common match settings in that copy.
+
+Example dry-run:
+
+```bash
+python3 scripts/run_fastchess_sprt.py \
+  --config /tmp/chilo-sprt-config.json \
+  --run-dir /tmp/chilo-sprt/g2t1-vs-base \
+  --engine-a build/release-avx2/chilo \
+  --engine-b build/release-avx2/chilo \
+  --net-a /path/to/base.bin \
+  --net-b /path/to/candidate.bin \
+  --name-a base \
+  --name-b candidate \
+  --sprt normal \
+  --dry-run
+```
+
+Remove `--dry-run` to start the match. The run directory is created if needed and uses fixed filenames:
+
+- `fastchess_state.json` for fastchess autosave/resume state
+- `games.pgn` for PGN output when enabled in the config
+- `fastchess.log` for fastchess logs when enabled in the config
+- `fastchess_command.json` for the exact command and resolved inputs
+
+By default, the wrapper resumes when `fastchess_state.json` exists and starts a new run otherwise. Use `--new` to require a fresh run, `--resume` to require an existing state file, or `--force-new` to archive old run files and start over.
+
 ### NNUE Python Workflow
 
 Create the local Python environment with CPU-only PyTorch:
@@ -433,6 +473,7 @@ make clean           # remove build artifacts
 - Use `build/release/perft` for benchmarking.
 - Use `build/release-avx2/chilo` or `build/win64-avx2/chilo.exe` only on AVX2-capable machines.
 - Use `scripts/benchmark_fixed_depth.py` when comparing fixed-depth search speed between engine versions.
+- Use `scripts/run_fastchess_sprt.py` for longer fastchess SPRT tests between versions or runtime NNUE nets.
 - Use `build/debug/perft_debug` for ordinary debugging.
 - Use `build/validate/perft_validate` only when investigating `doMove()` / `undo()` state corruption or move-generation bugs.
 - Use `build/release/chilo` or `build/validate/chilo_validate` when testing UCI integration or shallow playing strength.

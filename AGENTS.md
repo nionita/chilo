@@ -52,9 +52,11 @@
 ├── scripts/
 │   ├── benchmark_fixed_depth.py
 │   ├── dedup_training_csv.py
+│   ├── fastchess_sprt_config.example.json
 │   ├── nnue_contract.json
 │   ├── nnue_common.py
 │   ├── prepare_nnue_dataset.py
+│   ├── run_fastchess_sprt.py
 │   ├── run_nnue_workflow.py
 │   ├── test_nnue_pipeline.py
 │   ├── train_nnue.py
@@ -83,6 +85,7 @@
 - Runtime `.bin` exports use the same feature contract but can have a different hidden size than the built-in fallback. Explicit `--weights` load failures are fatal; same-basename sidecar load failures fall back to built-in weights.
 - `run_nnue_workflow.py` is the operator wrapper for dedup -> prepare -> train -> export, with optional temporary engine verification against the exported weights.
 - `run_nnue_workflow.py` uses a pragmatic default export tolerance (`256`) so short real-data training runs can usually produce a first quantized export without extra flags.
+- `run_fastchess_sprt.py` is the operator wrapper for two-engine fastchess SPRT tests. Keep fixed tournament settings in a JSON config and put each run in a dedicated directory with the standard `fastchess_state.json` autosave/resume file.
 - The repo keeps a checked-in generated NNUE export so the engine builds without running Python first.
 - C++ build outputs now live under `build/`, split by mode. Do not put new binaries or object-file targets back in the repo root.
 
@@ -95,7 +98,7 @@
 - `make windows64` cross-builds Windows release binaries.
 - `make windows64-avx2` cross-builds Windows release binaries with `-DCHILO_AVX2 -mavx2`; these require AVX2-capable CPUs.
 - `make python-env` creates `.venv` and installs CPU-only PyTorch plus Python requirements.
-- `make nnue-python-tests` runs the Python pipeline smoke tests.
+- `make nnue-python-tests` runs the Python smoke tests, including the NNUE pipeline and fastchess wrapper tests.
 - `make nnue-verify` runs preprocess -> train -> export -> rebuild -> C++/Python parity verification.
 - Built artifacts land under `build/release`, `build/release-avx2`, `build/debug`, `build/validate`, `build/win64`, and `build/win64-avx2`.
 

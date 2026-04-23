@@ -95,7 +95,7 @@ python-env:
 	bash ./scripts/setup_python_env.sh
 
 nnue-python-tests:
-	$(VENV_PYTHON) -m unittest discover -s scripts -p 'test_nnue_pipeline.py'
+	$(VENV_PYTHON) -m unittest discover -s scripts -p 'test_*.py'
 
 nnue-verify:
 	$(VENV_PYTHON) scripts/verify_nnue_workflow.py

@@ -1,0 +1,61 @@
+{
+  "fastchess": "/usr/local/bin/fastchess",
+  "work_root": "sprt-runs",
+  "concurrency": 1,
+  "rounds": 100000,
+  "games": 2,
+  "autosave_interval": 20,
+  "rating_interval": 10,
+  "opening": {
+    "file": "/path/to/openings.epd",
+    "format": "epd",
+    "order": "random"
+  },
+  "each": {
+    "tc": "10+0.1",
+    "timemargin": 50,
+    "restart": "on",
+    "proto": "uci",
+    "option.Hash": 64
+  },
+  "adjudication": {
+    "resign": "movecount=3 score=600",
+    "draw": "movenumber=34 movecount=8 score=20",
+    "maxmoves": 200
+  },
+  "sprt_profiles": {
+    "quick": {
+      "elo0": 0,
+      "elo1": 5,
+      "alpha": 0.05,
+      "beta": 0.05,
+      "model": "normalized"
+    },
+    "normal": {
+      "elo0": 0,
+      "elo1": 2,
+      "alpha": 0.05,
+      "beta": 0.05,
+      "model": "normalized"
+    }
+  },
+  "output": {
+    "format": "fastchess"
+  },
+  "report": {
+    "penta": true
+  },
+  "pgn": {
+    "enabled": true,
+    "notation": "san",
+    "nodes": true,
+    "nps": true,
+    "append": true
+  },
+  "log": {
+    "enabled": true,
+    "level": "warn",
+    "engine": false,
+    "append": true
+  }
+}
