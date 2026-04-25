@@ -788,6 +788,46 @@ int testIncrementalNnueAccumulator() {
         }
     }
 
+    {
+        Position root = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        NnueAccumulator rootAccumulator;
+        initNnueAccumulator(root, rootAccumulator);
+
+        for (const char* uci : {"e2e4", "d2d4"}) {
+            Position childPos = root;
+            Move move;
+            if (!parseUCIMove(childPos, uci, move)) {
+                std::cout << "  FAIL (could not parse copied-child test move " << uci << ")\n";
+                return 1;
+            }
+
+            NnueAccumulator childAccumulator = rootAccumulator;
+            applyNnueMove(childPos, move, childAccumulator);
+            UndoState undoState;
+            doMove(childPos, move, undoState);
+
+            if (evaluateWithAccumulator(childPos, childAccumulator) != evaluate(childPos)) {
+                std::cout << "  FAIL (copied child accumulator mismatch after move " << uci << ")\n";
+                return 1;
+            }
+            if (evaluateWithAccumulator(root, rootAccumulator) != evaluate(root)) {
+                std::cout << "  FAIL (copied child search frame changed root accumulator)\n";
+                return 1;
+            }
+        }
+    }
+
+    {
+        Position pos = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        Position nullPos = parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
+        NnueAccumulator accumulator;
+        initNnueAccumulator(pos, accumulator);
+        if (evaluateWithAccumulator(nullPos, accumulator) != evaluate(nullPos)) {
+            std::cout << "  FAIL (null-move accumulator reuse mismatch)\n";
+            return 1;
+        }
+    }
+
     std::cout << "  PASS\n";
     return 0;
 }

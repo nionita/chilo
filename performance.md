@@ -142,15 +142,151 @@ Top flat-profile self time for the AVX2 build:
 | tactical depth 11 | 2109 ms | 1983 ms |
 | sparse KQK depth 12 | 49 ms | 47 ms |
 
+## 2026-04-25 Branch Baseline Before Accumulator-Frame Experiment
+
+The `codo` branch starts from the original lazy-delta NNUE search implementation: one shared accumulator, one pending-delta stack, and `applyNnueDelta` / `undoNnueDelta` around each materialized child. Before changing that design, the same `gprof` build/workload was rerun on this branch for two NNUE sizes:
+
+- built-in hidden size `24`
+- runtime hidden size `40` from `/tmp/chilo-g2t5.bin`
+
+The workload again used the three reproducible fixed-depth search positions from the repo plus the simple KQK probe `7k/8/8/8/8/8/8/KQ6 w - - 0 1` at depth `12`.
+
+### Hidden 24 baseline
+
+Top flat-profile self time:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 21.96% |
+| `updateAccumulatorFeatureUnchecked` | 12.50% |
+| `undo` | 11.25% |
+| `evaluateWithAccumulator` | 7.32% |
+| `quiescence` | 6.61% self |
+| `inCheck` | 6.25% |
+| `orderMoves` | 5.71% |
+| `genPseudoMoves` | 4.82% |
+| `makeNnueMoveDelta` | 3.21% |
+| `probeTT` | 3.21% |
+
+Reported engine times:
+
+| Position | Time |
+| --- | ---: |
+| start position depth 11 | 3398 ms |
+| middlegame depth 11 | 3915 ms |
+| tactical depth 11 | 2095 ms |
+| KQK probe depth 12 | 395 ms |
+
+### Hidden 40 baseline
+
+Top flat-profile self time:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 17.09% |
+| `updateAccumulatorFeatureUnchecked` | 17.09% |
+| `undo` | 9.17% |
+| `evaluateWithAccumulator` | 8.81% |
+| `inCheck` | 8.09% |
+| `orderMoves` | 7.37% |
+| `quiescence` | 5.58% self |
+| `genPseudoMoves` | 4.14% |
+| `alphaBeta` | 4.14% |
+| `probeTT` | 3.96% |
+
+Reported engine times:
+
+| Position | Time |
+| --- | ---: |
+| start position depth 11 | 1221 ms |
+| middlegame depth 11 | 4407 ms |
+| tactical depth 11 | 2940 ms |
+| KQK probe depth 12 | 337 ms |
+
+For both baselines, NNUE delta maintenance is still a major hotspot. The larger hidden-size-40 net makes that more obvious: `updateAccumulatorFeatureUnchecked` rises to `17.09%` of flat time and `evaluateWithAccumulator` also grows.
+
+## 2026-04-25 Per-Ply Accumulator Frames (`copy + apply`)
+
+The search experiment on this branch replaces the lazy delta stack with per-ply accumulator frames. Each searched child now starts from a copy of the parent accumulator frame and applies its move delta once. Returning from the child does not undo NNUE state; the next sibling simply overwrites the child frame with a fresh parent copy plus delta.
+
+The same profiling workflow was rerun for the same two NNUE sizes.
+
+### Hidden 24 after `copy + apply`
+
+Top flat-profile self time:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 18.86% |
+| `undo` | 11.62% |
+| `inCheck` | 8.57% |
+| `evaluateWithAccumulator` | 8.19% |
+| `orderMoves` | 8.00% |
+| `updateAccumulatorFeatureUnchecked` | 6.86% |
+| `probeTT` | 4.95% |
+| `genPseudoMoves` | 4.38% |
+| `alphaBeta` | 4.38% |
+| `quiescence` | 4.00% self |
+
+`prepareChildSearchNnue` shows up at only `0.57%` self time, with `applyNnueDelta` also at `0.57%`.
+
+Reported engine times:
+
+| Position | Before | After |
+| --- | ---: | ---: |
+| start position depth 11 | 3398 ms | 3213 ms |
+| middlegame depth 11 | 3915 ms | 3728 ms |
+| tactical depth 11 | 2095 ms | 2012 ms |
+| KQK probe depth 12 | 395 ms | 466 ms |
+
+Total sampled time moved from about `5.60s` to `5.25s`, roughly a `6.3%` reduction on this workload.
+
+### Hidden 40 after `copy + apply`
+
+Top flat-profile self time:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 17.06% |
+| `undo` | 9.94% |
+| `evaluateWithAccumulator` | 9.94% |
+| `orderMoves` | 9.07% |
+| `updateAccumulatorFeatureUnchecked` | 8.64% |
+| `inCheck` | 8.21% |
+| `probeTT` | 6.05% |
+| `genPseudoMoves` | 5.83% |
+| `genSlidingMoves` | 3.24% |
+| `genLegalPseudoMoves` | 3.24% |
+
+`prepareChildSearchNnue` shows up at `0.65%` self time, with `applyNnueDelta` also at `0.65%`.
+
+Reported engine times:
+
+| Position | Before | After |
+| --- | ---: | ---: |
+| start position depth 11 | 1221 ms | 1135 ms |
+| middlegame depth 11 | 4407 ms | 4174 ms |
+| tactical depth 11 | 2940 ms | 2759 ms |
+| KQK probe depth 12 | 337 ms | 414 ms |
+
+Total sampled time moved from about `5.56s` to `4.63s`, roughly a `16.7%` reduction on this workload.
+
+This experiment is a clear improvement on the three main search positions for both hidden sizes. The main effect is that the accumulator-update kernel drops substantially:
+
+- hidden `24`: `12.50%` -> `6.86%`
+- hidden `40`: `17.09%` -> `8.64%`
+
+The downside is that the trivial KQK probe becomes slower. That suggests the extra child-frame copy cost is not free when the tree is tiny and NNUE delta work was already small. On more realistic middlegame/tactical trees, however, avoiding incremental NNUE undo is a net win.
+
 ## Likely Optimization Directions
 
 1. Make NNUE delta apply/undo cheaper.
 
-   The wrapper cleanup, portable four-lane reshape, and optional AVX2 build path have been done. Remaining candidate changes: precompute per-feature lane offsets in `NnueMoveDelta` or add hidden-size specializations.
+   The wrapper cleanup, portable four-lane reshape, optional AVX2 build path, and now the per-ply accumulator-frame experiment have all been done. On this branch, `copy + apply` is the first search-side ownership change that clearly helps on the main workloads, especially for the larger hidden-size-40 net.
 
 2. Reduce legal move generation overhead.
 
-   Candidate changes: replace pseudo-legal plus full make/unmake legality filtering with pinned/check-aware legal generation, or at least add faster legality checks for common non-king moves.
+   After `copy + apply`, the dominant flat-time functions are again `doMove`, `undo`, `inCheck`, and move ordering/generation. Candidate changes: replace pseudo-legal plus full make/unmake legality filtering with pinned/check-aware legal generation, or at least add faster legality checks for common non-king moves.
 
 3. Treat QS as a separate optimization target.
 
