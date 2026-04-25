@@ -278,6 +278,114 @@ This experiment is a clear improvement on the three main search positions for bo
 
 The downside is that the trivial KQK probe becomes slower. That suggests the extra child-frame copy cost is not free when the tree is tiny and NNUE delta work was already small. On more realistic middlegame/tactical trees, however, avoiding incremental NNUE undo is a net win.
 
+## 2026-04-25 Low-Piece Frame Skip On Top Of `copy + apply`
+
+The next experiment keeps the per-ply accumulator-frame design, but skips child-frame preparation entirely when the child position falls at or below `NNUE_REBUILD_PIECE_THRESHOLD`. In those low-piece subtrees, search now reuses the current `nnuePly`, skips `makeNnueMoveDelta` and `prepareChildSearchNnue`, and relies on the existing full-rebuild `evaluate(pos)` path for every node in the subtree.
+
+The branch was profiled before and after this targeted change on two workload classes:
+
+- the normal fixed-depth workload: start position, middlegame, tactical
+- a low-piece workload: the existing KQK probe plus a new 5-piece KQKP probe `7k/6p1/8/8/8/8/8/KQ6 w - - 0 1`
+
+### Normal workload: hidden 24
+
+Reported engine times:
+
+| Position | Before | After |
+| --- | ---: | ---: |
+| start position depth 11 | 3207 ms | 3213 ms |
+| middlegame depth 11 | 3714 ms | 3719 ms |
+| tactical depth 11 | 1964 ms | 1993 ms |
+
+Top flat-profile self time after the change:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 18.89% |
+| `undo` | 11.73% |
+| `orderMoves` | 10.54% |
+| `updateAccumulatorFeatureUnchecked` | 7.95% |
+| `evaluateWithAccumulator` | 7.36% |
+| `quiescence` | 6.16% self |
+| `inCheck` | 5.77% |
+
+This is effectively flat to slightly worse on the normal workload, likely close to measurement noise.
+
+### Normal workload: hidden 40
+
+Reported engine times:
+
+| Position | Before | After |
+| --- | ---: | ---: |
+| start position depth 11 | 1145 ms | 1150 ms |
+| middlegame depth 11 | 4152 ms | 4213 ms |
+| tactical depth 11 | 2764 ms | 2772 ms |
+
+Top flat-profile self time after the change:
+
+| Function | Self time |
+| --- | ---: |
+| `doMove` | 17.90% |
+| `undo` | 11.41% |
+| `evaluateWithAccumulator` | 10.96% |
+| `updateAccumulatorFeatureUnchecked` | 8.05% |
+| `orderMoves` | 6.71% |
+| `inCheck` | 5.59% |
+| `quiescence` | 5.37% self |
+
+Again, the normal workload is basically unchanged and slightly slower on these runs.
+
+### Low-piece workload: hidden 24
+
+Reported engine times:
+
+| Position | Before | After |
+| --- | ---: | ---: |
+| KQK probe depth 12 | 471 ms | 381 ms |
+| KQKP probe depth 12 | 533 ms | 441 ms |
+
+The flat-profile hotspot mix changes materially. Before the change, low-piece search still spent noticeable time in:
+
+- `updateAccumulatorFeatureUnchecked` at `12.90%`
+- `makeNnueMoveDelta` at `3.23%`
+- `applyNnueDelta` at `1.61%`
+
+After the change, those NNUE update costs disappear from the top of the low-piece profile. The main flat costs become:
+
+- `alphaBeta` at `28.00%`
+- `perspectiveScore` at `22.00%`
+- `doMove` at `12.00%`
+- `undo` at `6.00%`
+
+That is the intended effect: low-piece subtrees now pay rebuild-eval cost, not accumulator-frame preparation cost.
+
+### Low-piece workload: hidden 40
+
+Reported engine times:
+
+| Position | Before | After |
+| --- | ---: | ---: |
+| KQK probe depth 12 | 434 ms | 328 ms |
+| KQKP probe depth 12 | 599 ms | 487 ms |
+
+The same pattern holds for the larger net. Before the change, low-piece search still showed:
+
+- `updateAccumulatorFeatureUnchecked` at `9.23%`
+- `makeNnueMoveDelta` at `1.54%`
+- `prepareChildSearchNnue` at `1.54%`
+
+After the change, those costs are no longer prominent in the low-piece profile, and `perspectiveScore` rises to `38.78%`, which is exactly what we expect once those subtrees stop touching accumulators at all.
+
+This targeted optimization does what it was meant to do:
+
+- it materially fixes the low-piece regression introduced by `copy + apply`
+- it leaves the normal workload roughly unchanged, with only tiny regressions on these measurements
+
+So the combined picture on this branch is:
+
+- `copy + apply` is still the main win for realistic middlegame/tactical search
+- low-piece frame skipping is a useful add-on that recovers the endgame downside of that change
+
 ## Likely Optimization Directions
 
 1. Make NNUE delta apply/undo cheaper.

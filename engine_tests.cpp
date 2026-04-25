@@ -828,6 +828,57 @@ int testIncrementalNnueAccumulator() {
         }
     }
 
+    {
+        Position root = parseFEN("4k3/8/8/8/8/8/p7/R3K2R w KQ - 0 1");
+        NnueAccumulator rootAccumulator;
+        initNnueAccumulator(root, rootAccumulator);
+
+        Move lowPieceMove;
+        if (!parseUCIMove(root, "a1a2", lowPieceMove)) {
+            std::cout << "  FAIL (could not parse low-piece child test move)\n";
+            return 1;
+        }
+        Move normalSiblingMove;
+        if (!parseUCIMove(root, "h1h2", normalSiblingMove)) {
+            std::cout << "  FAIL (could not parse sibling accumulator test move)\n";
+            return 1;
+        }
+
+        {
+            Position childPos = root;
+            UndoState undoState;
+            doMove(childPos, lowPieceMove, undoState);
+            if (__builtin_popcountll(childPos.occupancyAll) > 5) {
+                std::cout << "  FAIL (low-piece child test setup did not reach rebuild threshold)\n";
+                return 1;
+            }
+            if (evaluateWithAccumulator(root, rootAccumulator) != evaluate(root)) {
+                std::cout << "  FAIL (low-piece child handling changed parent accumulator frame)\n";
+                return 1;
+            }
+            if (positionsEqual(childPos, root)) {
+                std::cout << "  FAIL (low-piece child test did not create a distinct child position)\n";
+                return 1;
+            }
+        }
+
+        {
+            Position siblingPos = root;
+            NnueAccumulator siblingAccumulator = rootAccumulator;
+            applyNnueMove(siblingPos, normalSiblingMove, siblingAccumulator);
+            UndoState undoState;
+            doMove(siblingPos, normalSiblingMove, undoState);
+            if (evaluateWithAccumulator(siblingPos, siblingAccumulator) != evaluate(siblingPos)) {
+                std::cout << "  FAIL (sibling after low-piece child lost accumulator parity)\n";
+                return 1;
+            }
+            if (evaluateWithAccumulator(root, rootAccumulator) != evaluate(root)) {
+                std::cout << "  FAIL (low-piece child reuse changed parent accumulator)\n";
+                return 1;
+            }
+        }
+    }
+
     std::cout << "  PASS\n";
     return 0;
 }
