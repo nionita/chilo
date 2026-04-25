@@ -18,6 +18,7 @@ PGN_FILE_NAME = "games.pgn"
 LOG_FILE_NAME = "fastchess.log"
 COMMAND_FILE_NAME = "fastchess_command.json"
 NORMALIZED_OPENINGS_FILE_NAME = "openings.epd"
+CONFIG_ENV_VAR = "FASTCHESS_SPRT_CONFIG"
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -28,8 +29,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     parser.add_argument("--engine-a", default=None, help="Path to the first UCI engine.")
     parser.add_argument("--engine-b", default=None, help="Path to the second UCI engine.")
-    parser.add_argument("--name-a", default="engine-a", help="Unique fastchess name for engine A.")
-    parser.add_argument("--name-b", default="engine-b", help="Unique fastchess name for engine B.")
+    parser.add_argument("--name-a", default=None, help="Unique fastchess name for engine A.")
+    parser.add_argument("--name-b", default=None, help="Unique fastchess name for engine B.")
     parser.add_argument("--net-a", default=None, help="Optional Chilo NNUE .bin passed to engine A as --weights.")
     parser.add_argument("--net-b", default=None, help="Optional Chilo NNUE .bin passed to engine B as --weights.")
 
@@ -62,12 +63,10 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.resume_state:
         return
     missing = []
-    if not args.config:
-        missing.append("--config")
+    if not effective_config_value(args):
+        missing.append(f"--config or {CONFIG_ENV_VAR}")
     if not args.engine_a:
         missing.append("--engine-a")
-    if not args.engine_b:
-        missing.append("--engine-b")
     if missing:
         raise SystemExit(f"Missing required argument(s): {', '.join(missing)}. Use --resume-state to resume from a saved fastchess state.")
 
@@ -91,6 +90,17 @@ def resolve_cli_path(value: str) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def effective_config_value(args: argparse.Namespace) -> Optional[str]:
+    return args.config or os.environ.get(CONFIG_ENV_VAR)
+
+
+def resolve_config_arg(args: argparse.Namespace) -> Path:
+    config_value = effective_config_value(args)
+    if not config_value:
+        raise SystemExit(f"Missing required argument(s): --config or {CONFIG_ENV_VAR}. Use --resume-state to resume from a saved fastchess state.")
+    return resolve_cli_path(config_value)
+
+
 def resolve_config_path(value: str, config_dir: Path) -> str:
     expanded = Path(os.path.expanduser(value))
     if expanded.is_absolute():
@@ -105,6 +115,40 @@ def resolve_config_file_path(value: str, config_dir: Path) -> str:
     if expanded.is_absolute():
         return str(expanded)
     return str((config_dir / expanded).resolve())
+
+
+def optional_mapping(value: Any, label: str) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SystemExit(f"Config '{label}' must be an object when present.")
+    return dict(value)
+
+
+def resolve_optional_root(value: Any, config_dir: Path, label: str) -> Optional[Path]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f"Config '{label}' must be a non-empty string when present.")
+    return Path(resolve_config_file_path(value, config_dir))
+
+
+def resolve_engine_or_weights_path(value: str, root: Optional[Path], fallback_dir: Path) -> Path:
+    expanded = Path(os.path.expanduser(value))
+    if expanded.is_absolute():
+        return expanded.resolve()
+    if root is not None:
+        return (root / expanded).resolve()
+    return (fallback_dir / expanded).resolve()
+
+
+def serialize_engine_spec(spec: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "name": str(spec["name"]),
+        "command": str(spec["command"]),
+        "weights": str(spec["weights"]) if spec.get("weights") is not None else None,
+        "options": dict(spec.get("options", {})) if spec.get("options") else None,
+    }
 
 
 def format_value(value: Any) -> str:
@@ -271,14 +315,50 @@ def build_sprt_items(profile: Mapping[str, Any]) -> List[str]:
     ]
 
 
-def engine_options(command: Path, name: str, weights: Optional[Path]) -> List[str]:
-    options = [f"cmd={command}", f"name={name}"]
-    if weights is not None:
-        options.append(f"args=--weights {weights}")
+def effective_engine_specs(config: Mapping[str, Any], config_path: Path, args: argparse.Namespace) -> Dict[str, Dict[str, Any]]:
+    config_dir = config_path.parent
+    engine_root = resolve_optional_root(config.get("engine_root"), config_dir, "engine_root")
+    weights_root = resolve_optional_root(config.get("weights_root"), config_dir, "weights_root")
+    engine_b_config = optional_mapping(config.get("engine_b"), "engine_b")
+    engine_b_options = optional_mapping(engine_b_config.get("options"), "engine_b.options")
+
+    if not args.engine_a:
+        raise SystemExit("--engine-a is required unless --resume-state is used.")
+    engine_b_command = args.engine_b or engine_b_config.get("command")
+    if not engine_b_command:
+        raise SystemExit("--engine-b is required unless config.engine_b.command is set or --resume-state is used.")
+
+    engine_a_name = args.name_a if args.name_a is not None else "engine-a"
+    engine_b_name = args.name_b if args.name_b is not None else str(engine_b_config.get("name") or "engine-b")
+    engine_b_weights = args.net_b if args.net_b is not None else engine_b_config.get("weights")
+
+    return {
+        "a": {
+            "name": engine_a_name,
+            "command": resolve_engine_or_weights_path(args.engine_a, engine_root, Path.cwd()),
+            "weights": resolve_engine_or_weights_path(args.net_a, weights_root, Path.cwd()) if args.net_a else None,
+            "options": {},
+        },
+        "b": {
+            "name": engine_b_name,
+            "command": resolve_engine_or_weights_path(str(engine_b_command), engine_root, config_dir),
+            "weights": resolve_engine_or_weights_path(str(engine_b_weights), weights_root, config_dir) if engine_b_weights else None,
+            "options": engine_b_options,
+        },
+    }
+
+
+def engine_options(spec: Mapping[str, Any]) -> List[str]:
+    options = [f"cmd={spec['command']}", f"name={spec['name']}"]
+    if spec.get("weights") is not None:
+        options.append(f"args=--weights {spec['weights']}")
+    extra_options = spec.get("options", {})
+    if extra_options:
+        options.extend(mapping_items(extra_options))
     return options
 
 
-def resolve_run_dir(config: Mapping[str, Any], config_dir: Path, args: argparse.Namespace) -> Path:
+def resolve_run_dir(config: Mapping[str, Any], config_dir: Path, args: argparse.Namespace, engine_specs: Mapping[str, Mapping[str, Any]]) -> Path:
     if args.run_dir:
         return resolve_cli_path(args.run_dir)
 
@@ -287,7 +367,7 @@ def resolve_run_dir(config: Mapping[str, Any], config_dir: Path, args: argparse.
     if args.run_name:
         run_name = safe_name(args.run_name)
     else:
-        run_name = f"{safe_name(args.name_a)}-vs-{safe_name(args.name_b)}-{timestamp()}"
+        run_name = f"{safe_name(str(engine_specs['a']['name']))}-{safe_name(str(engine_specs['b']['name']))}"
     return (work_root / run_name).resolve()
 
 
@@ -404,21 +484,16 @@ def build_fastchess_argv(
     run_dir: Path,
     run_mode: str,
     sprt_profile: Mapping[str, Any],
+    engine_specs: Mapping[str, Mapping[str, Any]],
     args: argparse.Namespace,
     opening_config: Any = None,
 ) -> List[str]:
     config_dir = config_path.parent
     fastchess = resolve_config_path(str(config["fastchess"]), config_dir)
-    if args.engine_a is None or args.engine_b is None:
-        raise SystemExit("--engine-a and --engine-b are required unless --resume-state is used.")
-    engine_a = resolve_cli_path(args.engine_a)
-    engine_b = resolve_cli_path(args.engine_b)
-    net_a = resolve_cli_path(args.net_a) if args.net_a else None
-    net_b = resolve_cli_path(args.net_b) if args.net_b else None
 
     argv = [fastchess]
-    argv.extend(["-engine", *engine_options(engine_a, args.name_a, net_a)])
-    argv.extend(["-engine", *engine_options(engine_b, args.name_b, net_b)])
+    argv.extend(["-engine", *engine_options(engine_specs["a"])])
+    argv.extend(["-engine", *engine_options(engine_specs["b"])])
 
     each = config.get("each", {})
     if each:
@@ -524,11 +599,11 @@ def write_command_summary(
     run_mode: str,
     sprt_profile_name: str,
     sprt_profile: Mapping[str, Any],
+    engine_specs: Mapping[str, Mapping[str, Any]],
     argv: Iterable[str],
     archived_files: List[Tuple[str, str]],
     opening_summary: Optional[Mapping[str, Any]],
     wrapper_argv: List[str],
-    args: argparse.Namespace,
 ) -> None:
     summary = {
         "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
@@ -539,16 +614,8 @@ def write_command_summary(
         "resume_command": wrapper_resume_command(absolute_state_path(run_dir)),
         "sprt_profile": sprt_profile_name,
         "sprt": dict(sprt_profile),
-        "engine_a": {
-            "name": args.name_a,
-            "command": str(resolve_cli_path(args.engine_a)),
-            "weights": str(resolve_cli_path(args.net_a)) if args.net_a else None,
-        },
-        "engine_b": {
-            "name": args.name_b,
-            "command": str(resolve_cli_path(args.engine_b)),
-            "weights": str(resolve_cli_path(args.net_b)) if args.net_b else None,
-        },
+        "engine_a": serialize_engine_spec(engine_specs["a"]),
+        "engine_b": serialize_engine_spec(engine_specs["b"]),
         "archived_files": archived_files,
         "opening": dict(opening_summary) if opening_summary is not None else None,
         "wrapper_argv": wrapper_argv,
@@ -603,16 +670,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.resume_state:
         return resume_from_state(args)
 
-    config_path = resolve_cli_path(args.config)
+    config_path = resolve_config_arg(args)
     config = load_config(config_path)
-    run_dir = resolve_run_dir(config, config_path.parent, args)
+    engine_specs = effective_engine_specs(config, config_path, args)
+    run_dir = resolve_run_dir(config, config_path.parent, args, engine_specs)
     state_path = absolute_state_path(run_dir)
     run_mode = choose_run_mode(args, state_path)
     sprt_profile_name, base_sprt_profile = select_sprt_profile(config, args.sprt)
     sprt_profile = apply_sprt_overrides(base_sprt_profile, args)
     opening_config, opening_summary = effective_opening_config(config, config_path, run_dir, materialize=not args.dry_run)
 
-    fastchess_argv = build_fastchess_argv(config, config_path, run_dir, run_mode, sprt_profile, args, opening_config)
+    fastchess_argv = build_fastchess_argv(config, config_path, run_dir, run_mode, sprt_profile, engine_specs, args, opening_config)
 
     if args.dry_run:
         print(command_for_display(fastchess_argv))
@@ -630,11 +698,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_mode,
         sprt_profile_name,
         sprt_profile,
+        engine_specs,
         fastchess_argv,
         archived_files,
         opening_summary,
         wrapper_argv,
-        args,
     )
 
     print(f"Run directory: {run_dir}")

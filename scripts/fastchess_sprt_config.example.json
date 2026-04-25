@@ -1,6 +1,16 @@
 {
   "fastchess": "/usr/local/bin/fastchess",
   "work_root": "sprt-runs",
+  "engine_root": "/path/to/engines",
+  "weights_root": "/path/to/nets",
+  "engine_b": {
+    "command": "build/release-avx2/chilo",
+    "name": "base",
+    "weights": "base.bin",
+    "options": {
+      "option.Threads": 1
+    }
+  },
   "concurrency": 1,
   "rounds": 100000,
   "games": 2,

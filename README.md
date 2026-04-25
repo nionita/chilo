@@ -319,7 +319,7 @@ python3 scripts/benchmark_fixed_depth.py \
 ### Fastchess SPRT
 
 Use `scripts/run_fastchess_sprt.py` to run resumable two-engine SPRT matches through `fastchess`.
-Most fixed settings live in a JSON config; command-line options usually only select the two engines, optional runtime NNUE nets, names, run directory, and SPRT profile.
+Most fixed settings live in a JSON config; command-line options usually only select engine A, optional runtime NNUE nets, names, run directory, and SPRT profile. Engine B can live in the config as the stable base engine.
 
 Start from the example config:
 
@@ -328,26 +328,27 @@ cp scripts/fastchess_sprt_config.example.json /tmp/chilo-sprt-config.json
 ```
 
 Then edit paths and common match settings in that copy.
+You can also point the wrapper at that config through `FASTCHESS_SPRT_CONFIG` and omit `--config` on later runs.
+The config supports `engine_root` and `weights_root`, so relative engine and net paths can be resolved from stable folders instead of the current shell directory.
+If `engine_b` is defined in the config, `--engine-b`, `--name-b`, and `--net-b` become optional and only act as overrides.
 The wrapper also accepts `opening.format` set to `fen`; in that case it converts the FEN file to a normalized EPD file inside the run directory and passes that generated file to fastchess. This is useful for one-FEN-per-line books. Invalid FEN fullmove counters below `1` are written as `fmvn 1`, because fullmove `0` makes fastchess produce bogus PGN move numbers.
 
 Example dry-run:
 
 ```bash
+FASTCHESS_SPRT_CONFIG=/tmp/chilo-sprt-config.json \
 python3 scripts/run_fastchess_sprt.py \
-  --config /tmp/chilo-sprt-config.json \
-  --run-dir /tmp/chilo-sprt/g2t1-vs-base \
-  --engine-a build/release-avx2/chilo \
-  --engine-b build/release-avx2/chilo \
-  --net-a /path/to/base.bin \
-  --net-b /path/to/candidate.bin \
-  --name-a base \
-  --name-b candidate \
+  --run-dir /tmp/chilo-sprt/candidate-base \
+  --engine-a chilo-candidate \
+  --net-a candidate.bin \
+  --name-a candidate \
   --sprt normal \
   --concurrency 4 \
   --dry-run
 ```
 
 `concurrency` and `force_concurrency` can live in the JSON config. For one-off runs, override them with `--concurrency N`, `--force-concurrency`, or `--no-force-concurrency`.
+Without `--run-name`, the wrapper now uses `<name-a>-<name-b>` as the default run directory name under `work_root`.
 
 Remove `--dry-run` to start the match. The run directory is created if needed and uses fixed filenames:
 
@@ -361,7 +362,7 @@ If the run is interrupted, the wrapper exits cleanly and prints a recovery comma
 
 ```bash
 python3 scripts/run_fastchess_sprt.py \
-  --resume-state /tmp/chilo-sprt/g2t1-vs-base/fastchess_state.json
+  --resume-state /tmp/chilo-sprt/candidate-base/fastchess_state.json
 ```
 
 This reads `fastchess_command.json` from the same run directory and starts fastchess with absolute state paths, so the original engine/net/config command line does not need to be retyped.

@@ -3,11 +3,13 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import List
+from unittest import mock
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -81,6 +83,11 @@ def write_config(temp_dir: Path) -> Path:
     return path
 
 
+def load_specs(config_path: Path, args: object) -> object:
+    config = run_fastchess_sprt.load_config(config_path)
+    return run_fastchess_sprt.effective_engine_specs(config, config_path, args)
+
+
 class FastchessSprtTest(unittest.TestCase):
     def test_builds_new_run_command_with_weights(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -111,11 +118,12 @@ class FastchessSprtTest(unittest.TestCase):
                 ]
             )
             config = run_fastchess_sprt.load_config(config_path)
-            run_dir = run_fastchess_sprt.resolve_run_dir(config, config_path.parent, args)
+            engine_specs = run_fastchess_sprt.effective_engine_specs(config, config_path, args)
+            run_dir = run_fastchess_sprt.resolve_run_dir(config, config_path.parent, args, engine_specs)
             profile_name, profile = run_fastchess_sprt.select_sprt_profile(config, args.sprt)
             self.assertEqual(profile_name, "quick")
             profile = run_fastchess_sprt.apply_sprt_overrides(profile, args)
-            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, run_dir, "new", profile, args)
+            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, run_dir, "new", profile, engine_specs, args)
 
             self.assertEqual(argv[0], "fastchess")
             self.assertIn("-engine", argv)
@@ -149,7 +157,10 @@ class FastchessSprtTest(unittest.TestCase):
             )
             config = run_fastchess_sprt.load_config(config_path)
             _, profile = run_fastchess_sprt.select_sprt_profile(config, None)
-            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, temp_dir / "match", "new", profile, args)
+            engine_specs = run_fastchess_sprt.effective_engine_specs(config, config_path, args)
+            argv = run_fastchess_sprt.build_fastchess_argv(
+                config, config_path, temp_dir / "match", "new", profile, engine_specs, args
+            )
 
             self.assertEqual(value_after(argv, "-concurrency"), "4")
 
@@ -174,7 +185,10 @@ class FastchessSprtTest(unittest.TestCase):
                 ]
             )
             _, profile = run_fastchess_sprt.select_sprt_profile(config, None)
-            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, temp_dir / "match", "new", profile, no_force_args)
+            engine_specs = run_fastchess_sprt.effective_engine_specs(config, config_path, no_force_args)
+            argv = run_fastchess_sprt.build_fastchess_argv(
+                config, config_path, temp_dir / "match", "new", profile, engine_specs, no_force_args
+            )
             self.assertNotIn("-force-concurrency", argv)
 
             config.pop("force_concurrency")
@@ -191,8 +205,126 @@ class FastchessSprtTest(unittest.TestCase):
                     "--force-concurrency",
                 ]
             )
-            argv = run_fastchess_sprt.build_fastchess_argv(config, config_path, temp_dir / "match", "new", profile, force_args)
+            engine_specs = run_fastchess_sprt.effective_engine_specs(config, config_path, force_args)
+            argv = run_fastchess_sprt.build_fastchess_argv(
+                config, config_path, temp_dir / "match", "new", profile, engine_specs, force_args
+            )
             self.assertIn("-force-concurrency", argv)
+
+    def test_default_run_name_uses_effective_engine_names(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            config = run_fastchess_sprt.load_config(config_path)
+            config["engine_b"] = {"command": "base/chilo", "name": "stable-base"}
+            args = run_fastchess_sprt.parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--engine-a",
+                    "candidate/chilo",
+                    "--name-a",
+                    "new-net",
+                ]
+            )
+
+            engine_specs = run_fastchess_sprt.effective_engine_specs(config, config_path, args)
+            run_dir = run_fastchess_sprt.resolve_run_dir(config, config_path.parent, args, engine_specs)
+
+            self.assertEqual(run_dir.name, "new-net-stable-base")
+
+    def test_config_env_fallback_is_used(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            with mock.patch.dict(os.environ, {run_fastchess_sprt.CONFIG_ENV_VAR: str(config_path)}, clear=False):
+                args = run_fastchess_sprt.parse_args(["--engine-a", "candidate", "--engine-b", "base"])
+                self.assertEqual(run_fastchess_sprt.resolve_config_arg(args), config_path.resolve())
+
+    def test_missing_config_and_env_errors(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            args = run_fastchess_sprt.parse_args(["--engine-a", "candidate"])
+            with self.assertRaises(SystemExit) as exc:
+                run_fastchess_sprt.validate_args(args)
+            self.assertIn(run_fastchess_sprt.CONFIG_ENV_VAR, str(exc.exception))
+
+    def test_engine_b_can_come_from_config_and_use_roots(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            config = run_fastchess_sprt.load_config(config_path)
+            config["engine_root"] = "engines"
+            config["weights_root"] = "nets"
+            config["engine_b"] = {
+                "command": "base/chilo",
+                "name": "stable",
+                "weights": "stable.bin",
+                "options": {"option.Threads": 1},
+            }
+            args = run_fastchess_sprt.parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--run-dir",
+                    str(temp_dir / "match"),
+                    "--engine-a",
+                    "candidate/chilo",
+                    "--net-a",
+                    "candidate.bin",
+                    "--name-a",
+                    "candidate",
+                ]
+            )
+
+            engine_specs = run_fastchess_sprt.effective_engine_specs(config, config_path, args)
+            self.assertEqual(engine_specs["b"]["name"], "stable")
+            self.assertEqual(engine_specs["a"]["command"], (temp_dir / "engines" / "candidate/chilo").resolve())
+            self.assertEqual(engine_specs["a"]["weights"], (temp_dir / "nets" / "candidate.bin").resolve())
+            self.assertEqual(engine_specs["b"]["command"], (temp_dir / "engines" / "base/chilo").resolve())
+            self.assertEqual(engine_specs["b"]["weights"], (temp_dir / "nets" / "stable.bin").resolve())
+
+            _, profile = run_fastchess_sprt.select_sprt_profile(config, None)
+            argv = run_fastchess_sprt.build_fastchess_argv(
+                config, config_path, temp_dir / "match", "new", profile, engine_specs, args
+            )
+            self.assertIn("cmd=" + str((temp_dir / "engines" / "base/chilo").resolve()), argv)
+            self.assertIn("name=stable", argv)
+            self.assertIn("args=--weights " + str((temp_dir / "nets" / "stable.bin").resolve()), argv)
+            self.assertIn("option.Threads=1", argv)
+
+    def test_cli_overrides_config_engine_b(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            config = run_fastchess_sprt.load_config(config_path)
+            config["engine_root"] = "engines"
+            config["weights_root"] = "nets"
+            config["engine_b"] = {
+                "command": "base/chilo",
+                "name": "stable",
+                "weights": "stable.bin",
+                "options": {"option.Threads": 1},
+            }
+            args = run_fastchess_sprt.parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--engine-a",
+                    "candidate/chilo",
+                    "--engine-b",
+                    "override/chilo",
+                    "--name-b",
+                    "override-name",
+                    "--net-b",
+                    "override.bin",
+                ]
+            )
+
+            engine_specs = run_fastchess_sprt.effective_engine_specs(config, config_path, args)
+            self.assertEqual(engine_specs["b"]["name"], "override-name")
+            self.assertEqual(engine_specs["b"]["command"], (temp_dir / "engines" / "override/chilo").resolve())
+            self.assertEqual(engine_specs["b"]["weights"], (temp_dir / "nets" / "override.bin").resolve())
+            self.assertEqual(engine_specs["b"]["options"], {"option.Threads": 1})
 
     def test_run_mode_auto_resume_and_resume_requires_state(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -204,8 +336,6 @@ class FastchessSprtTest(unittest.TestCase):
                     str(temp_dir / "config.json"),
                     "--engine-a",
                     "a",
-                    "--engine-b",
-                    "b",
                 ]
             )
 
@@ -219,8 +349,6 @@ class FastchessSprtTest(unittest.TestCase):
                     str(temp_dir / "config.json"),
                     "--engine-a",
                     "a",
-                    "--engine-b",
-                    "b",
                     "--resume",
                 ]
             )
@@ -325,21 +453,54 @@ class FastchessSprtTest(unittest.TestCase):
                 "new",
                 "normal",
                 {"elo0": 0, "elo1": 2, "alpha": 0.05, "beta": 0.05, "model": "normalized"},
+                load_specs(config_path, args),
                 ["fastchess", "-config", "outname=state.json"],
                 [],
                 None,
                 ["--config", str(config_path), "--engine-a", "base", "--engine-b", "candidate"],
-                args,
             )
 
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["engine_a"]["name"], "base")
             self.assertEqual(summary["engine_b"]["name"], "candidate")
+            self.assertIsNone(summary["engine_b"]["options"])
             self.assertEqual(summary["sprt_profile"], "normal")
             self.assertEqual(summary["state_file"], str((temp_dir / "match" / run_fastchess_sprt.STATE_FILE_NAME).resolve()))
             self.assertIn("--resume-state", summary["resume_command"])
             self.assertIn("wrapper_argv", summary)
             self.assertIn("fastchess_argv", summary)
+
+    def test_command_summary_records_config_engine_b_options(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            config_path = write_config(temp_dir)
+            config = run_fastchess_sprt.load_config(config_path)
+            config["engine_b"] = {
+                "command": "base/chilo",
+                "name": "stable",
+                "weights": "stable.bin",
+                "options": {"option.Threads": 1},
+            }
+            args = run_fastchess_sprt.parse_args(["--config", str(config_path), "--engine-a", "candidate/chilo"])
+            summary_path = temp_dir / run_fastchess_sprt.COMMAND_FILE_NAME
+
+            run_fastchess_sprt.write_command_summary(
+                summary_path,
+                config_path,
+                temp_dir / "match",
+                "new",
+                "normal",
+                {"elo0": 0, "elo1": 2, "alpha": 0.05, "beta": 0.05, "model": "normalized"},
+                run_fastchess_sprt.effective_engine_specs(config, config_path, args),
+                ["fastchess", "-config", "outname=state.json"],
+                [],
+                None,
+                ["--config", str(config_path), "--engine-a", "candidate/chilo"],
+            )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["engine_b"]["name"], "stable")
+            self.assertEqual(summary["engine_b"]["options"], {"option.Threads": 1})
 
     def test_keyboard_interrupt_returns_130_without_traceback(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
