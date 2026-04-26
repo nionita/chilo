@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score-scale", type=float, default=600.0)
     parser.add_argument("--result-weight", type=float, default=0.25)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--init", choices=("seeded", "random"), default="seeded")
+    parser.add_argument("--init", choices=("seeded", "seeded-noise", "random"), default="seeded")
     parser.add_argument("--hidden-size", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--shuffle-buffer-size", type=int, default=8192)

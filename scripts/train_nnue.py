@@ -27,6 +27,11 @@ from nnue_common import (
     shard_path_from_meta,
 )
 
+SEEDED_NOISE_INPUT_STD = 0.01
+SEEDED_NOISE_HIDDEN_BIAS_STD = 0.01
+SEEDED_NOISE_OUTPUT_STD = 0.05
+INIT_CHOICES = ("seeded", "seeded-noise", "random")
+
 
 def load_torch():
     try:
@@ -121,7 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--result-weight", type=float, default=0.25)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--init", choices=("seeded", "random"), default="seeded")
+    parser.add_argument("--init", choices=INIT_CHOICES, default="seeded")
     parser.add_argument("--hidden-size", type=int, default=0, help="Hidden layer size for the trained NNUE. Defaults to the contract's default hidden size.")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--shuffle-buffer-size", type=int, default=8192)
@@ -172,12 +177,16 @@ def main() -> int:
             self.output_weights = nn.Parameter(torch.zeros(hidden_size, dtype=torch.float32))
             self.output_bias = nn.Parameter(torch.zeros(1, dtype=torch.float32))
 
-            if init_mode == "seeded":
+            if init_mode in ("seeded", "seeded-noise"):
                 seeded = build_seeded_weights(contract_data, hidden_size)
                 self.input_weights.data.copy_(torch.from_numpy(seeded["input_weights"].astype(np.float32)))
                 self.hidden_bias.data.copy_(torch.from_numpy(seeded["hidden_bias"].astype(np.float32)))
                 self.output_weights.data.copy_(torch.from_numpy(seeded["output_weights"].astype(np.float32)))
                 self.output_bias.data.fill_(float(seeded["output_bias"]))
+                if init_mode == "seeded-noise":
+                    self.input_weights.data.add_(torch.randn_like(self.input_weights) * SEEDED_NOISE_INPUT_STD)
+                    self.hidden_bias.data.add_(torch.randn_like(self.hidden_bias) * SEEDED_NOISE_HIDDEN_BIAS_STD)
+                    self.output_weights.data.add_(torch.randn_like(self.output_weights) * SEEDED_NOISE_OUTPUT_STD)
             else:
                 nn.init.normal_(self.input_weights, mean=0.0, std=0.05)
                 nn.init.zeros_(self.hidden_bias)

@@ -204,6 +204,77 @@ class NnuePipelineTest(unittest.TestCase):
             self.assertEqual(len(rows) - 1, 3)
 
     @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
+    def test_train_seeded_noise_wakes_dormant_output_units(self):
+        import torch
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            csv_path = temp_dir / "samples.csv"
+            with csv_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["eval_fen", "score", "result"])
+                writer.writerow(["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"])
+                writer.writerow(["4k3/8/8/8/8/8/8/4K3 w - - 0 1", "0", "0"])
+                writer.writerow(["4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", "31", "0"])
+
+            dataset_dir = temp_dir / "dataset"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "prepare_nnue_dataset.py"),
+                    "--input",
+                    str(csv_path),
+                    "--output-dir",
+                    str(dataset_dir),
+                    "--samples-per-shard",
+                    "3",
+                    "--validation-fraction",
+                    "0",
+                    "--seed",
+                    "7",
+                    "--overwrite",
+                ],
+                check=True,
+            )
+
+            training_dir = temp_dir / "training"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "train_nnue.py"),
+                    "--dataset",
+                    str(dataset_dir),
+                    "--output-dir",
+                    str(training_dir),
+                    "--epochs",
+                    "1",
+                    "--hidden-size",
+                    "32",
+                    "--batch-size",
+                    "3",
+                    "--shuffle-buffer-size",
+                    "4",
+                    "--report-batches",
+                    "1",
+                    "--seed",
+                    "11",
+                    "--init",
+                    "seeded-noise",
+                ],
+                check=True,
+            )
+
+            training_manifest = json.loads((training_dir / "training_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(training_manifest["init"], "seeded-noise")
+            self.assertTrue((training_dir / "best.pt").exists())
+
+            checkpoint = torch.load(training_dir / "best.pt", map_location="cpu")
+            output_weights = checkpoint["state_dict"]["output_weights"].detach().cpu().numpy()
+            seeded = build_seeded_weights(load_contract(), hidden_size=32)
+            dormant_mask = np.asarray(seeded["output_weights"]) == 0
+            self.assertTrue(np.any(np.abs(output_weights[dormant_mask]) > 1e-8))
+
+    @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
     def test_run_nnue_workflow(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
             temp_dir = Path(temp_dir_name)
