@@ -43,7 +43,7 @@ WIN64_AVX2_BINS := $(WIN64_AVX2_DIR)/perft.exe $(WIN64_AVX2_DIR)/perft_diag.exe 
 	perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
 	perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe
 
-all: release tests
+all: release release-avx2 windows64 windows64-avx2 tests
 
 release: $(RELEASE_BINS)
 
