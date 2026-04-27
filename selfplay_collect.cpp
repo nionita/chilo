@@ -27,15 +27,16 @@ struct Options {
     std::string debugOutputPath;
     std::string weightsPath;
     int gamesPerFen = 1;
-    int depth = 6;
+    int depth = 4;
     int movetimeMs = 0;
-    int minSampleDepth = 6;
+    int minSampleDepth = 15;
     int sampleWindowCp = 30;
     int samplePlies = 10;
     int maxPlies = 300;
     int skipDrawNearFifty = 0;
     double temperatureCp = 15.0;
     uint64_t seed = 0;
+    bool helpRequested = false;
     bool seedProvided = false;
 };
 
@@ -70,9 +71,9 @@ void printUsage() {
         << "  -i, --fen-file <path>          Input FEN file\n"
         << "  -o, --output <path>            Output CSV path\n"
         << "  -g, --games-per-fen <N>        Number of self-play games per input FEN (default: 1)\n"
-        << "  -d, --depth <N>                Fixed search depth when --movetime is not set (default: 6)\n"
+        << "  -d, --depth <N>                Fixed search depth when --movetime is not set (default: 4)\n"
         << "  -m, --movetime <ms>            Fixed movetime per move instead of fixed depth\n"
-        << "      --min-sample-depth <N>     Only keep samples from searches at or above this depth (default: 6)\n"
+        << "      --min-sample-depth <N>     Only keep samples from searches at or above this depth (default: 15)\n"
         << "      --sample-window-cp <N>     Root-score window for stochastic move choice (default: 30)\n"
         << "      --temperature-cp <X>       Softmax temperature in centipawns (default: 15)\n"
         << "      --sample-plies <N>         Only sample root moves for the first N plies (default: 10)\n"
@@ -173,6 +174,7 @@ bool parseArgs(int argc, char** argv, Options& options) {
             if (value == nullptr || !parseUInt64(value, options.seed)) return false;
             options.seedProvided = true;
         } else if (arg == "--help" || arg == "-h") {
+            options.helpRequested = true;
             printUsage();
             return false;
         } else {
@@ -351,8 +353,8 @@ void printProgress(int completedGames, int totalGames, int totalSamples,
 int main(int argc, char** argv) {
     Options options;
     if (!parseArgs(argc, argv, options)) {
-        printUsage();
-        return 1;
+        if (!options.helpRequested) printUsage();
+        return options.helpRequested ? 0 : 1;
     }
 
     if (!options.weightsPath.empty()) {
