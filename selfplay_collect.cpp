@@ -67,19 +67,21 @@ void printUsage() {
     std::cout
         << "Usage: selfplay_collect --fen-file <path> --output <path> [options]\n"
         << "Options:\n"
-        << "  --games-per-fen <N>      Number of self-play games per input FEN (default: 1)\n"
-        << "  --depth <N>              Fixed search depth when --movetime is not set (default: 6)\n"
-        << "  --movetime <ms>          Fixed movetime per move instead of fixed depth\n"
-        << "  --min-sample-depth <N>   Only keep samples from searches at or above this depth (default: 6)\n"
-        << "  --sample-window-cp <N>   Root-score window for stochastic move choice (default: 30)\n"
-        << "  --temperature-cp <X>     Softmax temperature in centipawns (default: 15)\n"
-        << "  --sample-plies <N>       Only sample root moves for the first N plies (default: 10)\n"
-        << "  --max-plies <N>          Declare a draw after this many plies (default: 300)\n"
-        << "  --skip-draw-near-fifty <N>\n"
-        << "                           In drawn games, skip samples with halfmove clock >= 100 - N (default: 0)\n"
-        << "  --weights <path>         Load external NNUE weights; failure is fatal\n"
-        << "  --seed <N>               RNG seed for reproducible self-play (default: time/process-derived)\n"
-        << "  --debug-output <path>    Optional richer CSV: root_fen,eval_fen,depth,score,result\n";
+        << "  -i, --fen-file <path>          Input FEN file\n"
+        << "  -o, --output <path>            Output CSV path\n"
+        << "  -g, --games-per-fen <N>        Number of self-play games per input FEN (default: 1)\n"
+        << "  -d, --depth <N>                Fixed search depth when --movetime is not set (default: 6)\n"
+        << "  -m, --movetime <ms>            Fixed movetime per move instead of fixed depth\n"
+        << "      --min-sample-depth <N>     Only keep samples from searches at or above this depth (default: 6)\n"
+        << "      --sample-window-cp <N>     Root-score window for stochastic move choice (default: 30)\n"
+        << "      --temperature-cp <X>       Softmax temperature in centipawns (default: 15)\n"
+        << "      --sample-plies <N>         Only sample root moves for the first N plies (default: 10)\n"
+        << "  -x, --max-plies <N>            Declare a draw after this many plies (default: 300)\n"
+        << "  -f, --skip-draw-near-fifty <N>\n"
+        << "                                 In drawn games, skip samples with halfmove clock >= 100 - N (default: 0)\n"
+        << "  -w, --weights <path>           Load external NNUE weights; failure is fatal\n"
+        << "  -s, --seed <N>                 RNG seed for reproducible self-play (default: time/process-derived)\n"
+        << "      --debug-output <path>      Optional richer CSV: root_fen,eval_fen,depth,score,result\n";
 }
 
 bool parseInt(const std::string& text, int& value) {
@@ -120,11 +122,11 @@ bool parseArgs(int argc, char** argv, Options& options) {
             return argv[++i];
         };
 
-        if (arg == "--fen-file") {
+        if (arg == "--fen-file" || arg == "-i") {
             const char* value = requireValue("--fen-file");
             if (value == nullptr) return false;
             options.fenFilePath = value;
-        } else if (arg == "--output") {
+        } else if (arg == "--output" || arg == "-o") {
             const char* value = requireValue("--output");
             if (value == nullptr) return false;
             options.outputPath = value;
@@ -132,17 +134,17 @@ bool parseArgs(int argc, char** argv, Options& options) {
             const char* value = requireValue("--debug-output");
             if (value == nullptr) return false;
             options.debugOutputPath = value;
-        } else if (arg == "--weights") {
+        } else if (arg == "--weights" || arg == "-w") {
             const char* value = requireValue("--weights");
             if (value == nullptr) return false;
             options.weightsPath = value;
-        } else if (arg == "--games-per-fen") {
+        } else if (arg == "--games-per-fen" || arg == "-g") {
             const char* value = requireValue("--games-per-fen");
             if (value == nullptr || !parseInt(value, options.gamesPerFen) || options.gamesPerFen <= 0) return false;
-        } else if (arg == "--depth") {
+        } else if (arg == "--depth" || arg == "-d") {
             const char* value = requireValue("--depth");
             if (value == nullptr || !parseInt(value, options.depth) || options.depth <= 0) return false;
-        } else if (arg == "--movetime") {
+        } else if (arg == "--movetime" || arg == "-m") {
             const char* value = requireValue("--movetime");
             if (value == nullptr || !parseInt(value, options.movetimeMs) || options.movetimeMs <= 0) return false;
         } else if (arg == "--min-sample-depth") {
@@ -157,16 +159,16 @@ bool parseArgs(int argc, char** argv, Options& options) {
         } else if (arg == "--sample-plies") {
             const char* value = requireValue("--sample-plies");
             if (value == nullptr || !parseInt(value, options.samplePlies) || options.samplePlies < 0) return false;
-        } else if (arg == "--max-plies") {
+        } else if (arg == "--max-plies" || arg == "-x") {
             const char* value = requireValue("--max-plies");
             if (value == nullptr || !parseInt(value, options.maxPlies) || options.maxPlies <= 0) return false;
-        } else if (arg == "--skip-draw-near-fifty") {
+        } else if (arg == "--skip-draw-near-fifty" || arg == "-f") {
             const char* value = requireValue("--skip-draw-near-fifty");
             if (value == nullptr || !parseInt(value, options.skipDrawNearFifty) ||
                 options.skipDrawNearFifty < 0 || options.skipDrawNearFifty > 100) {
                 return false;
             }
-        } else if (arg == "--seed") {
+        } else if (arg == "--seed" || arg == "-s") {
             const char* value = requireValue("--seed");
             if (value == nullptr || !parseUInt64(value, options.seed)) return false;
             options.seedProvided = true;
