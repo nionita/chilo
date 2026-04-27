@@ -29,11 +29,11 @@ struct Options {
     int gamesPerFen = 1;
     int depth = 4;
     int movetimeMs = 0;
-    int minSampleDepth = 15;
+    int minSampleDepth = 4;
     int sampleWindowCp = 30;
     int samplePlies = 10;
     int maxPlies = 300;
-    int skipDrawNearFifty = 0;
+    int skipDrawNearFifty = 15;
     double temperatureCp = 15.0;
     uint64_t seed = 0;
     bool helpRequested = false;
@@ -73,13 +73,13 @@ void printUsage() {
         << "  -g, --games-per-fen <N>        Number of self-play games per input FEN (default: 1)\n"
         << "  -d, --depth <N>                Fixed search depth when --movetime is not set (default: 4)\n"
         << "  -m, --movetime <ms>            Fixed movetime per move instead of fixed depth\n"
-        << "      --min-sample-depth <N>     Only keep samples from searches at or above this depth (default: 15)\n"
+        << "      --min-sample-depth <N>     Only keep samples from searches at or above this depth (default: 4)\n"
         << "      --sample-window-cp <N>     Root-score window for stochastic move choice (default: 30)\n"
         << "      --temperature-cp <X>       Softmax temperature in centipawns (default: 15)\n"
         << "      --sample-plies <N>         Only sample root moves for the first N plies (default: 10)\n"
         << "  -x, --max-plies <N>            Declare a draw after this many plies (default: 300)\n"
         << "  -f, --skip-draw-near-fifty <N>\n"
-        << "                                 In drawn games, skip samples with halfmove clock >= 100 - N (default: 0)\n"
+        << "                                 In drawn games, skip samples with halfmove clock >= 100 - N (default: 15)\n"
         << "  -w, --weights <path>           Load external NNUE weights; failure is fatal\n"
         << "  -s, --seed <N>                 RNG seed for reproducible self-play (default: time/process-derived)\n"
         << "      --debug-output <path>      Optional richer CSV: root_fen,eval_fen,depth,score,result\n";
