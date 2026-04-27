@@ -23,6 +23,7 @@ eval_fen_validate
 *.exe
 __pycache__/
 .venv/
+.codex
 *.o
 *.out
 *.pt
