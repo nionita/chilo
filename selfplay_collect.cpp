@@ -25,6 +25,7 @@ struct Options {
     std::string fenFilePath;
     std::string outputPath;
     std::string debugOutputPath;
+    std::string weightsPath;
     int gamesPerFen = 1;
     int depth = 6;
     int movetimeMs = 0;
@@ -32,6 +33,7 @@ struct Options {
     int sampleWindowCp = 30;
     int samplePlies = 10;
     int maxPlies = 300;
+    int skipDrawNearFifty = 0;
     double temperatureCp = 15.0;
     uint64_t seed = 0;
     bool seedProvided = false;
@@ -73,6 +75,9 @@ void printUsage() {
         << "  --temperature-cp <X>     Softmax temperature in centipawns (default: 15)\n"
         << "  --sample-plies <N>       Only sample root moves for the first N plies (default: 10)\n"
         << "  --max-plies <N>          Declare a draw after this many plies (default: 300)\n"
+        << "  --skip-draw-near-fifty <N>\n"
+        << "                           In drawn games, skip samples with halfmove clock >= 100 - N (default: 0)\n"
+        << "  --weights <path>         Load external NNUE weights; failure is fatal\n"
         << "  --seed <N>               RNG seed for reproducible self-play (default: time/process-derived)\n"
         << "  --debug-output <path>    Optional richer CSV: root_fen,eval_fen,depth,score,result\n";
 }
@@ -127,6 +132,10 @@ bool parseArgs(int argc, char** argv, Options& options) {
             const char* value = requireValue("--debug-output");
             if (value == nullptr) return false;
             options.debugOutputPath = value;
+        } else if (arg == "--weights") {
+            const char* value = requireValue("--weights");
+            if (value == nullptr) return false;
+            options.weightsPath = value;
         } else if (arg == "--games-per-fen") {
             const char* value = requireValue("--games-per-fen");
             if (value == nullptr || !parseInt(value, options.gamesPerFen) || options.gamesPerFen <= 0) return false;
@@ -151,6 +160,12 @@ bool parseArgs(int argc, char** argv, Options& options) {
         } else if (arg == "--max-plies") {
             const char* value = requireValue("--max-plies");
             if (value == nullptr || !parseInt(value, options.maxPlies) || options.maxPlies <= 0) return false;
+        } else if (arg == "--skip-draw-near-fifty") {
+            const char* value = requireValue("--skip-draw-near-fifty");
+            if (value == nullptr || !parseInt(value, options.skipDrawNearFifty) ||
+                options.skipDrawNearFifty < 0 || options.skipDrawNearFifty > 100) {
+                return false;
+            }
         } else if (arg == "--seed") {
             const char* value = requireValue("--seed");
             if (value == nullptr || !parseUInt64(value, options.seed)) return false;
@@ -280,6 +295,12 @@ bool shouldKeepBestMoveSample(const SearchResult& result) {
     return result.bestMoveHasEval && !result.bestMoveEvalInCheck && !result.bestMoveEvalIsTerminal;
 }
 
+bool shouldSkipDrawNearFiftySample(const PendingSample& sample, int whiteResult, const Options& options) {
+    if (whiteResult != 0 || options.skipDrawNearFifty <= 0) return false;
+    Position evalPos = parseFEN(sample.evalFen);
+    return evalPos.halfMove >= 100 - options.skipDrawNearFifty;
+}
+
 std::string formatDuration(std::chrono::seconds duration) {
     long long totalSeconds = duration.count();
     long long hours = totalSeconds / 3600;
@@ -330,6 +351,16 @@ int main(int argc, char** argv) {
     if (!parseArgs(argc, argv, options)) {
         printUsage();
         return 1;
+    }
+
+    if (!options.weightsPath.empty()) {
+        std::string error;
+        if (!loadNnueWeightsFile(options.weightsPath, error)) {
+            std::cerr << "fatal: failed to load NNUE weights from " << options.weightsPath << ": "
+                      << error << "\n";
+            return 1;
+        }
+        std::cerr << "info string loaded NNUE weights from " << options.weightsPath << "\n";
     }
 
     std::vector<std::string> fens = loadFens(options.fenFilePath);
@@ -428,17 +459,21 @@ int main(int argc, char** argv) {
 
             if (!finished) classifyTerminal(pos, true, whiteResult);
 
+            int writtenGameSamples = 0;
             for (const PendingSample& sample : gameSamples) {
+                if (shouldSkipDrawNearFiftySample(sample, whiteResult, options)) continue;
+
                 int resultLabel = sampleResultFromPerspective(whiteResult, sample.evalSideToMove);
                 output << sample.evalFen << "," << sample.score << "," << resultLabel << "\n";
                 if (debugOutput) {
                     debugOutput << sample.rootFen << "," << sample.evalFen << "," << sample.depth
                                 << "," << sample.score << "," << resultLabel << "\n";
                 }
+                writtenGameSamples++;
             }
 
             totalGames++;
-            totalSamples += static_cast<int>(gameSamples.size());
+            totalSamples += writtenGameSamples;
             if (totalGames % PROGRESS_REPORT_INTERVAL_GAMES == 0) {
                 printProgress(totalGames, scheduledGames, totalSamples, startTime);
             }
