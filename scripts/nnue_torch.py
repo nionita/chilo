@@ -11,7 +11,22 @@ SEEDED_NOISE_OUTPUT_STD = 0.05
 RANDOM_SCALED_INPUT_STD = 0.05
 RANDOM_SCALED_HIDDEN_BIAS = 0.5
 RANDOM_SCALED_OUTPUT_STD = 25.0
-INIT_CHOICES = ("seeded", "seeded-noise", "random", "random-scaled")
+RANDOM_SCALE_PRESETS = {
+    "random-scaled": (RANDOM_SCALED_INPUT_STD, RANDOM_SCALED_HIDDEN_BIAS, RANDOM_SCALED_OUTPUT_STD),
+    "random-sweep-1": (0.05, 2.0, 1000.0),
+    "random-sweep-2": (0.20, 2.0, 250.0),
+    "random-sweep-3": (0.05, 8.0, 1000.0),
+    "random-sweep-4": (0.20, 16.0, 250.0),
+    "random-sweep-5": (0.50, 8.0, 100.0),
+}
+INIT_CHOICES = ("seeded", "seeded-noise", "random", *RANDOM_SCALE_PRESETS.keys())
+
+
+def initialize_random_scaled(model, nn, input_std: float, hidden_bias: float, output_std: float) -> None:
+    nn.init.normal_(model.input_weights, mean=0.0, std=input_std)
+    nn.init.constant_(model.hidden_bias, hidden_bias)
+    nn.init.normal_(model.output_weights, mean=0.0, std=output_std)
+    nn.init.zeros_(model.output_bias)
 
 
 def load_torch():
@@ -52,11 +67,8 @@ def make_tiny_nnue_model(torch, nn):
                 nn.init.zeros_(self.hidden_bias)
                 nn.init.normal_(self.output_weights, mean=0.0, std=0.05)
                 nn.init.zeros_(self.output_bias)
-            elif init_mode == "random-scaled":
-                nn.init.normal_(self.input_weights, mean=0.0, std=RANDOM_SCALED_INPUT_STD)
-                nn.init.constant_(self.hidden_bias, RANDOM_SCALED_HIDDEN_BIAS)
-                nn.init.normal_(self.output_weights, mean=0.0, std=RANDOM_SCALED_OUTPUT_STD)
-                nn.init.zeros_(self.output_bias)
+            elif init_mode in RANDOM_SCALE_PRESETS:
+                initialize_random_scaled(self, nn, *RANDOM_SCALE_PRESETS[init_mode])
             else:
                 raise ValueError(f"Unsupported init mode: {init_mode}")
 

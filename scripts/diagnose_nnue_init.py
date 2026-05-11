@@ -15,7 +15,7 @@ from nnue_common import (
     load_dataset_manifest,
     shard_metas_for_split,
 )
-from nnue_torch import INIT_CHOICES, load_torch, make_tiny_nnue_model
+from nnue_torch import INIT_CHOICES, initialize_random_scaled, load_torch, make_tiny_nnue_model
 from train_nnue import ShardedSparseDataset, shard_sample_total
 
 DEFAULT_SWEEP_INPUT_STDS = "0.05,0.1,0.2,0.5,1.0"
@@ -180,10 +180,7 @@ def build_loader(DataLoader, dataset_root: Path, shard_metas: List[Dict[str, obj
 
 
 def initialize_custom_random_scaled(model, nn, input_std: float, hidden_bias: float, output_std: float) -> None:
-    nn.init.normal_(model.input_weights, mean=0.0, std=input_std)
-    nn.init.constant_(model.hidden_bias, hidden_bias)
-    nn.init.normal_(model.output_weights, mean=0.0, std=output_std)
-    nn.init.zeros_(model.output_bias)
+    initialize_random_scaled(model, nn, input_std, hidden_bias, output_std)
 
 
 def update_activation_stats(model, pieces, squares, piece_count, side_to_move, activation_stats: FractionStats) -> None:
