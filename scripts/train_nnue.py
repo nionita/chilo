@@ -114,11 +114,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--shuffle-buffer-size", type=int, default=8192)
     parser.add_argument("--report-batches", type=int, default=200, help="Print a progress line every N training batches.")
+    parser.add_argument("--tensorboard-dir", default=None, help="Optional TensorBoard log directory for training diagnostics.")
+    parser.add_argument("--tensorboard-histograms", action="store_true", help="Log TensorBoard histograms once per epoch.")
     return parser.parse_args()
 
 
 def shard_sample_total(shard_metas: List[Dict[str, object]]) -> int:
     return sum(int(shard_meta["sample_count"]) for shard_meta in shard_metas)
+
+
+def load_summary_writer(log_dir: str):
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except ImportError as exc:
+        raise SystemExit(
+            "TensorBoard logging requested, but tensorboard is not installed. "
+            "Run make python-env or install requirements-nnue.txt in .venv."
+        ) from exc
+    return SummaryWriter(log_dir=log_dir)
 
 
 def main() -> int:
@@ -177,6 +190,96 @@ def main() -> int:
         target = bounded_target(score_tensor, result_tensor)
         return torch.mean((pred - target) ** 2)
 
+    def prediction_stats(pred_cp):
+        values = pred_cp.detach().float().reshape(-1)
+        if values.numel() == 0:
+            return {"mean": 0.0, "std": 0.0, "p05": 0.0, "p95": 0.0}
+        quantiles = torch.quantile(values, torch.tensor([0.05, 0.95], device=values.device))
+        return {
+            "mean": float(values.mean().item()),
+            "std": float(values.std(unbiased=False).item()),
+            "p05": float(quantiles[0].item()),
+            "p95": float(quantiles[1].item()),
+        }
+
+    def hidden_pre_activations(pieces, squares, piece_count, side_to_move):
+        with torch.no_grad():
+            max_pieces = pieces.shape[1]
+            mask = (torch.arange(max_pieces, device=pieces.device).unsqueeze(0) < piece_count.unsqueeze(1)).float()
+            hidden_values = []
+            for perspective in (0, 1):
+                relative_pieces, normalized_squares = model.relative_features(perspective, pieces, squares, side_to_move)
+                selected = model.input_weights[perspective, relative_pieces, normalized_squares]
+                hidden = model.hidden_bias.unsqueeze(0) + (selected * mask.unsqueeze(-1)).sum(dim=1)
+                hidden_values.append(hidden)
+            return torch.cat(hidden_values, dim=0)
+
+    def activation_stats(hidden):
+        values = hidden.detach()
+        total = max(int(values.numel()), 1)
+        zero = int((values <= 0.0).sum().item())
+        clipped = int((values >= model.clip_max).sum().item())
+        linear = total - zero - clipped
+        return {
+            "zero_frac": zero / total,
+            "clip_frac": clipped / total,
+            "linear_frac": linear / total,
+        }
+
+    def weight_stats():
+        input_values = model.input_weights.detach().float()
+        hidden_bias_values = model.hidden_bias.detach().float()
+        output_values = model.output_weights.detach().float()
+        return {
+            "input_std": float(input_values.std(unbiased=False).item()),
+            "hidden_bias_mean": float(hidden_bias_values.mean().item()),
+            "hidden_bias_std": float(hidden_bias_values.std(unbiased=False).item()),
+            "output_std": float(output_values.std(unbiased=False).item()),
+            "output_abs_max": float(output_values.abs().max().item()),
+        }
+
+    def grad_norm(parameter):
+        if parameter.grad is None:
+            return 0.0
+        return float(parameter.grad.detach().norm().item())
+
+    def log_tensorboard_stats(writer, epoch: int, train_diag, val_diag, train_loss, val_loss) -> None:
+        writer.add_scalar("loss/train", train_loss, epoch)
+        if val_loss is not None:
+            writer.add_scalar("loss/val", val_loss, epoch)
+        writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
+
+        for prefix, diag in (("train", train_diag), ("val", val_diag)):
+            if diag is None:
+                continue
+            for key, value in diag["pred"].items():
+                writer.add_scalar(f"pred/{prefix}_{key}", value, epoch)
+            for key, value in diag["activation"].items():
+                writer.add_scalar(f"activation/{prefix}_{key}", value, epoch)
+
+        for key, value in weight_stats().items():
+            writer.add_scalar(f"weights/{key}", value, epoch)
+        if train_diag is not None:
+            for key, value in train_diag["grads"].items():
+                writer.add_scalar(f"grads/{key}", value, epoch)
+
+        if args.tensorboard_histograms:
+            if train_diag is not None:
+                writer.add_histogram("hist/pred_cp_train", train_diag["pred_tensor"], epoch)
+                writer.add_histogram("hist/hidden_pre_activation_train", train_diag["hidden_tensor"], epoch)
+                if train_diag["input_grad"] is not None:
+                    writer.add_histogram("hist/input_grad", train_diag["input_grad"], epoch)
+                if train_diag["hidden_bias_grad"] is not None:
+                    writer.add_histogram("hist/hidden_bias_grad", train_diag["hidden_bias_grad"], epoch)
+                if train_diag["output_grad"] is not None:
+                    writer.add_histogram("hist/output_grad", train_diag["output_grad"], epoch)
+            if val_diag is not None:
+                writer.add_histogram("hist/pred_cp_val", val_diag["pred_tensor"], epoch)
+                writer.add_histogram("hist/hidden_pre_activation_val", val_diag["hidden_tensor"], epoch)
+            writer.add_histogram("hist/input_weights", model.input_weights.detach().cpu(), epoch)
+            writer.add_histogram("hist/hidden_bias", model.hidden_bias.detach().cpu(), epoch)
+            writer.add_histogram("hist/output_weights", model.output_weights.detach().cpu(), epoch)
+
     device = torch.device(args.device)
     TinyNnueModel = make_tiny_nnue_model(torch, nn)
     model = TinyNnueModel(contract, hidden_size, args.init).to(device)
@@ -184,111 +287,149 @@ def main() -> int:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    tensorboard_writer = load_summary_writer(args.tensorboard_dir) if args.tensorboard_dir else None
 
     best_val_loss = None
     history = []
+    try:
+        for epoch in range(1, args.epochs + 1):
+            train_loader = build_loader(train_shards, shuffle=True, epoch=epoch)
+            val_loader = build_loader(val_shards, shuffle=False, epoch=epoch)
 
-    for epoch in range(1, args.epochs + 1):
-        train_loader = build_loader(train_shards, shuffle=True, epoch=epoch)
-        val_loader = build_loader(val_shards, shuffle=False, epoch=epoch)
+            model.train()
+            train_loss_sum = 0.0
+            train_items = 0
+            train_batches = 0
+            train_diag = None
+            for batch in train_loader:
+                pieces = batch["pieces"].to(device)
+                squares = batch["squares"].to(device)
+                piece_count = batch["piece_count"].to(device)
+                side_to_move = batch["side_to_move"].to(device)
+                score = batch["score"].to(device)
+                result = batch["result"].to(device)
 
-        model.train()
-        train_loss_sum = 0.0
-        train_items = 0
-        train_batches = 0
-        for batch in train_loader:
-            pieces = batch["pieces"].to(device)
-            squares = batch["squares"].to(device)
-            piece_count = batch["piece_count"].to(device)
-            side_to_move = batch["side_to_move"].to(device)
-            score = batch["score"].to(device)
-            result = batch["result"].to(device)
+                optimizer.zero_grad(set_to_none=True)
+                pred_cp = model(pieces, squares, piece_count, side_to_move)
+                loss = target_loss(pred_cp, score, result)
+                loss.backward()
 
-            optimizer.zero_grad(set_to_none=True)
-            pred_cp = model(pieces, squares, piece_count, side_to_move)
-            loss = target_loss(pred_cp, score, result)
-            loss.backward()
-            optimizer.step()
+                if tensorboard_writer is not None and train_diag is None:
+                    hidden = hidden_pre_activations(pieces, squares, piece_count, side_to_move)
+                    train_diag = {
+                        "pred": prediction_stats(pred_cp),
+                        "activation": activation_stats(hidden),
+                        "grads": {
+                            "input_norm": grad_norm(model.input_weights),
+                            "hidden_bias_norm": grad_norm(model.hidden_bias),
+                            "output_norm": grad_norm(model.output_weights),
+                        },
+                        "pred_tensor": pred_cp.detach().cpu(),
+                        "hidden_tensor": hidden.detach().cpu(),
+                        "input_grad": model.input_weights.grad.detach().cpu() if model.input_weights.grad is not None else None,
+                        "hidden_bias_grad": model.hidden_bias.grad.detach().cpu() if model.hidden_bias.grad is not None else None,
+                        "output_grad": model.output_weights.grad.detach().cpu() if model.output_weights.grad is not None else None,
+                    }
 
-            batch_items = int(pieces.shape[0])
-            train_loss_sum += float(loss.item()) * batch_items
-            train_items += batch_items
-            train_batches += 1
+                optimizer.step()
 
-            if train_batches % args.report_batches == 0:
-                print(
-                    f"epoch={epoch} batch={train_batches} processed={train_items}/{train_samples} "
-                    f"train_loss={train_loss_sum / max(train_items, 1):.6f}"
-                )
+                batch_items = int(pieces.shape[0])
+                train_loss_sum += float(loss.item()) * batch_items
+                train_items += batch_items
+                train_batches += 1
 
-        train_loss = train_loss_sum / max(train_items, 1)
+                if train_batches % args.report_batches == 0:
+                    print(
+                        f"epoch={epoch} batch={train_batches} processed={train_items}/{train_samples} "
+                        f"train_loss={train_loss_sum / max(train_items, 1):.6f}"
+                    )
 
-        val_loss = None
-        if val_loader is not None:
-            model.eval()
-            val_loss_sum = 0.0
-            val_items = 0
-            with torch.no_grad():
-                for batch in val_loader:
-                    pieces = batch["pieces"].to(device)
-                    squares = batch["squares"].to(device)
-                    piece_count = batch["piece_count"].to(device)
-                    side_to_move = batch["side_to_move"].to(device)
-                    score = batch["score"].to(device)
-                    result = batch["result"].to(device)
-                    pred_cp = model(pieces, squares, piece_count, side_to_move)
-                    loss = target_loss(pred_cp, score, result)
-                    batch_items = int(pieces.shape[0])
-                    val_loss_sum += float(loss.item()) * batch_items
-                    val_items += batch_items
-            val_loss = val_loss_sum / max(val_items, 1)
+            train_loss = train_loss_sum / max(train_items, 1)
 
-        epoch_summary = {
-            "epoch": epoch,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "train_samples": train_items,
-            "val_samples": val_samples,
-        }
-        history.append(epoch_summary)
-        print(
-            f"epoch={epoch} train_loss={train_loss:.6f} train_samples={train_items}" +
-            (f" val_loss={val_loss:.6f} val_samples={val_samples}" if val_loss is not None else "")
-        )
+            val_loss = None
+            val_diag = None
+            if val_loader is not None:
+                model.eval()
+                val_loss_sum = 0.0
+                val_items = 0
+                with torch.no_grad():
+                    for batch in val_loader:
+                        pieces = batch["pieces"].to(device)
+                        squares = batch["squares"].to(device)
+                        piece_count = batch["piece_count"].to(device)
+                        side_to_move = batch["side_to_move"].to(device)
+                        score = batch["score"].to(device)
+                        result = batch["result"].to(device)
+                        pred_cp = model(pieces, squares, piece_count, side_to_move)
+                        loss = target_loss(pred_cp, score, result)
+                        if tensorboard_writer is not None and val_diag is None:
+                            hidden = hidden_pre_activations(pieces, squares, piece_count, side_to_move)
+                            val_diag = {
+                                "pred": prediction_stats(pred_cp),
+                                "activation": activation_stats(hidden),
+                                "pred_tensor": pred_cp.detach().cpu(),
+                                "hidden_tensor": hidden.detach().cpu(),
+                            }
+                        batch_items = int(pieces.shape[0])
+                        val_loss_sum += float(loss.item()) * batch_items
+                        val_items += batch_items
+                val_loss = val_loss_sum / max(val_items, 1)
 
-        checkpoint = {
-            "contract": {key: value for key, value in contract.items() if key not in ("contract_path",)},
-            "model": {
-                "architecture": contract["architecture"],
-                "hidden_size": hidden_size,
-                "clip_max": int(contract["clip_max"]),
-            },
-            "dataset": {
-                "manifest_path": str(manifest_path.resolve()),
-                "train_shards": len(train_shards),
-                "val_shards": len(val_shards),
-                "train_samples": train_samples,
+            if tensorboard_writer is not None:
+                log_tensorboard_stats(tensorboard_writer, epoch, train_diag, val_diag, train_loss, val_loss)
+                tensorboard_writer.flush()
+
+            epoch_summary = {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "train_samples": train_items,
                 "val_samples": val_samples,
-            },
-            "state_dict": model.state_dict(),
-            "training": {
-                "epochs": args.epochs,
-                "batch_size": args.batch_size,
-                "learning_rate": args.learning_rate,
-                "weight_decay": args.weight_decay,
-                "score_scale": args.score_scale,
-                "result_weight": args.result_weight,
-                "seed": args.seed,
-                "init": args.init,
-                "num_workers": args.num_workers,
-                "shuffle_buffer_size": args.shuffle_buffer_size,
-                "history": history,
-            },
-        }
-        torch.save(checkpoint, output_dir / "last.pt")
-        if val_loss is None or best_val_loss is None or val_loss < best_val_loss:
-            best_val_loss = val_loss if val_loss is not None else train_loss
-            torch.save(checkpoint, output_dir / "best.pt")
+            }
+            history.append(epoch_summary)
+            print(
+                f"epoch={epoch} train_loss={train_loss:.6f} train_samples={train_items}" +
+                (f" val_loss={val_loss:.6f} val_samples={val_samples}" if val_loss is not None else "")
+            )
+
+            checkpoint = {
+                "contract": {key: value for key, value in contract.items() if key not in ("contract_path",)},
+                "model": {
+                    "architecture": contract["architecture"],
+                    "hidden_size": hidden_size,
+                    "clip_max": int(contract["clip_max"]),
+                },
+                "dataset": {
+                    "manifest_path": str(manifest_path.resolve()),
+                    "train_shards": len(train_shards),
+                    "val_shards": len(val_shards),
+                    "train_samples": train_samples,
+                    "val_samples": val_samples,
+                },
+                "state_dict": model.state_dict(),
+                "training": {
+                    "epochs": args.epochs,
+                    "batch_size": args.batch_size,
+                    "learning_rate": args.learning_rate,
+                    "weight_decay": args.weight_decay,
+                    "score_scale": args.score_scale,
+                    "result_weight": args.result_weight,
+                    "seed": args.seed,
+                    "init": args.init,
+                    "num_workers": args.num_workers,
+                    "shuffle_buffer_size": args.shuffle_buffer_size,
+                    "tensorboard_dir": args.tensorboard_dir,
+                    "tensorboard_histograms": args.tensorboard_histograms,
+                    "history": history,
+                },
+            }
+            torch.save(checkpoint, output_dir / "last.pt")
+            if val_loss is None or best_val_loss is None or val_loss < best_val_loss:
+                best_val_loss = val_loss if val_loss is not None else train_loss
+                torch.save(checkpoint, output_dir / "best.pt")
+    finally:
+        if tensorboard_writer is not None:
+            tensorboard_writer.close()
 
     training_manifest = {
         "format": "chilo.nnue_training.v2",
@@ -310,6 +451,8 @@ def main() -> int:
         "init": args.init,
         "num_workers": args.num_workers,
         "shuffle_buffer_size": args.shuffle_buffer_size,
+        "tensorboard_dir": args.tensorboard_dir,
+        "tensorboard_histograms": args.tensorboard_histograms,
         "history": history,
         "best_checkpoint": str((output_dir / "best.pt").resolve()),
     }
