@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -112,18 +114,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-w", "--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY)
     parser.add_argument("-s", "--score-scale", type=float, default=600.0)
     parser.add_argument("-r", "--result-weight", type=float, default=0.25)
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--seed", type=int, default=None, help="Training RNG seed. Defaults to a time/process-derived seed.")
+    parser.add_argument("-D", "--device", default="auto", help="Training device: auto, cpu, cuda, or another torch device string.")
     parser.add_argument("-i", "--init", choices=INIT_CHOICES, default="random")
     parser.add_argument("-H", "--hidden-size", type=int, default=0,
                         help=f"Hidden layer size for the trained NNUE. Defaults to {DEFAULT_HIDDEN_SIZE}, or the checkpoint size when resuming.")
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("-W", "--num-workers", type=int, default=None,
+                        help="DataLoader worker count. Defaults to 3 on CUDA and 0 otherwise.")
     parser.add_argument("-B", "--shuffle-buffer-size", type=int, default=DEFAULT_SHUFFLE_BUFFER_SIZE)
     parser.add_argument("--no-shuffle", dest="shuffle", action="store_false", help="Disable training shard/sample shuffling.")
     parser.set_defaults(shuffle=True)
     parser.add_argument("--report-batches", type=int, default=200, help="Print a progress line every N training batches.")
     parser.add_argument("-T", "--tensorboard-dir", default=None, help="Optional TensorBoard log directory for training diagnostics.")
-    parser.add_argument("--tensorboard-histograms", action="store_true", help="Log TensorBoard histograms once per epoch.")
+    parser.add_argument("--no-tb-hist", dest="tensorboard_histograms", action="store_false",
+                        help="Disable TensorBoard histogram logging.")
+    parser.set_defaults(tensorboard_histograms=True)
     parser.add_argument("--resume-checkpoint", default=None, help="Optional checkpoint path to resume from by loading model weights.")
     return parser.parse_args()
 
@@ -151,17 +156,43 @@ def checkpoint_history_length(checkpoint: Dict[str, object]) -> int:
     return len(history) if isinstance(history, list) else 0
 
 
+def derive_seed() -> int:
+    entropy = random.SystemRandom().getrandbits(32)
+    return (time.time_ns() ^ (os.getpid() << 16) ^ entropy) & 0x7FFFFFFF
+
+
+def resolve_device(torch, requested_device: str) -> str:
+    if requested_device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested_device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("--device cuda was requested, but CUDA is not available.")
+    return requested_device
+
+
+def resolve_tensorboard_dir(output_dir: Path, tensorboard_dir: str | None) -> str | None:
+    if tensorboard_dir is None:
+        return None
+    path = Path(tensorboard_dir)
+    if not path.is_absolute():
+        path = output_dir / path
+    return str(path)
+
+
 def main() -> int:
     args = parse_args()
     if args.shuffle_buffer_size <= 0:
         raise SystemExit("--shuffle-buffer-size must be positive.")
-    if args.num_workers < 0:
+    if args.num_workers is not None and args.num_workers < 0:
         raise SystemExit("--num-workers must be zero or positive.")
     if args.report_batches <= 0:
         raise SystemExit("--report-batches must be positive.")
 
     contract = load_contract(Path(args.contract) if args.contract else None)
     torch, nn, DataLoader = load_torch()
+    requested_device = args.device
+    resolved_device = resolve_device(torch, requested_device)
+    resolved_num_workers = args.num_workers if args.num_workers is not None else (3 if resolved_device.startswith("cuda") else 0)
+    resolved_seed = args.seed if args.seed is not None else derive_seed()
 
     resume_checkpoint = None
     resume_epoch_offset = 0
@@ -203,9 +234,10 @@ def main() -> int:
     train_samples = shard_sample_total(train_shards)
     val_samples = shard_sample_total(val_shards)
 
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    print(f"Using seed={resolved_seed} device={resolved_device} num_workers={resolved_num_workers}")
+    random.seed(resolved_seed)
+    np.random.seed(resolved_seed)
+    torch.manual_seed(resolved_seed)
 
     def build_loader(shards: List[Dict[str, object]], shuffle: bool, epoch: int):
         if not shards:
@@ -215,14 +247,14 @@ def main() -> int:
             shards,
             shuffle=shuffle,
             shuffle_buffer_size=args.shuffle_buffer_size,
-            base_seed=args.seed,
+            base_seed=resolved_seed,
             epoch=epoch,
         )
         return DataLoader(
             dataset,
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=args.num_workers,
+            num_workers=resolved_num_workers,
         )
 
     def bounded_target(score_tensor, result_tensor):
@@ -324,7 +356,7 @@ def main() -> int:
             writer.add_histogram("hist/hidden_bias", model.hidden_bias.detach().cpu(), epoch)
             writer.add_histogram("hist/output_weights", model.output_weights.detach().cpu(), epoch)
 
-    device = torch.device(args.device)
+    device = torch.device(resolved_device)
     TinyNnueModel = make_tiny_nnue_model(torch, nn)
     model = TinyNnueModel(contract, hidden_size, args.init).to(device)
     if resume_checkpoint is not None:
@@ -336,7 +368,8 @@ def main() -> int:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    tensorboard_writer = load_summary_writer(args.tensorboard_dir) if args.tensorboard_dir else None
+    resolved_tensorboard_dir = resolve_tensorboard_dir(output_dir, args.tensorboard_dir)
+    tensorboard_writer = load_summary_writer(resolved_tensorboard_dir) if resolved_tensorboard_dir else None
 
     best_val_loss = None
     history = []
@@ -464,12 +497,14 @@ def main() -> int:
                     "weight_decay": args.weight_decay,
                     "score_scale": args.score_scale,
                     "result_weight": args.result_weight,
-                    "seed": args.seed,
+                    "seed": resolved_seed,
+                    "requested_device": requested_device,
+                    "resolved_device": resolved_device,
                     "init": args.init,
-                    "num_workers": args.num_workers,
+                    "num_workers": resolved_num_workers,
                     "shuffle": args.shuffle,
                     "shuffle_buffer_size": args.shuffle_buffer_size,
-                    "tensorboard_dir": args.tensorboard_dir,
+                    "tensorboard_dir": resolved_tensorboard_dir,
                     "tensorboard_histograms": args.tensorboard_histograms,
                     "resume_checkpoint": str(Path(args.resume_checkpoint).resolve()) if args.resume_checkpoint else None,
                     "resume_epoch_offset": resume_epoch_offset,
@@ -500,12 +535,14 @@ def main() -> int:
         "weight_decay": args.weight_decay,
         "score_scale": args.score_scale,
         "result_weight": args.result_weight,
-        "seed": args.seed,
+        "seed": resolved_seed,
+        "requested_device": requested_device,
+        "resolved_device": resolved_device,
         "init": args.init,
-        "num_workers": args.num_workers,
+        "num_workers": resolved_num_workers,
         "shuffle": args.shuffle,
         "shuffle_buffer_size": args.shuffle_buffer_size,
-        "tensorboard_dir": args.tensorboard_dir,
+        "tensorboard_dir": resolved_tensorboard_dir,
         "tensorboard_histograms": args.tensorboard_histograms,
         "resume_checkpoint": str(Path(args.resume_checkpoint).resolve()) if args.resume_checkpoint else None,
         "resume_epoch_offset": resume_epoch_offset,

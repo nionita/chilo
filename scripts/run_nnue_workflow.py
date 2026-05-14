@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--samples-per-shard", type=int, default=1000000)
     parser.add_argument("--validation-fraction", type=float, default=0.05)
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--prepare-report-every", type=int, default=100000)
 
     parser.add_argument("--epochs", type=int, default=8)
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--score-scale", type=float, default=600.0)
     parser.add_argument("--result-weight", type=float, default=0.25)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--init",
         choices=(
@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
         default="random",
     )
     parser.add_argument("--hidden-size", type=int, default=32)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--shuffle-buffer-size", type=int, default=262144)
     parser.add_argument("--no-shuffle", dest="shuffle", action="store_false", help="Disable training shard/sample shuffling.")
     parser.set_defaults(shuffle=True)
@@ -183,12 +183,12 @@ def main() -> int:
                 str(args.samples_per_shard),
                 "--validation-fraction",
                 str(args.validation_fraction),
-                "--seed",
-                str(args.seed),
                 "--report-every",
                 str(args.prepare_report_every),
                 "--overwrite",
             ]
+            if args.seed is not None:
+                prepare_cmd.extend(["--seed", str(args.seed)])
             if args.contract:
                 prepare_cmd.extend(["--contract", args.contract])
             if args.limit > 0:
@@ -216,21 +216,21 @@ def main() -> int:
             str(args.score_scale),
             "--result-weight",
             str(args.result_weight),
-            "--seed",
-            str(args.seed),
             "--device",
             args.device,
             "--init",
             args.init,
             "--hidden-size",
             str(args.hidden_size),
-            "--num-workers",
-            str(args.num_workers),
             "--shuffle-buffer-size",
             str(args.shuffle_buffer_size),
             "--report-batches",
             str(args.report_batches),
         ]
+        if args.seed is not None:
+            train_cmd.extend(["--seed", str(args.seed)])
+        if args.num_workers is not None:
+            train_cmd.extend(["--num-workers", str(args.num_workers)])
         if not args.shuffle:
             train_cmd.append("--no-shuffle")
         if args.contract:
