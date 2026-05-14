@@ -48,9 +48,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prepare-report-every", type=int, default=100000)
 
     parser.add_argument("--epochs", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-5)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--score-scale", type=float, default=600.0)
     parser.add_argument("--result-weight", type=float, default=0.25)
     parser.add_argument("--device", default="cpu")
@@ -67,11 +67,13 @@ def parse_args() -> argparse.Namespace:
             "random-sweep-4",
             "random-sweep-5",
         ),
-        default="seeded",
+        default="random",
     )
-    parser.add_argument("--hidden-size", type=int, default=0)
+    parser.add_argument("--hidden-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--shuffle-buffer-size", type=int, default=8192)
+    parser.add_argument("--shuffle-buffer-size", type=int, default=262144)
+    parser.add_argument("--no-shuffle", dest="shuffle", action="store_false", help="Disable training shard/sample shuffling.")
+    parser.set_defaults(shuffle=True)
     parser.add_argument("--report-batches", type=int, default=200)
 
     parser.add_argument("--skip-export", action="store_true")
@@ -229,6 +231,8 @@ def main() -> int:
             "--report-batches",
             str(args.report_batches),
         ]
+        if not args.shuffle:
+            train_cmd.append("--no-shuffle")
         if args.contract:
             train_cmd.extend(["--contract", args.contract])
         run_step(summary, "train", train_cmd)

@@ -19,13 +19,18 @@ except ImportError:
 
 from nnue_common import (
     compact_json,
-    contract_hidden_size,
     load_contract,
     load_dataset_manifest,
     shard_metas_for_split,
     shard_path_from_meta,
 )
 from nnue_torch import INIT_CHOICES, load_torch, make_tiny_nnue_model
+
+DEFAULT_HIDDEN_SIZE = 32
+DEFAULT_BATCH_SIZE = 4096
+DEFAULT_LEARNING_RATE = 1e-3
+DEFAULT_WEIGHT_DECAY = 0.0
+DEFAULT_SHUFFLE_BUFFER_SIZE = 262144
 
 
 class ShardedSparseDataset(IterableDataset):
@@ -97,25 +102,29 @@ class ShardedSparseDataset(IterableDataset):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the tiny Chilo NNUE with PyTorch on sharded datasets.")
-    parser.add_argument("--dataset", "--dataset-dir", dest="dataset", required=True,
+    parser.add_argument("-d", "--dataset", "--dataset-dir", dest="dataset", required=True,
                         help="Dataset root directory or manifest.json path produced by prepare_nnue_dataset.py.")
-    parser.add_argument("--output-dir", required=True, help="Directory for checkpoints and training metadata.")
+    parser.add_argument("-o", "--output-dir", required=True, help="Directory for checkpoints and training metadata.")
     parser.add_argument("--contract", default=None, help="Optional path to nnue_contract.json.")
-    parser.add_argument("--epochs", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-5)
-    parser.add_argument("--score-scale", type=float, default=600.0)
-    parser.add_argument("--result-weight", type=float, default=0.25)
+    parser.add_argument("-e", "--epochs", type=int, default=8)
+    parser.add_argument("-b", "--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("-l", "--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    parser.add_argument("-w", "--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY)
+    parser.add_argument("-s", "--score-scale", type=float, default=600.0)
+    parser.add_argument("-r", "--result-weight", type=float, default=0.25)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--init", choices=INIT_CHOICES, default="seeded")
-    parser.add_argument("--hidden-size", type=int, default=0, help="Hidden layer size for the trained NNUE. Defaults to the contract's default hidden size.")
+    parser.add_argument("-i", "--init", choices=INIT_CHOICES, default="random")
+    parser.add_argument("-H", "--hidden-size", type=int, default=0,
+                        help=f"Hidden layer size for the trained NNUE. Defaults to {DEFAULT_HIDDEN_SIZE}, or the checkpoint size when resuming.")
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--shuffle-buffer-size", type=int, default=8192)
+    parser.add_argument("-B", "--shuffle-buffer-size", type=int, default=DEFAULT_SHUFFLE_BUFFER_SIZE)
+    parser.add_argument("--no-shuffle", dest="shuffle", action="store_false", help="Disable training shard/sample shuffling.")
+    parser.set_defaults(shuffle=True)
     parser.add_argument("--report-batches", type=int, default=200, help="Print a progress line every N training batches.")
-    parser.add_argument("--tensorboard-dir", default=None, help="Optional TensorBoard log directory for training diagnostics.")
+    parser.add_argument("-T", "--tensorboard-dir", default=None, help="Optional TensorBoard log directory for training diagnostics.")
     parser.add_argument("--tensorboard-histograms", action="store_true", help="Log TensorBoard histograms once per epoch.")
+    parser.add_argument("--resume-checkpoint", default=None, help="Optional checkpoint path to resume from by loading model weights.")
     return parser.parse_args()
 
 
@@ -134,6 +143,14 @@ def load_summary_writer(log_dir: str):
     return SummaryWriter(log_dir=log_dir)
 
 
+def checkpoint_history_length(checkpoint: Dict[str, object]) -> int:
+    training = checkpoint.get("training", {})
+    if not isinstance(training, dict):
+        return 0
+    history = training.get("history", [])
+    return len(history) if isinstance(history, list) else 0
+
+
 def main() -> int:
     args = parse_args()
     if args.shuffle_buffer_size <= 0:
@@ -144,7 +161,35 @@ def main() -> int:
         raise SystemExit("--report-batches must be positive.")
 
     contract = load_contract(Path(args.contract) if args.contract else None)
-    hidden_size = args.hidden_size if args.hidden_size > 0 else contract_hidden_size(contract)
+    torch, nn, DataLoader = load_torch()
+
+    resume_checkpoint = None
+    resume_epoch_offset = 0
+    if args.resume_checkpoint:
+        resume_checkpoint = torch.load(args.resume_checkpoint, map_location="cpu")
+        checkpoint_model = resume_checkpoint.get("model", {})
+        if not isinstance(checkpoint_model, dict):
+            raise SystemExit(f"Checkpoint {args.resume_checkpoint} does not contain model metadata.")
+        checkpoint_architecture = checkpoint_model.get("architecture")
+        if checkpoint_architecture != contract["architecture"]:
+            raise SystemExit(
+                f"Checkpoint architecture {checkpoint_architecture!r} does not match contract architecture {contract['architecture']!r}."
+            )
+        checkpoint_hidden_size = int(checkpoint_model.get("hidden_size", 0))
+        if checkpoint_hidden_size <= 0:
+            raise SystemExit(f"Checkpoint {args.resume_checkpoint} does not contain a valid hidden size.")
+        if args.hidden_size > 0 and args.hidden_size != checkpoint_hidden_size:
+            raise SystemExit(
+                f"--hidden-size {args.hidden_size} does not match checkpoint hidden size {checkpoint_hidden_size}."
+            )
+        resume_epoch_offset = checkpoint_history_length(resume_checkpoint)
+
+    if args.hidden_size > 0:
+        hidden_size = args.hidden_size
+    elif resume_checkpoint is not None:
+        hidden_size = int(resume_checkpoint["model"]["hidden_size"])
+    else:
+        hidden_size = DEFAULT_HIDDEN_SIZE
     if hidden_size <= 0:
         raise SystemExit("--hidden-size must be positive.")
     manifest_path, manifest = load_dataset_manifest(Path(args.dataset), contract)
@@ -158,7 +203,6 @@ def main() -> int:
     train_samples = shard_sample_total(train_shards)
     val_samples = shard_sample_total(val_shards)
 
-    torch, nn, DataLoader = load_torch()
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -283,6 +327,11 @@ def main() -> int:
     device = torch.device(args.device)
     TinyNnueModel = make_tiny_nnue_model(torch, nn)
     model = TinyNnueModel(contract, hidden_size, args.init).to(device)
+    if resume_checkpoint is not None:
+        state_dict = resume_checkpoint.get("state_dict")
+        if not isinstance(state_dict, dict):
+            raise SystemExit(f"Checkpoint {args.resume_checkpoint} does not contain a valid state_dict.")
+        model.load_state_dict(state_dict)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
     output_dir = Path(args.output_dir)
@@ -292,8 +341,9 @@ def main() -> int:
     best_val_loss = None
     history = []
     try:
-        for epoch in range(1, args.epochs + 1):
-            train_loader = build_loader(train_shards, shuffle=True, epoch=epoch)
+        for local_epoch in range(1, args.epochs + 1):
+            epoch = resume_epoch_offset + local_epoch
+            train_loader = build_loader(train_shards, shuffle=args.shuffle, epoch=epoch)
             val_loader = build_loader(val_shards, shuffle=False, epoch=epoch)
 
             model.train()
@@ -417,9 +467,12 @@ def main() -> int:
                     "seed": args.seed,
                     "init": args.init,
                     "num_workers": args.num_workers,
+                    "shuffle": args.shuffle,
                     "shuffle_buffer_size": args.shuffle_buffer_size,
                     "tensorboard_dir": args.tensorboard_dir,
                     "tensorboard_histograms": args.tensorboard_histograms,
+                    "resume_checkpoint": str(Path(args.resume_checkpoint).resolve()) if args.resume_checkpoint else None,
+                    "resume_epoch_offset": resume_epoch_offset,
                     "history": history,
                 },
             }
@@ -450,9 +503,12 @@ def main() -> int:
         "seed": args.seed,
         "init": args.init,
         "num_workers": args.num_workers,
+        "shuffle": args.shuffle,
         "shuffle_buffer_size": args.shuffle_buffer_size,
         "tensorboard_dir": args.tensorboard_dir,
         "tensorboard_histograms": args.tensorboard_histograms,
+        "resume_checkpoint": str(Path(args.resume_checkpoint).resolve()) if args.resume_checkpoint else None,
+        "resume_epoch_offset": resume_epoch_offset,
         "history": history,
         "best_checkpoint": str((output_dir / "best.pt").resolve()),
     }
