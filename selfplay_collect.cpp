@@ -30,6 +30,7 @@ struct Options {
     int depth = 4;
     int movetimeMs = 0;
     int minSampleDepth = 4;
+    int minSamplePieces = 5;
     int sampleWindowCp = 30;
     int samplePlies = 10;
     int maxPlies = 300;
@@ -45,6 +46,7 @@ struct PendingSample {
     std::string evalFen;
     int depth = 0;
     int score = 0;
+    int evalPieceCount = 0;
     Color evalSideToMove = WHITE;
 };
 
@@ -74,6 +76,7 @@ void printUsage() {
         << "  -d, --depth <N>                Fixed search depth when --movetime is not set (default: 4)\n"
         << "  -m, --movetime <ms>            Fixed movetime per move instead of fixed depth\n"
         << "      --min-sample-depth <N>     Only keep samples from searches at or above this depth (default: 4)\n"
+        << "      --min-sample-pieces <N>    Skip eval leaves with fewer than N pieces, 0 disables (default: 5)\n"
         << "      --sample-window-cp <N>     Root-score window for stochastic move choice (default: 30)\n"
         << "      --temperature-cp <X>       Softmax temperature in centipawns (default: 15)\n"
         << "      --sample-plies <N>         Only sample root moves for the first N plies (default: 10)\n"
@@ -151,6 +154,12 @@ bool parseArgs(int argc, char** argv, Options& options) {
         } else if (arg == "--min-sample-depth") {
             const char* value = requireValue("--min-sample-depth");
             if (value == nullptr || !parseInt(value, options.minSampleDepth) || options.minSampleDepth < 0) return false;
+        } else if (arg == "--min-sample-pieces") {
+            const char* value = requireValue("--min-sample-pieces");
+            if (value == nullptr || !parseInt(value, options.minSamplePieces) ||
+                options.minSamplePieces < 0 || options.minSamplePieces > 32) {
+                return false;
+            }
         } else if (arg == "--sample-window-cp") {
             const char* value = requireValue("--sample-window-cp");
             if (value == nullptr || !parseInt(value, options.sampleWindowCp) || options.sampleWindowCp < 0) return false;
@@ -297,6 +306,10 @@ bool shouldKeepSample(const RootMoveResult& rootMove) {
 
 bool shouldKeepBestMoveSample(const SearchResult& result) {
     return result.bestMoveHasEval && !result.bestMoveEvalInCheck && !result.bestMoveEvalIsTerminal;
+}
+
+bool shouldSkipLowPieceSample(const PendingSample& sample, const Options& options) {
+    return options.minSamplePieces > 0 && sample.evalPieceCount < options.minSamplePieces;
 }
 
 bool shouldSkipDrawNearFiftySample(const PendingSample& sample, int whiteResult, const Options& options) {
@@ -447,12 +460,14 @@ int main(int argc, char** argv) {
                         shouldKeepSample(*chosenRoot) &&
                         result.depth >= options.minSampleDepth) {
                         gameSamples.push_back({positionToFEN(pos), chosenRoot->evalFen, result.depth,
-                                               chosenRoot->evalScore, chosenRoot->evalSideToMove});
+                                               chosenRoot->evalScore, chosenRoot->evalPieceCount,
+                                               chosenRoot->evalSideToMove});
                     }
                 } else if (shouldKeepBestMoveSample(result) &&
                            result.depth >= options.minSampleDepth) {
                     gameSamples.push_back({positionToFEN(pos), result.bestMoveEvalFen, result.depth,
-                                           result.bestMoveEvalScore, result.bestMoveEvalSideToMove});
+                                           result.bestMoveEvalScore, result.bestMoveEvalPieceCount,
+                                           result.bestMoveEvalSideToMove});
                 }
 
                 Position before = pos;
@@ -465,6 +480,7 @@ int main(int argc, char** argv) {
 
             int writtenGameSamples = 0;
             for (const PendingSample& sample : gameSamples) {
+                if (shouldSkipLowPieceSample(sample, options)) continue;
                 if (shouldSkipDrawNearFiftySample(sample, whiteResult, options)) continue;
 
                 int resultLabel = sampleResultFromPerspective(whiteResult, sample.evalSideToMove);

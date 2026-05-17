@@ -99,6 +99,7 @@ void setLeaf(SearchLeaf* leaf, const Position& pos, int score, bool inCheck = fa
 
 void clearBestMoveEval(SearchResult& result) {
     result.bestMoveEvalScore = 0;
+    result.bestMoveEvalPieceCount = 0;
     result.bestMoveEvalSideToMove = WHITE;
     result.bestMoveHasEval = false;
     result.bestMoveEvalInCheck = false;
@@ -112,6 +113,7 @@ void setBestMoveEval(SearchResult& result, const SearchLeaf& leaf) {
         return;
     }
     result.bestMoveEvalScore = leaf.score;
+    result.bestMoveEvalPieceCount = __builtin_popcountll(leaf.pos.occupancyAll);
     result.bestMoveEvalSideToMove = leaf.pos.sideToMove;
     result.bestMoveHasEval = true;
     result.bestMoveEvalInCheck = leaf.inCheck;
@@ -905,8 +907,9 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                 rootResult.move = move;
                 rootResult.score = score;
                 rootResult.evalScore = childLeaf.score;
-                rootResult.evalSideToMove = childLeaf.pos.sideToMove;
                 rootResult.hasEval = childLeaf.valid;
+                rootResult.evalPieceCount = childLeaf.valid ? __builtin_popcountll(childLeaf.pos.occupancyAll) : 0;
+                rootResult.evalSideToMove = childLeaf.valid ? childLeaf.pos.sideToMove : WHITE;
                 rootResult.evalInCheck = childLeaf.inCheck;
                 rootResult.evalIsTerminal = childLeaf.terminal;
                 if (childLeaf.valid) rootResult.evalFen = positionToFEN(childLeaf.pos);

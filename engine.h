@@ -102,6 +102,7 @@ struct RootMoveResult {
     Move move;
     int score;
     int evalScore;
+    int evalPieceCount;
     Color evalSideToMove;
     bool hasEval;
     bool evalInCheck;
@@ -136,6 +137,7 @@ struct SearchResult {
     bool bestMoveHasEval;
     bool bestMoveEvalInCheck;
     bool bestMoveEvalIsTerminal;
+    int bestMoveEvalPieceCount;
     std::string bestMoveEvalFen;
     std::vector<RootMoveResult> rootMoveResults;
 };
