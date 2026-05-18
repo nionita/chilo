@@ -669,7 +669,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
     Move bestMove = moves[0];
     SearchLeaf bestLeaf{};
     int staticEval = 0;
-    bool allowFutility = !isPv && !inCheckNow && depth <= 3;
+    bool allowFutility = !isPv && depth <= 3;
     if (allowFutility) staticEval = evaluateSearchPosition(pos, nnueState, nnuePly);
 
     for (int i = 0; i < moveCount; i++) {
