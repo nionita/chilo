@@ -111,6 +111,7 @@ struct RunStats {
     uint64_t skippedByMinPieces = 0;
     uint64_t parseErrors = 0;
     uint64_t terminalPositions = 0;
+    uint64_t quietChecksSkipped = 0;
     GroupStats nonCheckAll{"non_check_all"};
     GroupStats inCheckAll{"in_check_all"};
     std::vector<GroupStats> nonCheckBuckets{
@@ -361,7 +362,7 @@ int bucketIndex(int pieces) {
     return 3;
 }
 
-void addQuietGains(Position& pos, GroupStats& allGroup, GroupStats& bucketGroup) {
+void addQuietGains(Position& pos, GroupStats& allGroup, GroupStats& bucketGroup, RunStats& stats) {
     allGroup.positions++;
     bucketGroup.positions++;
 
@@ -376,6 +377,12 @@ void addQuietGains(Position& pos, GroupStats& allGroup, GroupStats& bucketGroup)
 
         UndoState undoState;
         doMove(pos, move, undoState);
+        bool givesCheck = inCheck(pos, pos.sideToMove);
+        if (givesCheck) {
+            stats.quietChecksSkipped++;
+            undo(pos, move, undoState);
+            continue;
+        }
         int after = -evaluate(pos);
         undo(pos, move, undoState);
 
@@ -404,9 +411,9 @@ void processPosition(Position& pos, RunStats& stats, const Options& options) {
     bool check = inCheck(pos, pos.sideToMove);
     int bucket = bucketIndex(pieces);
     if (check) {
-        addQuietGains(pos, stats.inCheckAll, stats.inCheckBuckets[bucket]);
+        addQuietGains(pos, stats.inCheckAll, stats.inCheckBuckets[bucket], stats);
     } else {
-        addQuietGains(pos, stats.nonCheckAll, stats.nonCheckBuckets[bucket]);
+        addQuietGains(pos, stats.nonCheckAll, stats.nonCheckBuckets[bucket], stats);
     }
 }
 
@@ -515,6 +522,7 @@ void printReport(const RunStats& stats, const Options& options) {
               << " skipped_by_min_pieces=" << stats.skippedByMinPieces
               << " terminal_positions=" << stats.terminalPositions
               << " parse_errors=" << stats.parseErrors
+              << " quiet_checks_skipped=" << stats.quietChecksSkipped
               << " min_pieces=" << options.minPieces
               << " sample_rate=" << options.sampleRate
               << " max_positions=" << options.maxPositions
