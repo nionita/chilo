@@ -792,6 +792,60 @@ int staticExchangeEval(const Position& pos, const Move& move) {
     return gain - seeGain(state, targetSq, them, occupyingPiece);
 }
 
+std::vector<MoveOrderingEntry> collectMoveOrderingDiagnostics(
+    const Position& pos,
+    MoveOrderingMode mode,
+    const Move* preferredMove,
+    int ply) {
+    Move moves[MAX_MOVES];
+    bool qsMode = mode == MoveOrderingMode::Quiescence;
+    bool inCheckNow = inCheck(pos, pos.sideToMove);
+    int moveCount = qsMode ? (inCheckNow ? genLegalMoves(pos, moves) : genLegalNoisyMoves(pos, moves))
+                           : genLegalMoves(pos, moves);
+
+    std::vector<Move> filteredQsMoves;
+    if (qsMode && !inCheckNow) {
+        int keptCount = 0;
+        for (int i = 0; i < moveCount; i++) {
+            const Move& move = moves[i];
+            if (isCaptureMove(pos, move) && staticExchangeEval(pos, move) < 0) {
+                filteredQsMoves.push_back(move);
+                continue;
+            }
+            moves[keptCount++] = move;
+        }
+        moveCount = keptCount;
+    }
+
+    if (qsMode) {
+        orderQSMoves(pos, moves, moveCount);
+    } else {
+        orderMoves(pos, moves, moveCount, preferredMove, ply);
+    }
+
+    std::vector<MoveOrderingEntry> result;
+    result.reserve(static_cast<std::size_t>(moveCount) + filteredQsMoves.size());
+    auto appendEntry = [&](const Move& move, bool filteredByQsSee) {
+        bool capture = isCaptureMove(pos, move);
+        int see = capture || move.promotion != EMPTY ? staticExchangeEval(pos, move) : 0;
+        result.push_back({
+            move,
+            pieceAt(pos, move.from),
+            capturedPieceForMove(pos, move),
+            see,
+            captureOrderScore(pos, move),
+            qsMode ? qsMoveOrderScore(pos, move) : moveOrderScore(pos, move, preferredMove, ply),
+            capture,
+            move.promotion != EMPTY,
+            filteredByQsSee,
+        });
+    };
+
+    for (int i = 0; i < moveCount; i++) appendEntry(moves[i], false);
+    for (const Move& move : filteredQsMoves) appendEntry(move, true);
+    return result;
+}
+
 SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_stopRequested.store(false, std::memory_order_relaxed);
     g_useDeadline = limits.movetimeMs > 0;

@@ -1,0 +1,37 @@
+4k3/8/8/8/8/8/4q3/4R1K1 w - - 0 1 # SEE-positive rook capture
+4k3/8/8/8/8/8/4q3/4R1K1 b - - 0 1 # SEE-positive rook capture, side-to-move flipped
+
+8/8/8/8/7b/4k3/4r3/4Q1K1 w - - 0 1 # SEE-negative queen capture
+8/8/8/8/7b/4k3/4r3/4Q1K1 b - - 0 1 # SEE-negative queen capture, side-to-move flipped
+
+8/8/8/8/8/4k3/4r3/4R1K1 w - - 0 1 # SEE-zero rook capture
+8/8/8/8/8/4k3/4r3/4R1K1 b - - 0 1 # SEE-zero rook capture, side-to-move flipped
+
+7k/8/8/3pP3/8/8/8/K7 w - d6 0 1 # En passant capture
+
+k6r/6P1/8/8/8/8/8/K7 w - - 0 1 # Promotion capture
+k6r/6P1/8/8/8/8/8/K7 b - - 0 1 # Promotion capture position, side-to-move flipped
+
+r2q3k/1p6/5n2/3pp3/2B1P1b1/5N2/2P5/R2Q3K w - - 0 1 # Several captures with different MVV/LVA scores
+r2q3k/1p6/5n2/3pp3/2B1P1b1/5N2/2P5/R2Q3K b - - 0 1 # Several captures with different MVV/LVA scores, side-to-move flipped
+
+r1b1k1nr/ppp2ppp/2p2q2/b3P3/3p4/B1P2N2/P4PPP/RN1Q1RK1 b kq - 0 1 # open-moves line 1 original, multi-capture
+r1b1k1nr/ppp2ppp/2p2q2/b3P3/3p4/B1P2N2/P4PPP/RN1Q1RK1 w kq - 0 1 # open-moves line 1 side-to-move flipped, multi-capture
+r1b2rk1/ppq2pp1/2nbpB1p/2pp4/5P2/PP1BPN2/2PP2PP/RN1QK2R b KQ - 0 1 # open-moves line 2 original, multi-capture
+r1bqk1nr/ppp2ppp/1b1p4/n2P4/2B1P3/5N2/PB3PPP/RN1Q1RK1 b kq - 0 1 # open-moves line 4 original, multi-capture
+r1bq1rk1/ppp2ppp/2n5/1B1pP3/1b1Pn3/5N2/PP1N1PPP/R1BQ1RK1 b - - 0 1 # open-moves line 5 original, multi-capture
+r1bq1rk1/ppp2ppp/2n5/1B1pP3/1b1Pn3/5N2/PP1N1PPP/R1BQ1RK1 w - - 0 1 # open-moves line 5 side-to-move flipped, multi-capture
+r3kb1r/ppqn1ppp/4pn2/2p1N3/5P2/2N2Q2/PPPP2PP/R1B2RK1 b kq - 0 1 # open-moves line 6 original, multi-capture
+r3kb1r/ppqn1ppp/4pn2/2p1N3/5P2/2N2Q2/PPPP2PP/R1B2RK1 w kq - 0 1 # open-moves line 6 side-to-move flipped, multi-capture
+r1bqk2r/pp1p1pp1/1bp2n1p/4p3/2B1P2B/2PP4/PP3PPP/RN1Q1RK1 b kq - 0 1 # open-moves line 7 original, multi-capture
+r1bqk2r/pp1p1pp1/1bp2n1p/4p3/2B1P2B/2PP4/PP3PPP/RN1Q1RK1 w kq - 0 1 # open-moves line 7 side-to-move flipped, multi-capture
+r1b1k1nr/1pp2ppp/p1p5/4q3/4PP2/2P5/PP4PP/RNBQ1RK1 b kq - 0 1 # open-moves line 8 original, multi-capture
+r1b1k2r/ppppnppp/1b4q1/1B6/3PP3/2N2N2/PP3PPP/R2Q1RK1 b kq - 0 1 # open-moves line 9 original, multi-capture
+rnbqk2r/ppp1bp2/3p3n/7p/2BPP1pP/3NBP2/PPP5/RN1QK2R b KQkq - 0 1 # open-moves line 10 original, multi-capture
+rnbqk2r/ppp1bp2/3p3n/7p/2BPP1pP/3NBP2/PPP5/RN1QK2R w KQkq - 0 1 # open-moves line 10 side-to-move flipped, multi-capture
+rnbqk1nr/p4ppp/2p5/8/2B4b/5N2/PPPP3p/RNBQ1R1K w kq - 0 1 # open-moves line 12 side-to-move flipped, multi-capture
+r1b1kb1r/pp1p1ppp/1qp3n1/8/B3P3/2N1B3/PP3PPP/R2Q1RK1 b kq - 0 1 # open-moves line 16 original, multi-capture
+r1b1kb1r/pp1p1ppp/1qp3n1/8/B3P3/2N1B3/PP3PPP/R2Q1RK1 w kq - 0 1 # open-moves line 16 side-to-move flipped, multi-capture
+r3k2r/ppp2ppp/2n1bP2/2bq2N1/2pp4/2N5/PPP2PPP/R1BQR1K1 b kq - 0 1 # open-moves line 17 original, multi-capture
+r3k2r/ppp2ppp/2n1bP2/2bq2N1/2pp4/2N5/PPP2PPP/R1BQR1K1 w kq - 0 1 # open-moves line 17 side-to-move flipped, multi-capture
+r2qk2r/ppp2pbp/2B1b1p1/3n4/3P4/5N2/PP3PPP/RNBQR1K1 w kq - 0 1 # open-moves line 20 side-to-move flipped, multi-capture

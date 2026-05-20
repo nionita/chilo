@@ -29,20 +29,21 @@ CHILO_SRC := chilo.cpp
 SELFPLAY_SRC := selfplay_collect.cpp
 EVAL_FEN_SRC := eval_fen.cpp
 FUTILITY_STATS_SRC := futility_stats.cpp
+MOVE_ORDERING_PROBE_SRC := move_ordering_probe.cpp
 ENGINE_HEADERS := engine.h chess_position.h chess_tables.h $(GENERATED_DIR)/generated_nnue_weights.h
 VENV_PYTHON := .venv/bin/python
-RELEASE_BINS := $(RELEASE_DIR)/perft $(RELEASE_DIR)/perft_diag $(RELEASE_DIR)/engine_tests $(RELEASE_DIR)/chilo $(RELEASE_DIR)/selfplay_collect $(RELEASE_DIR)/eval_fen $(RELEASE_DIR)/futility_stats
-RELEASE_AVX2_BINS := $(RELEASE_AVX2_DIR)/perft $(RELEASE_AVX2_DIR)/perft_diag $(RELEASE_AVX2_DIR)/engine_tests $(RELEASE_AVX2_DIR)/chilo $(RELEASE_AVX2_DIR)/selfplay_collect $(RELEASE_AVX2_DIR)/eval_fen $(RELEASE_AVX2_DIR)/futility_stats
-DEBUG_BINS := $(DEBUG_DIR)/perft_debug $(DEBUG_DIR)/perft_diag_debug $(DEBUG_DIR)/engine_tests_debug $(DEBUG_DIR)/chilo_debug $(DEBUG_DIR)/selfplay_collect_debug $(DEBUG_DIR)/eval_fen_debug $(DEBUG_DIR)/futility_stats_debug
-VALIDATE_BINS := $(VALIDATE_DIR)/perft_validate $(VALIDATE_DIR)/perft_diag_validate $(VALIDATE_DIR)/engine_tests_validate $(VALIDATE_DIR)/chilo_validate $(VALIDATE_DIR)/selfplay_collect_validate $(VALIDATE_DIR)/eval_fen_validate $(VALIDATE_DIR)/futility_stats_validate
-WIN64_BINS := $(WIN64_DIR)/perft.exe $(WIN64_DIR)/perft_diag.exe $(WIN64_DIR)/engine_tests.exe $(WIN64_DIR)/chilo.exe $(WIN64_DIR)/selfplay_collect.exe $(WIN64_DIR)/eval_fen.exe $(WIN64_DIR)/futility_stats.exe
-WIN64_AVX2_BINS := $(WIN64_AVX2_DIR)/perft.exe $(WIN64_AVX2_DIR)/perft_diag.exe $(WIN64_AVX2_DIR)/engine_tests.exe $(WIN64_AVX2_DIR)/chilo.exe $(WIN64_AVX2_DIR)/selfplay_collect.exe $(WIN64_AVX2_DIR)/eval_fen.exe $(WIN64_AVX2_DIR)/futility_stats.exe
+RELEASE_BINS := $(RELEASE_DIR)/perft $(RELEASE_DIR)/perft_diag $(RELEASE_DIR)/engine_tests $(RELEASE_DIR)/chilo $(RELEASE_DIR)/selfplay_collect $(RELEASE_DIR)/eval_fen $(RELEASE_DIR)/futility_stats $(RELEASE_DIR)/move_ordering_probe
+RELEASE_AVX2_BINS := $(RELEASE_AVX2_DIR)/perft $(RELEASE_AVX2_DIR)/perft_diag $(RELEASE_AVX2_DIR)/engine_tests $(RELEASE_AVX2_DIR)/chilo $(RELEASE_AVX2_DIR)/selfplay_collect $(RELEASE_AVX2_DIR)/eval_fen $(RELEASE_AVX2_DIR)/futility_stats $(RELEASE_AVX2_DIR)/move_ordering_probe
+DEBUG_BINS := $(DEBUG_DIR)/perft_debug $(DEBUG_DIR)/perft_diag_debug $(DEBUG_DIR)/engine_tests_debug $(DEBUG_DIR)/chilo_debug $(DEBUG_DIR)/selfplay_collect_debug $(DEBUG_DIR)/eval_fen_debug $(DEBUG_DIR)/futility_stats_debug $(DEBUG_DIR)/move_ordering_probe_debug
+VALIDATE_BINS := $(VALIDATE_DIR)/perft_validate $(VALIDATE_DIR)/perft_diag_validate $(VALIDATE_DIR)/engine_tests_validate $(VALIDATE_DIR)/chilo_validate $(VALIDATE_DIR)/selfplay_collect_validate $(VALIDATE_DIR)/eval_fen_validate $(VALIDATE_DIR)/futility_stats_validate $(VALIDATE_DIR)/move_ordering_probe_validate
+WIN64_BINS := $(WIN64_DIR)/perft.exe $(WIN64_DIR)/perft_diag.exe $(WIN64_DIR)/engine_tests.exe $(WIN64_DIR)/chilo.exe $(WIN64_DIR)/selfplay_collect.exe $(WIN64_DIR)/eval_fen.exe $(WIN64_DIR)/futility_stats.exe $(WIN64_DIR)/move_ordering_probe.exe
+WIN64_AVX2_BINS := $(WIN64_AVX2_DIR)/perft.exe $(WIN64_AVX2_DIR)/perft_diag.exe $(WIN64_AVX2_DIR)/engine_tests.exe $(WIN64_AVX2_DIR)/chilo.exe $(WIN64_AVX2_DIR)/selfplay_collect.exe $(WIN64_AVX2_DIR)/eval_fen.exe $(WIN64_AVX2_DIR)/futility_stats.exe $(WIN64_AVX2_DIR)/move_ordering_probe.exe
 
 .PHONY: all clean release release-avx2 debug validate windows64 windows64-avx2 tests tests-debug tests-validate python-env nnue-python-tests nnue-verify \
 	perft perft_diag engine_tests chilo selfplay_collect eval_fen \
 	futility_stats perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug \
-	futility_stats_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
-	futility_stats_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe futility_stats.exe
+	futility_stats_debug move_ordering_probe move_ordering_probe_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
+	futility_stats_validate move_ordering_probe_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe futility_stats.exe move_ordering_probe.exe
 
 all: release release-avx2 windows64 windows64-avx2 tests
 
@@ -71,6 +72,7 @@ chilo: $(RELEASE_DIR)/chilo
 selfplay_collect: $(RELEASE_DIR)/selfplay_collect
 eval_fen: $(RELEASE_DIR)/eval_fen
 futility_stats: $(RELEASE_DIR)/futility_stats
+move_ordering_probe: $(RELEASE_DIR)/move_ordering_probe
 
 perft_debug: $(DEBUG_DIR)/perft_debug
 perft_diag_debug: $(DEBUG_DIR)/perft_diag_debug
@@ -79,6 +81,7 @@ chilo_debug: $(DEBUG_DIR)/chilo_debug
 selfplay_collect_debug: $(DEBUG_DIR)/selfplay_collect_debug
 eval_fen_debug: $(DEBUG_DIR)/eval_fen_debug
 futility_stats_debug: $(DEBUG_DIR)/futility_stats_debug
+move_ordering_probe_debug: $(DEBUG_DIR)/move_ordering_probe_debug
 
 perft_validate: $(VALIDATE_DIR)/perft_validate
 perft_diag_validate: $(VALIDATE_DIR)/perft_diag_validate
@@ -87,6 +90,7 @@ chilo_validate: $(VALIDATE_DIR)/chilo_validate
 selfplay_collect_validate: $(VALIDATE_DIR)/selfplay_collect_validate
 eval_fen_validate: $(VALIDATE_DIR)/eval_fen_validate
 futility_stats_validate: $(VALIDATE_DIR)/futility_stats_validate
+move_ordering_probe_validate: $(VALIDATE_DIR)/move_ordering_probe_validate
 
 perft.exe: $(WIN64_DIR)/perft.exe
 perft_diag.exe: $(WIN64_DIR)/perft_diag.exe
@@ -95,6 +99,7 @@ chilo.exe: $(WIN64_DIR)/chilo.exe
 selfplay_collect.exe: $(WIN64_DIR)/selfplay_collect.exe
 eval_fen.exe: $(WIN64_DIR)/eval_fen.exe
 futility_stats.exe: $(WIN64_DIR)/futility_stats.exe
+move_ordering_probe.exe: $(WIN64_DIR)/move_ordering_probe.exe
 
 python-env:
 	bash ./scripts/setup_python_env.sh
@@ -129,6 +134,9 @@ $(RELEASE_DIR)/eval_fen: $(EVAL_FEN_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 $(RELEASE_DIR)/futility_stats: $(FUTILITY_STATS_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_STATS_SRC) $(ENGINE_OBJ)
 
+$(RELEASE_DIR)/move_ordering_probe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_OBJ)
+
 $(RELEASE_AVX2_DIR)/perft: $(PERFT_SRC) $(ENGINE_AVX2_OBJ) | $(RELEASE_AVX2_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG -o $@ $(PERFT_SRC) $(ENGINE_AVX2_OBJ)
 
@@ -149,6 +157,9 @@ $(RELEASE_AVX2_DIR)/eval_fen: $(EVAL_FEN_SRC) $(ENGINE_AVX2_OBJ) | $(RELEASE_AVX
 
 $(RELEASE_AVX2_DIR)/futility_stats: $(FUTILITY_STATS_SRC) $(ENGINE_AVX2_OBJ) | $(RELEASE_AVX2_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_STATS_SRC) $(ENGINE_AVX2_OBJ)
+
+$(RELEASE_AVX2_DIR)/move_ordering_probe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_AVX2_OBJ) | $(RELEASE_AVX2_DIR)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_AVX2_OBJ)
 
 $(DEBUG_DIR)/perft_debug: $(PERFT_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
@@ -171,6 +182,9 @@ $(DEBUG_DIR)/eval_fen_debug: $(EVAL_FEN_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 $(DEBUG_DIR)/futility_stats_debug: $(FUTILITY_STATS_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(FUTILITY_STATS_SRC) $(ENGINE_DEBUG_OBJ)
 
+$(DEBUG_DIR)/move_ordering_probe_debug: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_DEBUG_OBJ)
+
 $(VALIDATE_DIR)/perft_validate: $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(PERFT_SRC) $(ENGINE_VALIDATE_OBJ)
 
@@ -191,6 +205,9 @@ $(VALIDATE_DIR)/eval_fen_validate: $(EVAL_FEN_SRC) $(ENGINE_VALIDATE_OBJ) | $(VA
 
 $(VALIDATE_DIR)/futility_stats_validate: $(FUTILITY_STATS_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(FUTILITY_STATS_SRC) $(ENGINE_VALIDATE_OBJ)
+
+$(VALIDATE_DIR)/move_ordering_probe_validate: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_VALIDATE_OBJ) | $(VALIDATE_DIR)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -DCHESS_VALIDATE_STATE -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_VALIDATE_OBJ)
 
 $(WIN64_DIR)/perft.exe: $(PERFT_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(PERFT_SRC) $(ENGINE_WIN64_OBJ)
@@ -213,6 +230,9 @@ $(WIN64_DIR)/eval_fen.exe: $(EVAL_FEN_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 $(WIN64_DIR)/futility_stats.exe: $(FUTILITY_STATS_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(FUTILITY_STATS_SRC) $(ENGINE_WIN64_OBJ)
 
+$(WIN64_DIR)/move_ordering_probe.exe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
+	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_OBJ)
+
 $(WIN64_AVX2_DIR)/perft.exe: $(PERFT_SRC) $(ENGINE_WIN64_AVX2_OBJ) | $(WIN64_AVX2_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(PERFT_SRC) $(ENGINE_WIN64_AVX2_OBJ)
 
@@ -234,6 +254,9 @@ $(WIN64_AVX2_DIR)/eval_fen.exe: $(EVAL_FEN_SRC) $(ENGINE_WIN64_AVX2_OBJ) | $(WIN
 $(WIN64_AVX2_DIR)/futility_stats.exe: $(FUTILITY_STATS_SRC) $(ENGINE_WIN64_AVX2_OBJ) | $(WIN64_AVX2_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(FUTILITY_STATS_SRC) $(ENGINE_WIN64_AVX2_OBJ)
 
+$(WIN64_AVX2_DIR)/move_ordering_probe.exe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_AVX2_OBJ) | $(WIN64_AVX2_DIR)
+	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_AVX2_OBJ)
+
 $(RELEASE_DIR)/%.o: %.cpp $(ENGINE_HEADERS) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
@@ -254,4 +277,4 @@ $(WIN64_AVX2_DIR)/%.win64-avx2.o: %.cpp $(ENGINE_HEADERS) | $(WIN64_AVX2_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f perft perft_diag engine_tests chilo selfplay_collect eval_fen futility_stats perft_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug futility_stats_debug perft_tests_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate futility_stats_validate perft_tests_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe futility_stats.exe perft_tests.exe attack.o movegen.o make_unmake.o perft_lib.o eval.o search.o attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o eval.debug.o search.debug.o attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o eval.validate.o search.validate.o attack.win64.o movegen.win64.o make_unmake.win64.o perft_lib.win64.o eval.win64.o search.win64.o
+	rm -f perft perft_diag engine_tests chilo selfplay_collect eval_fen futility_stats move_ordering_probe perft_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug futility_stats_debug move_ordering_probe_debug perft_tests_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate futility_stats_validate move_ordering_probe_validate perft_tests_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe futility_stats.exe move_ordering_probe.exe perft_tests.exe attack.o movegen.o make_unmake.o perft_lib.o eval.o search.o attack.debug.o movegen.debug.o make_unmake.debug.o perft_lib.debug.o eval.debug.o search.debug.o attack.validate.o movegen.validate.o make_unmake.validate.o perft_lib.validate.o eval.validate.o search.validate.o attack.win64.o movegen.win64.o make_unmake.win64.o perft_lib.win64.o eval.win64.o search.win64.o

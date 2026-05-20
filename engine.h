@@ -84,6 +84,30 @@ void undoNnueMove(const Position& pos, const Move& move, NnueAccumulator& acc);
 int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc);
 
 int staticExchangeEval(const Position& pos, const Move& move);
+
+enum class MoveOrderingMode {
+    Normal,
+    Quiescence,
+};
+
+struct MoveOrderingEntry {
+    Move move;
+    Piece movingPiece;
+    Piece capturedPiece;
+    int see;
+    int mvvLvaScore;
+    int orderScore;
+    bool capture;
+    bool promotion;
+    bool filteredByQsSee;
+};
+
+std::vector<MoveOrderingEntry> collectMoveOrderingDiagnostics(
+    const Position& pos,
+    MoveOrderingMode mode,
+    const Move* preferredMove = nullptr,
+    int ply = 0);
+
 bool loadNnueWeightsFile(const std::string& path, std::string& error);
 
 struct SearchResult;
