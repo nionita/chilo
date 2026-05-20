@@ -958,6 +958,15 @@ int testStaticExchangeEval() {
     }
 
     {
+        Position p = parseFEN("r2q3k/1p6/5n2/3pp3/2B1P1b1/5N2/2P5/R2Q3K b - - 0 1");
+        Move move;
+        if (!parseUCIMove(p, "g4f3", move) || staticExchangeEval(p, move) != 0) {
+            std::cout << "  FAIL (expected bishop-for-knight capture g4f3 to be SEE-zero)\n";
+            return 1;
+        }
+    }
+
+    {
         Position p = parseFEN("7k/8/8/3pP3/8/8/8/K7 w - d6 0 1");
         Move move;
         if (!parseUCIMove(p, "e5d6", move) || staticExchangeEval(p, move) <= 0) {

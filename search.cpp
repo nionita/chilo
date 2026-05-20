@@ -128,10 +128,10 @@ Color opposite(Color side) {
 int moveValueGuess(Piece piece) {
     switch (pt(piece)) {
         case 1: return 100;
-        case 2: return 320;
+        case 2: return 330;
         case 3: return 330;
-        case 4: return 500;
-        case 5: return 900;
+        case 4: return 550;
+        case 5: return 1000;
         default: return 0;
     }
 }

@@ -34,4 +34,8 @@ r1b1kb1r/pp1p1ppp/1qp3n1/8/B3P3/2N1B3/PP3PPP/R2Q1RK1 b kq - 0 1 # open-moves lin
 r1b1kb1r/pp1p1ppp/1qp3n1/8/B3P3/2N1B3/PP3PPP/R2Q1RK1 w kq - 0 1 # open-moves line 16 side-to-move flipped, multi-capture
 r3k2r/ppp2ppp/2n1bP2/2bq2N1/2pp4/2N5/PPP2PPP/R1BQR1K1 b kq - 0 1 # open-moves line 17 original, multi-capture
 r3k2r/ppp2ppp/2n1bP2/2bq2N1/2pp4/2N5/PPP2PPP/R1BQR1K1 w kq - 0 1 # open-moves line 17 side-to-move flipped, multi-capture
-r2qk2r/ppp2pbp/2B1b1p1/3n4/3P4/5N2/PP3PPP/RNBQR1K1 w kq - 0 1 # open-moves line 20 side-to-move flipped, multi-capture
+r2qk2r/ppp2pbp/2B1b1p1/3n4/3P4/5N2/PP3PPP/RNBQR1K1 b kq - 0 1 # open-moves line 20 original, in-check escapes
+r1q1k2r/pp1bbpp1/2np1N2/2p1p2p/4PP2/6PP/PPPPN1B1/R1BQ1RK1 b kq - 0 1 # open-moves line 29 original, in-check escapes
+rn2k2r/ppp1np1p/3N4/3P1bpq/2BP1p2/5N2/PPP3PP/R1BQ1K1R b kq - 0 1 # open-moves line 33 original, in-check escapes
+r1b1k2r/p1p1qppp/5n2/1Bpp2B1/1b1QP3/2N2P2/PPP3PP/R3K2R b KQkq - 0 1 # open-moves line 79 original, in-check escapes
+r1bq1b1r/pppp1kp1/8/4P1p1/3pn3/5Q2/PPP3PP/RNB1K2R b KQ - 0 1 # open-moves line 125 original, in-check escapes

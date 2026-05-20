@@ -160,13 +160,15 @@ void printEntry(const MoveOrderingEntry& entry) {
     std::cout << "\n";
 }
 
-void printEntries(const std::string& title, const std::vector<MoveOrderingEntry>& entries) {
+void printEntries(const std::string& title, const std::vector<MoveOrderingEntry>& entries, bool showQuietMoves) {
     std::cout << "  " << title << "\n";
     int hiddenQuietMoves = countHiddenQuietMoves(entries);
     for (const MoveOrderingEntry& entry : entries) {
-        if (isReportable(entry) && !entry.filteredByQsSee) printEntry(entry);
+        if ((showQuietMoves || isReportable(entry)) && !entry.filteredByQsSee) printEntry(entry);
     }
-    if (hiddenQuietMoves > 0) std::cout << "    ... " << hiddenQuietMoves << " quiet moves hidden\n";
+    if (!showQuietMoves && hiddenQuietMoves > 0) {
+        std::cout << "    ... " << hiddenQuietMoves << " quiet moves hidden\n";
+    }
 
     bool printedFilteredHeader = false;
     for (const MoveOrderingEntry& entry : entries) {
@@ -259,22 +261,28 @@ bool checkQuiescence(const Position& pos, const std::vector<MoveOrderingEntry>& 
 
 bool runCase(const FenCase& fenCase, const Options& options) {
     Position pos = parseFEN(fenCase.fen);
+    bool inCheckNow = inCheck(pos, pos.sideToMove);
     std::vector<std::string> errors;
     std::cout << "FEN line " << fenCase.lineNumber;
     if (!fenCase.label.empty()) std::cout << " (" << fenCase.label << ")";
     std::cout << ": " << fenCase.fen << "\n";
+    if (inCheckNow) std::cout << "  in_check: yes, showing all legal evasions\n";
 
     if (options.mode == ReportMode::Normal || options.mode == ReportMode::Both) {
         std::vector<MoveOrderingEntry> normal =
             collectMoveOrderingDiagnostics(pos, MoveOrderingMode::Normal);
-        printEntries("normal ordered tactical moves", normal);
+        printEntries(inCheckNow ? "normal ordered legal evasions" : "normal ordered tactical moves",
+                     normal,
+                     inCheckNow);
         if (options.checks) checkNormal(normal, errors);
     }
 
     if (options.mode == ReportMode::Quiescence || options.mode == ReportMode::Both) {
         std::vector<MoveOrderingEntry> qs =
             collectMoveOrderingDiagnostics(pos, MoveOrderingMode::Quiescence);
-        printEntries("qs ordered tactical moves", qs);
+        printEntries(inCheckNow ? "qs ordered legal evasions" : "qs ordered tactical moves",
+                     qs,
+                     inCheckNow);
         if (options.checks) checkQuiescence(pos, qs, errors);
     }
 
