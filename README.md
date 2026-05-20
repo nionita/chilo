@@ -316,6 +316,24 @@ python3 scripts/benchmark_fixed_depth.py \
   --output-dir /tmp/chilo-bench/results
 ```
 
+Benchmark a FEN file with the same runtime NNUE net for both engines:
+
+```bash
+python3 scripts/benchmark_fixed_depth.py \
+  --baseline ~/NNUE/Engines/chilo-0.6.3-avx2 \
+  --candidate ~/NNUE/Engines/chilo-0.6.10-avx2 \
+  --weights ~/NNUE/Nets/chilo-g3t5.bin \
+  --fen-file ~/Tune/open-moves/open-moves.fen \
+  --max-positions 50 \
+  --depth 10 \
+  --runs 1 \
+  --warmups 0 \
+  --output-dir /tmp/chilo-bench/mvvlva-corr
+```
+
+Use `--offset`, `--sample-rate`, and `--seed` to select different FEN subsets. Use
+`--baseline-weights` or `--candidate-weights` only when comparing different nets.
+
 ### Fastchess SPRT
 
 Use `scripts/run_fastchess_sprt.py` to run resumable two-engine SPRT matches through `fastchess`.
