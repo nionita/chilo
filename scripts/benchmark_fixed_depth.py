@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import random
 import re
 import statistics
 import subprocess
@@ -15,6 +16,7 @@ DEFAULT_POSITIONS = [
 ]
 
 INFO_RE = re.compile(r"^info depth (\d+) score .* nodes (\d+) time (\d+) nps (\d+)")
+BESTMOVE_RE = re.compile(r"^bestmove\s+(\S+)")
 
 
 def parse_position(value):
@@ -28,40 +30,187 @@ def parse_position(value):
     return name, command
 
 
-def run_once(binary, position_cmd, depth):
-    cmd = f"uci\n{position_cmd}\ngo depth {depth}\nquit\n"
-    start = time.perf_counter()
-    proc = subprocess.run([str(binary)], input=cmd, text=True, capture_output=True, check=True)
-    wall_ms = (time.perf_counter() - start) * 1000.0
+def parse_probability(value):
+    try:
+        probability = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("probability must be a number") from exc
+    if probability < 0.0 or probability > 1.0:
+        raise argparse.ArgumentTypeError("probability must be between 0 and 1")
+    return probability
 
+
+def strip_inline_comment(line):
+    return line.split("#", 1)[0].strip()
+
+
+def fen_position_name(line_number):
+    return f"fen_{line_number:06d}"
+
+
+def load_fen_positions(path, offset, max_positions, sample_rate, seed):
+    rng = random.Random(seed)
+    positions = []
+    valid_rows = 0
+    source = Path(path)
+    with source.open() as handle:
+        for line_number, line in enumerate(handle, start=1):
+            fen = strip_inline_comment(line)
+            if not fen:
+                continue
+            valid_rows += 1
+            if valid_rows <= offset:
+                continue
+            if sample_rate < 1.0 and rng.random() > sample_rate:
+                continue
+            if len(fen.split()) < 6:
+                raise ValueError(f"{source}:{line_number}: expected a full FEN with at least 6 fields")
+            positions.append(
+                {
+                    "name": fen_position_name(line_number),
+                    "cmd": f"position fen {fen}",
+                    "fen": fen,
+                    "source": str(source),
+                    "line_number": line_number,
+                }
+            )
+            if max_positions and len(positions) >= max_positions:
+                break
+    if not positions:
+        raise ValueError(f"no FEN positions selected from {source}")
+    return positions
+
+
+def build_engine_argv(binary, weights):
+    argv = [str(binary)]
+    if weights:
+        argv.extend(["--weights", str(weights)])
+    return argv
+
+
+def run_once(engine_argv, position_cmd, depth):
+    search_cmd = f"uci\n{position_cmd}\ngo depth {depth}\n"
+    start = time.perf_counter()
+    proc = subprocess.Popen(
+        engine_argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_lines = []
     last_info = None
-    for line in proc.stdout.splitlines():
-        match = INFO_RE.match(line)
-        if match and int(match.group(1)) == depth:
-            last_info = {
-                "nodes": int(match.group(2)),
-                "engine_ms": int(match.group(3)),
-                "nps": int(match.group(4)),
-                "line": line,
-            }
+    bestmove = None
+    try:
+        proc.stdin.write(search_cmd)
+        proc.stdin.flush()
+
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            line = raw_line.rstrip("\n")
+            stdout_lines.append(line)
+            match = INFO_RE.match(line)
+            if match and int(match.group(1)) == depth:
+                last_info = {
+                    "nodes": int(match.group(2)),
+                    "engine_ms": int(match.group(3)),
+                    "nps": int(match.group(4)),
+                    "line": line,
+                }
+            bestmove_match = BESTMOVE_RE.match(line)
+            if bestmove_match:
+                bestmove = bestmove_match.group(1)
+                break
+
+        wall_ms = (time.perf_counter() - start) * 1000.0
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write("quit\n")
+                proc.stdin.flush()
+            except BrokenPipeError:
+                pass
+        try:
+            remaining_stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            remaining_stdout, stderr = proc.communicate()
+            raise RuntimeError(f"engine did not exit after bestmove: {' '.join(engine_argv)}")
+        stdout_lines.extend(remaining_stdout.splitlines())
+    except Exception:
+        proc.kill()
+        proc.communicate()
+        raise
+
+    stdout_text = "\n".join(stdout_lines)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"engine command failed with exit code {proc.returncode}: {' '.join(engine_argv)}\n"
+            f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr}"
+        )
 
     if last_info is None:
         raise RuntimeError(
-            f"no depth {depth} info line for {binary} / {position_cmd}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+            f"no depth {depth} info line for {' '.join(engine_argv)} / {position_cmd}\n"
+            f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr}"
         )
 
     last_info["wall_ms"] = wall_ms
+    last_info["bestmove"] = bestmove
     return last_info
 
 
 def summarize_variant(runs):
+    median_engine_ms = statistics.median(run["engine_ms"] for run in runs)
+    median_wall_ms = statistics.median(run["wall_ms"] for run in runs)
+    median_nodes = statistics.median(run["nodes"] for run in runs)
     return {
         "runs": runs,
-        "median_engine_ms": statistics.median(run["engine_ms"] for run in runs),
-        "median_wall_ms": round(statistics.median(run["wall_ms"] for run in runs), 3),
+        "median_engine_ms": median_engine_ms,
+        "median_wall_ms": round(median_wall_ms, 3),
         "median_nps": statistics.median(run["nps"] for run in runs),
-        "nodes": runs[0]["nodes"],
+        "nodes": median_nodes,
     }
+
+
+def pct_delta(candidate, baseline):
+    if baseline == 0:
+        return None
+    return round((candidate - baseline) * 100.0 / baseline, 2)
+
+
+def summarize_totals(positions):
+    totals = {"baseline": {}, "candidate": {}}
+    for variant_name in ("baseline", "candidate"):
+        variant_summaries = [position["variants"][variant_name] for position in positions]
+        total_nodes = sum(variant["nodes"] for variant in variant_summaries)
+        total_engine_ms = sum(variant["median_engine_ms"] for variant in variant_summaries)
+        total_wall_ms = sum(variant["median_wall_ms"] for variant in variant_summaries)
+        totals[variant_name] = {
+            "total_nodes": total_nodes,
+            "total_engine_ms": total_engine_ms,
+            "total_wall_ms": round(total_wall_ms, 3),
+            "median_engine_ms_per_position": statistics.median(
+                variant["median_engine_ms"] for variant in variant_summaries
+            ),
+            "weighted_nps": int(total_nodes * 1000 / total_engine_ms) if total_engine_ms > 0 else 0,
+        }
+
+    base = totals["baseline"]
+    cand = totals["candidate"]
+    totals["delta"] = {
+        "total_nodes_pct": pct_delta(cand["total_nodes"], base["total_nodes"]),
+        "total_engine_ms_pct": pct_delta(cand["total_engine_ms"], base["total_engine_ms"]),
+        "total_wall_ms_pct": pct_delta(cand["total_wall_ms"], base["total_wall_ms"]),
+        "weighted_nps_pct": pct_delta(cand["weighted_nps"], base["weighted_nps"]),
+    }
+    return totals
+
+
+def format_number(value):
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
 
 
 def main():
@@ -71,6 +220,14 @@ def main():
     parser.add_argument("--depth", type=int, default=6, help="Fixed search depth")
     parser.add_argument("--runs", type=int, default=5, help="Measured runs per position and binary")
     parser.add_argument("--warmups", type=int, default=1, help="Warm-up runs per position and binary")
+    parser.add_argument("--fen-file", help="Optional file with one FEN per non-empty line")
+    parser.add_argument("--max-positions", type=int, default=0, help="Maximum selected FEN positions; 0 means unlimited")
+    parser.add_argument("--offset", type=int, default=0, help="Skip this many valid FEN rows before selecting")
+    parser.add_argument("--sample-rate", type=parse_probability, default=1.0, help="Randomly keep FEN rows with probability P")
+    parser.add_argument("--seed", type=int, default=1, help="Random seed for --sample-rate")
+    parser.add_argument("--weights", help="NNUE weights file to pass to both engines")
+    parser.add_argument("--baseline-weights", help="NNUE weights file to pass only to the baseline engine")
+    parser.add_argument("--candidate-weights", help="NNUE weights file to pass only to the candidate engine")
     parser.add_argument(
         "--position",
         action="append",
@@ -80,55 +237,122 @@ def main():
     )
     parser.add_argument("--output-dir", help="Optional directory for JSON and text summaries")
     args = parser.parse_args()
+    if args.depth <= 0:
+        parser.error("--depth must be positive")
+    if args.runs <= 0:
+        parser.error("--runs must be positive")
+    if args.warmups < 0:
+        parser.error("--warmups must be non-negative")
+    if args.max_positions < 0:
+        parser.error("--max-positions must be non-negative")
+    if args.offset < 0:
+        parser.error("--offset must be non-negative")
 
     baseline = Path(args.baseline)
     candidate = Path(args.candidate)
-    positions = args.position if args.position else DEFAULT_POSITIONS
+    baseline_weights = args.baseline_weights or args.weights
+    candidate_weights = args.candidate_weights or args.weights
+
+    positions = []
+    if args.fen_file:
+        positions.extend(
+            load_fen_positions(args.fen_file, args.offset, args.max_positions, args.sample_rate, args.seed)
+        )
+    if args.position:
+        positions.extend({"name": name, "cmd": cmd} for name, cmd in args.position)
+    if not positions:
+        positions = [{"name": name, "cmd": cmd} for name, cmd in DEFAULT_POSITIONS]
 
     results = {
         "depth": args.depth,
         "runs": args.runs,
         "warmups": args.warmups,
+        "fen_file": args.fen_file,
+        "max_positions": args.max_positions,
+        "offset": args.offset,
+        "sample_rate": args.sample_rate,
+        "seed": args.seed,
+        "baseline": str(baseline),
+        "candidate": str(candidate),
+        "baseline_weights": str(baseline_weights) if baseline_weights else None,
+        "candidate_weights": str(candidate_weights) if candidate_weights else None,
         "positions": [],
     }
 
-    for position_name, position_cmd in positions:
-        position_result = {"name": position_name, "cmd": position_cmd, "variants": {}}
+    engine_argvs = {
+        "baseline": build_engine_argv(baseline, baseline_weights),
+        "candidate": build_engine_argv(candidate, candidate_weights),
+    }
 
-        for variant_name, binary in (("baseline", baseline), ("candidate", candidate)):
+    for position in positions:
+        position_result = {**position, "variants": {}}
+
+        for variant_name in ("baseline", "candidate"):
             for _ in range(args.warmups):
-                run_once(binary, position_cmd, args.depth)
-            measured_runs = [run_once(binary, position_cmd, args.depth) for _ in range(args.runs)]
+                run_once(engine_argvs[variant_name], position["cmd"], args.depth)
+            measured_runs = [
+                run_once(engine_argvs[variant_name], position["cmd"], args.depth)
+                for _ in range(args.runs)
+            ]
             position_result["variants"][variant_name] = summarize_variant(measured_runs)
 
         base = position_result["variants"]["baseline"]
         cand = position_result["variants"]["candidate"]
         position_result["delta"] = {
-            "engine_ms_pct": round((cand["median_engine_ms"] - base["median_engine_ms"]) * 100.0 / base["median_engine_ms"], 2),
-            "wall_ms_pct": round((cand["median_wall_ms"] - base["median_wall_ms"]) * 100.0 / base["median_wall_ms"], 2),
-            "nps_pct": round((cand["median_nps"] - base["median_nps"]) * 100.0 / base["median_nps"], 2),
+            "nodes_pct": pct_delta(cand["nodes"], base["nodes"]),
+            "engine_ms_pct": pct_delta(cand["median_engine_ms"], base["median_engine_ms"]),
+            "wall_ms_pct": pct_delta(cand["median_wall_ms"], base["median_wall_ms"]),
+            "nps_pct": pct_delta(cand["median_nps"], base["median_nps"]),
         }
         results["positions"].append(position_result)
+
+    results["aggregate"] = summarize_totals(results["positions"])
 
     lines = []
     lines.append(
         f"Fixed-depth search benchmark: depth {args.depth}, {args.runs} measured runs after {args.warmups} warm-up run(s)"
     )
+    lines.append(f"Positions: {len(results['positions'])}")
+    if args.fen_file:
+        lines.append(
+            f"FEN file: {args.fen_file} offset={args.offset} max_positions={args.max_positions} "
+            f"sample_rate={args.sample_rate} seed={args.seed}"
+        )
+    if baseline_weights or candidate_weights:
+        lines.append(f"weights: baseline={baseline_weights or '(sidecar/builtin)'} candidate={candidate_weights or '(sidecar/builtin)'}")
     lines.append("")
     for position in results["positions"]:
         lines.append(f"[{position['name']}]")
         for variant_name in ("baseline", "candidate"):
             variant = position["variants"][variant_name]
             lines.append(
-                f"  {variant_name}: nodes={variant['nodes']} median_engine_ms={variant['median_engine_ms']} "
-                f"median_wall_ms={variant['median_wall_ms']:.3f} median_nps={variant['median_nps']}"
+                f"  {variant_name}: nodes={format_number(variant['nodes'])} "
+                f"median_engine_ms={format_number(variant['median_engine_ms'])} "
+                f"median_wall_ms={variant['median_wall_ms']:.3f} median_nps={format_number(variant['median_nps'])} "
+                f"bestmove={variant['runs'][0]['bestmove']}"
             )
         delta = position["delta"]
         lines.append(
-            f"  delta candidate-vs-baseline: engine_ms={delta['engine_ms_pct']}% "
+            f"  delta candidate-vs-baseline: nodes={delta['nodes_pct']}% engine_ms={delta['engine_ms_pct']}% "
             f"wall_ms={delta['wall_ms_pct']}% nps={delta['nps_pct']}%"
         )
         lines.append("")
+
+    aggregate = results["aggregate"]
+    lines.append("[aggregate]")
+    for variant_name in ("baseline", "candidate"):
+        variant = aggregate[variant_name]
+        lines.append(
+            f"  {variant_name}: total_nodes={format_number(variant['total_nodes'])} "
+            f"total_engine_ms={format_number(variant['total_engine_ms'])} "
+            f"median_engine_ms_per_position={format_number(variant['median_engine_ms_per_position'])} "
+            f"weighted_nps={variant['weighted_nps']}"
+        )
+    delta = aggregate["delta"]
+    lines.append(
+        f"  delta candidate-vs-baseline: total_nodes={delta['total_nodes_pct']}% "
+        f"total_engine_ms={delta['total_engine_ms_pct']}% weighted_nps={delta['weighted_nps_pct']}%"
+    )
 
     summary = "\n".join(lines)
     print(summary)
