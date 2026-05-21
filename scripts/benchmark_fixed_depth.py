@@ -89,35 +89,70 @@ def build_engine_argv(binary, weights):
 
 
 def run_once(engine_argv, position_cmd, depth):
-    cmd = f"uci\n{position_cmd}\ngo depth {depth}\nquit\n"
+    search_cmd = f"uci\n{position_cmd}\ngo depth {depth}\n"
     start = time.perf_counter()
-    proc = subprocess.run(engine_argv, input=cmd, text=True, capture_output=True)
-    wall_ms = (time.perf_counter() - start) * 1000.0
+    proc = subprocess.Popen(
+        engine_argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_lines = []
+    last_info = None
+    bestmove = None
+    try:
+        proc.stdin.write(search_cmd)
+        proc.stdin.flush()
+
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            line = raw_line.rstrip("\n")
+            stdout_lines.append(line)
+            match = INFO_RE.match(line)
+            if match and int(match.group(1)) == depth:
+                last_info = {
+                    "nodes": int(match.group(2)),
+                    "engine_ms": int(match.group(3)),
+                    "nps": int(match.group(4)),
+                    "line": line,
+                }
+            bestmove_match = BESTMOVE_RE.match(line)
+            if bestmove_match:
+                bestmove = bestmove_match.group(1)
+                break
+
+        wall_ms = (time.perf_counter() - start) * 1000.0
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write("quit\n")
+                proc.stdin.flush()
+            except BrokenPipeError:
+                pass
+        try:
+            remaining_stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            remaining_stdout, stderr = proc.communicate()
+            raise RuntimeError(f"engine did not exit after bestmove: {' '.join(engine_argv)}")
+        stdout_lines.extend(remaining_stdout.splitlines())
+    except Exception:
+        proc.kill()
+        proc.communicate()
+        raise
+
+    stdout_text = "\n".join(stdout_lines)
     if proc.returncode != 0:
         raise RuntimeError(
             f"engine command failed with exit code {proc.returncode}: {' '.join(engine_argv)}\n"
-            f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+            f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr}"
         )
-
-    last_info = None
-    bestmove = None
-    for line in proc.stdout.splitlines():
-        match = INFO_RE.match(line)
-        if match and int(match.group(1)) == depth:
-            last_info = {
-                "nodes": int(match.group(2)),
-                "engine_ms": int(match.group(3)),
-                "nps": int(match.group(4)),
-                "line": line,
-            }
-        bestmove_match = BESTMOVE_RE.match(line)
-        if bestmove_match:
-            bestmove = bestmove_match.group(1)
 
     if last_info is None:
         raise RuntimeError(
             f"no depth {depth} info line for {' '.join(engine_argv)} / {position_cmd}\n"
-            f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+            f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr}"
         )
 
     last_info["wall_ms"] = wall_ms
