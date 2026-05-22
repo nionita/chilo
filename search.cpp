@@ -756,7 +756,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
     const int alphaOriginal = alpha;
     const bool inCheckNow = inCheck(pos, pos.sideToMove);
 
-    if (allowNull && !isPv && !inCheckNow && depth >= 3 && hasNonPawnMaterial(pos, pos.sideToMove)) {
+    if (allowNull && !isPv && !inCheckNow && depth >= 2 && hasNonPawnMaterial(pos, pos.sideToMove)) {
         noteNullMoveTry(stats, depth);
         NullMoveState nullState;
         doNullMove(pos, nullState);
