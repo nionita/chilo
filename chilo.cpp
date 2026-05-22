@@ -89,10 +89,27 @@ void printSearchInfo(const SearchResult& result, void*) {
               << " time " << result.elapsedMs
               << " nps " << nps
               << " qnodes " << result.stats.qnodes
+              << " qcheck " << result.stats.qcheckNodes
+              << " qnormal " << result.stats.qnormalNodes
+              << " qgen " << result.stats.qMovesGenerated
+              << " qsee_skip " << result.stats.qSeeSkipped
+              << " qdelta_skip " << result.stats.qDeltaSkipped
+              << " qsearched " << result.stats.qMovesSearched
+              << " qstandpat_cut " << result.stats.qStandPatCutoffs
+              << " qcut1 " << result.stats.qCutoffs[0]
+              << " qcut2 " << result.stats.qCutoffs[1]
+              << " qcut3 " << result.stats.qCutoffs[2]
+              << " qcut4p " << result.stats.qCutoffs[3]
               << " cut1 " << result.stats.nonPvCutoffs[0]
               << " cut2 " << result.stats.nonPvCutoffs[1]
               << " cut3 " << result.stats.nonPvCutoffs[2]
-              << " cut4p " << result.stats.nonPvCutoffs[3];
+              << " cut4p " << result.stats.nonPvCutoffs[3]
+              << " cut_tt " << result.stats.nonPvTtCutoffs
+              << " cut_cap " << result.stats.nonPvCaptureCutoffs
+              << " cut_killer " << result.stats.nonPvKillerCutoffs
+              << " cut_quiet " << result.stats.nonPvQuietCutoffs
+              << " cut_promo " << result.stats.nonPvPromotionCutoffs
+              << " cut_other " << result.stats.nonPvOtherCutoffs;
     if (result.pvLength > 0) {
         std::cout << " pv";
         for (int i = 0; i < result.pvLength; i++) std::cout << " " << moveToUCI(result.pv[i]);

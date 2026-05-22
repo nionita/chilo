@@ -26,6 +26,15 @@ constexpr std::size_t TT_SIZE = 1u << 20;
 
 enum TTFlag : uint8_t { TT_NONE, TT_EXACT, TT_LOWER, TT_UPPER };
 
+enum CutoffMoveType : uint8_t {
+    CUTOFF_TT,
+    CUTOFF_CAPTURE,
+    CUTOFF_KILLER,
+    CUTOFF_QUIET,
+    CUTOFF_PROMOTION,
+    CUTOFF_OTHER,
+};
+
 struct TTEntry {
     uint64_t key = 0;
     Move bestMove{};
@@ -513,13 +522,71 @@ int evaluateSearchPosition(const Position& pos, const SearchNnueState& state, in
 
 void addSearchStats(SearchStats& target, const SearchStats& source) {
     target.qnodes += source.qnodes;
-    for (int i = 0; i < 4; i++) target.nonPvCutoffs[i] += source.nonPvCutoffs[i];
+    target.qcheckNodes += source.qcheckNodes;
+    target.qnormalNodes += source.qnormalNodes;
+    target.qMovesGenerated += source.qMovesGenerated;
+    target.qSeeSkipped += source.qSeeSkipped;
+    target.qDeltaSkipped += source.qDeltaSkipped;
+    target.qMovesSearched += source.qMovesSearched;
+    target.qStandPatCutoffs += source.qStandPatCutoffs;
+    for (int i = 0; i < 4; i++) {
+        target.qCutoffs[i] += source.qCutoffs[i];
+        target.nonPvCutoffs[i] += source.nonPvCutoffs[i];
+    }
+    target.nonPvTtCutoffs += source.nonPvTtCutoffs;
+    target.nonPvCaptureCutoffs += source.nonPvCaptureCutoffs;
+    target.nonPvKillerCutoffs += source.nonPvKillerCutoffs;
+    target.nonPvQuietCutoffs += source.nonPvQuietCutoffs;
+    target.nonPvPromotionCutoffs += source.nonPvPromotionCutoffs;
+    target.nonPvOtherCutoffs += source.nonPvOtherCutoffs;
 }
 
-void noteNonPvCutoff(SearchStats& stats, int moveIndex) {
+void noteQSCutoff(SearchStats& stats, int moveIndex) {
+    int bucket = moveIndex;
+    if (bucket > 3) bucket = 3;
+    stats.qCutoffs[bucket]++;
+}
+
+void noteNonPvCutoff(SearchStats& stats, int moveIndex, CutoffMoveType moveType) {
     int bucket = moveIndex;
     if (bucket > 3) bucket = 3;
     stats.nonPvCutoffs[bucket]++;
+
+    switch (moveType) {
+        case CUTOFF_TT:
+            stats.nonPvTtCutoffs++;
+            break;
+        case CUTOFF_CAPTURE:
+            stats.nonPvCaptureCutoffs++;
+            break;
+        case CUTOFF_KILLER:
+            stats.nonPvKillerCutoffs++;
+            break;
+        case CUTOFF_QUIET:
+            stats.nonPvQuietCutoffs++;
+            break;
+        case CUTOFF_PROMOTION:
+            stats.nonPvPromotionCutoffs++;
+            break;
+        case CUTOFF_OTHER:
+            stats.nonPvOtherCutoffs++;
+            break;
+    }
+}
+
+CutoffMoveType classifyCutoffMove(const Position& pos, const Move& move, const Move* preferredMove, int ply) {
+    if (preferredMove != nullptr && movesEqual(move, *preferredMove)) return CUTOFF_TT;
+    if (isCaptureMove(pos, move)) return CUTOFF_CAPTURE;
+    if (isQuietMove(pos, move)) {
+        if (ply < MAX_SEARCH_DEPTH &&
+            (movesEqual(move, g_killers[ply][0]) || movesEqual(move, g_killers[ply][1]))) {
+            return CUTOFF_KILLER;
+        }
+        if (move.promotion != EMPTY) return CUTOFF_PROMOTION;
+        return CUTOFF_QUIET;
+    }
+    if (move.promotion != EMPTY) return CUTOFF_PROMOTION;
+    return CUTOFF_OTHER;
 }
 
 int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, int alpha, int beta,
@@ -537,12 +604,15 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
     nodes++;
     stats.qnodes++;
     bool inCheckNow = inCheck(pos, pos.sideToMove);
+    if (inCheckNow) stats.qcheckNodes++;
+    else stats.qnormalNodes++;
     int standPat = 0;
     SearchLeaf bestLeaf{};
 
     if (!inCheckNow) {
         standPat = evaluateSearchPosition(pos, nnueState, nnuePly);
         if (standPat >= beta) {
+            stats.qStandPatCutoffs++;
             setLeaf(leaf, pos, standPat, false, false);
             return beta;
         }
@@ -554,6 +624,7 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
 
     Move moves[MAX_MOVES];
     int moveCount = inCheckNow ? genLegalMoves(pos, moves) : genLegalNoisyMoves(pos, moves);
+    stats.qMovesGenerated += moveCount;
     if (moveCount == 0) {
         if (inCheckNow) {
             int score = terminalScore(pos, ply);
@@ -568,7 +639,10 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
         int filteredCount = 0;
         for (int i = 0; i < moveCount; i++) {
             const Move& move = moves[i];
-            if (isCaptureMove(pos, move) && staticExchangeEval(pos, move) < 0) continue;
+            if (isCaptureMove(pos, move) && staticExchangeEval(pos, move) < 0) {
+                stats.qSeeSkipped++;
+                continue;
+            }
             moves[filteredCount++] = move;
         }
         moveCount = filteredCount;
@@ -580,14 +654,20 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
 
     orderQSMoves(pos, moves, moveCount);
 
+    int searchedMoveIndex = 0;
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
         if (!inCheckNow) {
             Piece capturedPiece = capturedPieceForMove(pos, move);
             int gainUpperBound = standPat + moveValueGuess(capturedPiece) + promotionGain(move) + DELTA_MARGIN;
-            if (gainUpperBound < alpha) continue;
+            if (gainUpperBound < alpha) {
+                stats.qDeltaSkipped++;
+                continue;
+            }
         }
 
+        int cutoffMoveIndex = searchedMoveIndex++;
+        stats.qMovesSearched++;
         bool childUsesNnue = childPieceCountAfterMove(pos, move) > NNUE_REBUILD_PIECE_THRESHOLD;
         NnueMoveDelta nnueDelta{};
         if (childUsesNnue) nnueDelta = makeNnueMoveDelta(pos, move);
@@ -604,6 +684,7 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
 
         if (shouldStop()) return alpha;
         if (score >= beta) {
+            noteQSCutoff(stats, cutoffMoveIndex);
             if (leaf != nullptr) {
                 if (childLeaf.valid) *leaf = childLeaf;
                 else leaf->valid = false;
@@ -687,6 +768,8 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
         bool quiet = isQuietMove(pos, move);
+        CutoffMoveType cutoffMoveType =
+            classifyCutoffMove(pos, move, isValidMove(ttMove) ? &ttMove : nullptr, ply);
         HistoryMoveInfo moveInfo = historyMoveInfo(pos, move);
 
         bool childUsesNnue = childPieceCountAfterMove(pos, move) > NNUE_REBUILD_PIECE_THRESHOLD;
@@ -757,7 +840,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
             pvLength[ply] = pvLength[ply + 1] + 1;
         }
         if (score >= beta) {
-            if (!isPv) noteNonPvCutoff(stats, i);
+            if (!isPv) noteNonPvCutoff(stats, i, cutoffMoveType);
             if (quiet) noteQuietBetaCutoff(pos.sideToMove, ply, move, depth);
             storeTT(pos.hashKey, depth, ply, beta, TT_LOWER, move);
             if (leaf != nullptr) {

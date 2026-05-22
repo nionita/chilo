@@ -17,8 +17,35 @@ DEFAULT_POSITIONS = [
 
 INFO_RE = re.compile(r"^info depth (\d+) score .* nodes (\d+) time (\d+) nps (\d+)(.*)$")
 BESTMOVE_RE = re.compile(r"^bestmove\s+(\S+)")
-EXTRA_INFO_RE = re.compile(r"\b(qnodes|cut1|cut2|cut3|cut4p)\s+(\d+)\b")
-SEARCH_STAT_KEYS = ("qnodes", "cut1", "cut2", "cut3", "cut4p")
+EXTRA_INFO_RE = re.compile(
+    r"\b(qnodes|qcheck|qnormal|qgen|qsee_skip|qdelta_skip|qsearched|qstandpat_cut|"
+    r"qcut1|qcut2|qcut3|qcut4p|cut1|cut2|cut3|cut4p|cut_tt|cut_cap|cut_killer|"
+    r"cut_quiet|cut_promo|cut_other)\s+(\d+)\b"
+)
+SEARCH_STAT_KEYS = (
+    "qnodes",
+    "qcheck",
+    "qnormal",
+    "qgen",
+    "qsee_skip",
+    "qdelta_skip",
+    "qsearched",
+    "qstandpat_cut",
+    "qcut1",
+    "qcut2",
+    "qcut3",
+    "qcut4p",
+    "cut1",
+    "cut2",
+    "cut3",
+    "cut4p",
+    "cut_tt",
+    "cut_cap",
+    "cut_killer",
+    "cut_quiet",
+    "cut_promo",
+    "cut_other",
+)
 
 
 def parse_position(value):
@@ -232,12 +259,39 @@ def format_search_stats(values):
     cut_total = sum(cut_values)
     cut1_pct = round(cut_values[0] * 100.0 / cut_total, 2) if cut_total else 0.0
     qnode_pct = round(values["qnodes"] * 100.0 / values["nodes"], 2) if values["nodes"] else 0.0
-    return (
+    parts = [
         f" qnodes={format_number(values['qnodes'])} qnodes_pct={qnode_pct}% "
         f"cuts={format_number(cut_total)} cut1={format_number(cut_values[0])} "
         f"cut2={format_number(cut_values[1])} cut3={format_number(cut_values[2])} "
         f"cut4p={format_number(cut_values[3])} cut1_pct={cut1_pct}%"
-    )
+    ]
+    if "qcheck" in values:
+        qcheck_pct = round(values["qcheck"] * 100.0 / values["qnodes"], 2) if values["qnodes"] else 0.0
+        qsearched_pct = round(values.get("qsearched", 0) * 100.0 / values["qgen"], 2) if values.get("qgen", 0) else 0.0
+        qcut_values = [values.get(key, 0) for key in ("qcut1", "qcut2", "qcut3", "qcut4p")]
+        qcut_total = sum(qcut_values)
+        qcut1_pct = round(qcut_values[0] * 100.0 / qcut_total, 2) if qcut_total else 0.0
+        parts.append(
+            f" qcheck={format_number(values['qcheck'])} qcheck_pct={qcheck_pct}% "
+            f"qnormal={format_number(values.get('qnormal', 0))} qgen={format_number(values.get('qgen', 0))} "
+            f"qsearched={format_number(values.get('qsearched', 0))} qsearched_pct={qsearched_pct}% "
+            f"qsee_skip={format_number(values.get('qsee_skip', 0))} "
+            f"qdelta_skip={format_number(values.get('qdelta_skip', 0))} "
+            f"qstandpat_cut={format_number(values.get('qstandpat_cut', 0))} "
+            f"qcuts={format_number(qcut_total)} qcut1={format_number(qcut_values[0])} "
+            f"qcut2={format_number(qcut_values[1])} qcut3={format_number(qcut_values[2])} "
+            f"qcut4p={format_number(qcut_values[3])} qcut1_pct={qcut1_pct}%"
+        )
+    if "cut_tt" in values:
+        parts.append(
+            f" cut_tt={format_number(values.get('cut_tt', 0))} "
+            f"cut_cap={format_number(values.get('cut_cap', 0))} "
+            f"cut_killer={format_number(values.get('cut_killer', 0))} "
+            f"cut_quiet={format_number(values.get('cut_quiet', 0))} "
+            f"cut_promo={format_number(values.get('cut_promo', 0))} "
+            f"cut_other={format_number(values.get('cut_other', 0))}"
+        )
+    return "".join(parts)
 
 
 def format_number(value):

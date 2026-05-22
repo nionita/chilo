@@ -148,7 +148,21 @@ struct SearchLimits {
 
 struct SearchStats {
     uint64_t qnodes = 0;
+    uint64_t qcheckNodes = 0;
+    uint64_t qnormalNodes = 0;
+    uint64_t qMovesGenerated = 0;
+    uint64_t qSeeSkipped = 0;
+    uint64_t qDeltaSkipped = 0;
+    uint64_t qMovesSearched = 0;
+    uint64_t qStandPatCutoffs = 0;
+    uint64_t qCutoffs[4] = {};
     uint64_t nonPvCutoffs[4] = {};
+    uint64_t nonPvTtCutoffs = 0;
+    uint64_t nonPvCaptureCutoffs = 0;
+    uint64_t nonPvKillerCutoffs = 0;
+    uint64_t nonPvQuietCutoffs = 0;
+    uint64_t nonPvPromotionCutoffs = 0;
+    uint64_t nonPvOtherCutoffs = 0;
 };
 
 struct SearchResult {
