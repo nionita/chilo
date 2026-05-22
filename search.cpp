@@ -414,15 +414,15 @@ void noteQuietBetaCutoff(Color side, int ply, const Move& move, int depth) {
 int moveOrderScore(const Position& pos, const Move& move, const Move* preferredMove, int ply) {
     if (preferredMove != nullptr && movesEqual(move, *preferredMove)) return 1000000;
 
+    if (isCaptureMove(pos, move)) {
+        int see = staticExchangeEval(pos, move);
+        int bucket = see >= 0 ? 900000 : 100000;
+        return bucket + captureOrderScore(pos, move);
+    }
+
     if (isQuietMove(pos, move)) {
         if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][0])) return 850000;
         if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][1])) return 800000;
-    }
-
-    if (isCaptureMove(pos, move)) {
-        int see = staticExchangeEval(pos, move);
-        int bucket = see >= 0 ? 700000 : 100000;
-        return bucket + captureOrderScore(pos, move);
     }
 
     if (move.promotion != EMPTY) return 600000 + moveValueGuess(move.promotion);
