@@ -20,7 +20,8 @@ BESTMOVE_RE = re.compile(r"^bestmove\s+(\S+)")
 EXTRA_INFO_RE = re.compile(
     r"\b(qnodes|qcheck|qnormal|qgen|qsee_skip|qdelta_skip|qsearched|qstandpat_cut|"
     r"qcut1|qcut2|qcut3|qcut4p|cut1|cut2|cut3|cut4p|cut_tt|cut_cap|cut_killer|"
-    r"cut_quiet|cut_promo|cut_other)\s+(\d+)\b"
+    r"cut_quiet|cut_promo|cut_other|null_try|null_cut|null_try_d2|null_cut_d2|"
+    r"null_try_d3|null_cut_d3|null_try_d4p|null_cut_d4p)\s+(\d+)\b"
 )
 SEARCH_STAT_KEYS = (
     "qnodes",
@@ -45,6 +46,14 @@ SEARCH_STAT_KEYS = (
     "cut_quiet",
     "cut_promo",
     "cut_other",
+    "null_try",
+    "null_cut",
+    "null_try_d2",
+    "null_cut_d2",
+    "null_try_d3",
+    "null_cut_d3",
+    "null_try_d4p",
+    "null_cut_d4p",
 )
 
 
@@ -290,6 +299,37 @@ def format_search_stats(values):
             f"cut_quiet={format_number(values.get('cut_quiet', 0))} "
             f"cut_promo={format_number(values.get('cut_promo', 0))} "
             f"cut_other={format_number(values.get('cut_other', 0))}"
+        )
+    if "null_try" in values:
+        null_cut_pct = round(values.get("null_cut", 0) * 100.0 / values["null_try"], 2) if values["null_try"] else 0.0
+        null_cut_d2_pct = (
+            round(values.get("null_cut_d2", 0) * 100.0 / values["null_try_d2"], 2)
+            if values.get("null_try_d2", 0)
+            else 0.0
+        )
+        null_cut_d3_pct = (
+            round(values.get("null_cut_d3", 0) * 100.0 / values["null_try_d3"], 2)
+            if values.get("null_try_d3", 0)
+            else 0.0
+        )
+        null_cut_d4p_pct = (
+            round(values.get("null_cut_d4p", 0) * 100.0 / values["null_try_d4p"], 2)
+            if values.get("null_try_d4p", 0)
+            else 0.0
+        )
+        parts.append(
+            f" null_try={format_number(values['null_try'])} "
+            f"null_cut={format_number(values.get('null_cut', 0))} "
+            f"null_cut_pct={null_cut_pct}% "
+            f"null_try_d2={format_number(values.get('null_try_d2', 0))} "
+            f"null_cut_d2={format_number(values.get('null_cut_d2', 0))} "
+            f"null_cut_d2_pct={null_cut_d2_pct}% "
+            f"null_try_d3={format_number(values.get('null_try_d3', 0))} "
+            f"null_cut_d3={format_number(values.get('null_cut_d3', 0))} "
+            f"null_cut_d3_pct={null_cut_d3_pct}% "
+            f"null_try_d4p={format_number(values.get('null_try_d4p', 0))} "
+            f"null_cut_d4p={format_number(values.get('null_cut_d4p', 0))} "
+            f"null_cut_d4p_pct={null_cut_d4p_pct}%"
         )
     return "".join(parts)
 

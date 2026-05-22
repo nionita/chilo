@@ -163,6 +163,14 @@ struct SearchStats {
     uint64_t nonPvQuietCutoffs = 0;
     uint64_t nonPvPromotionCutoffs = 0;
     uint64_t nonPvOtherCutoffs = 0;
+    uint64_t nullMoveTries = 0;
+    uint64_t nullMoveCutoffs = 0;
+    uint64_t nullMoveTriesD2 = 0;
+    uint64_t nullMoveCutoffsD2 = 0;
+    uint64_t nullMoveTriesD3 = 0;
+    uint64_t nullMoveCutoffsD3 = 0;
+    uint64_t nullMoveTriesD4p = 0;
+    uint64_t nullMoveCutoffsD4p = 0;
 };
 
 struct SearchResult {

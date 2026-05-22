@@ -539,6 +539,14 @@ void addSearchStats(SearchStats& target, const SearchStats& source) {
     target.nonPvQuietCutoffs += source.nonPvQuietCutoffs;
     target.nonPvPromotionCutoffs += source.nonPvPromotionCutoffs;
     target.nonPvOtherCutoffs += source.nonPvOtherCutoffs;
+    target.nullMoveTries += source.nullMoveTries;
+    target.nullMoveCutoffs += source.nullMoveCutoffs;
+    target.nullMoveTriesD2 += source.nullMoveTriesD2;
+    target.nullMoveCutoffsD2 += source.nullMoveCutoffsD2;
+    target.nullMoveTriesD3 += source.nullMoveTriesD3;
+    target.nullMoveCutoffsD3 += source.nullMoveCutoffsD3;
+    target.nullMoveTriesD4p += source.nullMoveTriesD4p;
+    target.nullMoveCutoffsD4p += source.nullMoveCutoffsD4p;
 }
 
 void noteQSCutoff(SearchStats& stats, int moveIndex) {
@@ -587,6 +595,20 @@ CutoffMoveType classifyCutoffMove(const Position& pos, const Move& move, const M
     }
     if (move.promotion != EMPTY) return CUTOFF_PROMOTION;
     return CUTOFF_OTHER;
+}
+
+void noteNullMoveTry(SearchStats& stats, int depth) {
+    stats.nullMoveTries++;
+    if (depth == 2) stats.nullMoveTriesD2++;
+    else if (depth == 3) stats.nullMoveTriesD3++;
+    else stats.nullMoveTriesD4p++;
+}
+
+void noteNullMoveCutoff(SearchStats& stats, int depth) {
+    stats.nullMoveCutoffs++;
+    if (depth == 2) stats.nullMoveCutoffsD2++;
+    else if (depth == 3) stats.nullMoveCutoffsD3++;
+    else stats.nullMoveCutoffsD4p++;
 }
 
 int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, int alpha, int beta,
@@ -735,6 +757,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
     const bool inCheckNow = inCheck(pos, pos.sideToMove);
 
     if (allowNull && !isPv && !inCheckNow && depth >= 3 && hasNonPawnMaterial(pos, pos.sideToMove)) {
+        noteNullMoveTry(stats, depth);
         NullMoveState nullState;
         doNullMove(pos, nullState);
         int reduction = depth >= 6 ? DEEP_NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION;
@@ -743,6 +766,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
         undoNullMove(pos, nullState);
         if (shouldStop()) return alpha;
         if (score >= beta) {
+            noteNullMoveCutoff(stats, depth);
             storeTT(pos.hashKey, depth, ply, beta, TT_LOWER, ttMove);
             if (leaf != nullptr) leaf->valid = false;
             return beta;

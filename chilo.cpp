@@ -109,7 +109,15 @@ void printSearchInfo(const SearchResult& result, void*) {
               << " cut_killer " << result.stats.nonPvKillerCutoffs
               << " cut_quiet " << result.stats.nonPvQuietCutoffs
               << " cut_promo " << result.stats.nonPvPromotionCutoffs
-              << " cut_other " << result.stats.nonPvOtherCutoffs;
+              << " cut_other " << result.stats.nonPvOtherCutoffs
+              << " null_try " << result.stats.nullMoveTries
+              << " null_cut " << result.stats.nullMoveCutoffs
+              << " null_try_d2 " << result.stats.nullMoveTriesD2
+              << " null_cut_d2 " << result.stats.nullMoveCutoffsD2
+              << " null_try_d3 " << result.stats.nullMoveTriesD3
+              << " null_cut_d3 " << result.stats.nullMoveCutoffsD3
+              << " null_try_d4p " << result.stats.nullMoveTriesD4p
+              << " null_cut_d4p " << result.stats.nullMoveCutoffsD4p;
     if (result.pvLength > 0) {
         std::cout << " pv";
         for (int i = 0; i < result.pvLength; i++) std::cout << " " << moveToUCI(result.pv[i]);
