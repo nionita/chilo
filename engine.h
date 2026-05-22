@@ -146,6 +146,11 @@ struct SearchLimits {
     void* sampleUserData = nullptr;
 };
 
+struct SearchStats {
+    uint64_t qnodes = 0;
+    uint64_t nonPvCutoffs[4] = {};
+};
+
 struct SearchResult {
     Move bestMove;
     Move pv[MAX_SEARCH_DEPTH];
@@ -153,6 +158,7 @@ struct SearchResult {
     int score;
     int depth;
     uint64_t nodes;
+    SearchStats stats;
     uint64_t elapsedMs;
     bool completed;
     bool hasMove;

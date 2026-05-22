@@ -511,8 +511,19 @@ int evaluateSearchPosition(const Position& pos, const SearchNnueState& state, in
     return evaluateWithAccumulator(pos, searchNnueFrame(state, nnuePly));
 }
 
+void addSearchStats(SearchStats& target, const SearchStats& source) {
+    target.qnodes += source.qnodes;
+    for (int i = 0; i < 4; i++) target.nonPvCutoffs[i] += source.nonPvCutoffs[i];
+}
+
+void noteNonPvCutoff(SearchStats& stats, int moveIndex) {
+    int bucket = moveIndex;
+    if (bucket > 3) bucket = 3;
+    stats.nonPvCutoffs[bucket]++;
+}
+
 int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, int alpha, int beta,
-               uint64_t& nodes, SearchLeaf* leaf) {
+               uint64_t& nodes, SearchStats& stats, SearchLeaf* leaf) {
     if (shouldStop()) {
         int score = evaluateSearchPosition(pos, nnueState, nnuePly);
         setLeaf(leaf, pos, score, inCheck(pos, pos.sideToMove), false);
@@ -524,6 +535,7 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
     }
 
     nodes++;
+    stats.qnodes++;
     bool inCheckNow = inCheck(pos, pos.sideToMove);
     int standPat = 0;
     SearchLeaf bestLeaf{};
@@ -587,7 +599,7 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
             childNnuePly = nnuePly + 1;
         }
         SearchLeaf childLeaf{};
-        int score = -quiescence(pos, nnueState, ply + 1, childNnuePly, -beta, -alpha, nodes, &childLeaf);
+        int score = -quiescence(pos, nnueState, ply + 1, childNnuePly, -beta, -alpha, nodes, stats, &childLeaf);
         undo(pos, move, undoState);
 
         if (shouldStop()) return alpha;
@@ -614,7 +626,7 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
 }
 
 int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int nnuePly, int alpha, int beta,
-              bool isPv, bool allowNull, bool allowDrawChecks, uint64_t& nodes,
+              bool isPv, bool allowNull, bool allowDrawChecks, uint64_t& nodes, SearchStats& stats,
               Move pvTable[MAX_SEARCH_DEPTH][MAX_SEARCH_DEPTH],
               int pvLength[MAX_SEARCH_DEPTH], SearchLeaf* leaf) {
     pvLength[ply] = 0;
@@ -635,7 +647,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
         return ttScore;
     }
 
-    if (depth <= 0) return quiescence(pos, nnueState, ply, nnuePly, alpha, beta, nodes, leaf);
+    if (depth <= 0) return quiescence(pos, nnueState, ply, nnuePly, alpha, beta, nodes, stats, leaf);
 
     nodes++;
     const int alphaOriginal = alpha;
@@ -646,7 +658,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
         doNullMove(pos, nullState);
         int reduction = depth >= 6 ? DEEP_NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION;
         int score = -alphaBeta(pos, nnueState, depth - 1 - reduction, ply + 1, nnuePly, -beta, -beta + 1,
-                               false, false, false, nodes, pvTable, pvLength, nullptr);
+                               false, false, false, nodes, stats, pvTable, pvLength, nullptr);
         undoNullMove(pos, nullState);
         if (shouldStop()) return alpha;
         if (score >= beta) {
@@ -718,17 +730,17 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
 
         if (i == 0) {
             score = -alphaBeta(pos, nnueState, fullDepth, ply + 1, childNnuePly, -beta, -alpha, isPv, true, allowDrawChecks,
-                               nodes, pvTable, pvLength, &childLeaf);
+                               nodes, stats, pvTable, pvLength, &childLeaf);
         } else {
             score = -alphaBeta(pos, nnueState, searchDepth, ply + 1, childNnuePly, -alpha - 1, -alpha,
-                               false, true, allowDrawChecks, nodes, pvTable, pvLength, &childLeaf);
+                               false, true, allowDrawChecks, nodes, stats, pvTable, pvLength, &childLeaf);
             if (score > alpha && reduced) {
                 score = -alphaBeta(pos, nnueState, fullDepth, ply + 1, childNnuePly, -alpha - 1, -alpha,
-                                   false, true, allowDrawChecks, nodes, pvTable, pvLength, &childLeaf);
+                                   false, true, allowDrawChecks, nodes, stats, pvTable, pvLength, &childLeaf);
             }
             if (score > alpha) {
                 score = -alphaBeta(pos, nnueState, fullDepth, ply + 1, childNnuePly, -beta, -alpha,
-                                   isPv, true, allowDrawChecks, nodes, pvTable, pvLength, &childLeaf);
+                                   isPv, true, allowDrawChecks, nodes, stats, pvTable, pvLength, &childLeaf);
             }
         }
         popSearchHistory(savedLastValid, savedLastIrreversible);
@@ -745,6 +757,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
             pvLength[ply] = pvLength[ply + 1] + 1;
         }
         if (score >= beta) {
+            if (!isPv) noteNonPvCutoff(stats, i);
             if (quiet) noteQuietBetaCutoff(pos.sideToMove, ply, move, depth);
             storeTT(pos.hashKey, depth, ply, beta, TT_LOWER, move);
             if (leaf != nullptr) {
@@ -907,6 +920,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         Move bestPv[MAX_SEARCH_DEPTH];
         int bestPvLength = 1;
         uint64_t iterationNodes = 0;
+        SearchStats iterationStats{};
         bool interrupted = false;
         SearchLeaf bestMoveLeaf{};
         std::vector<RootMoveResult> iterationRootResults;
@@ -933,19 +947,19 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             SearchLeaf childLeaf{};
             if (collectRootDetails) {
                 score = -alphaBeta(pos, nnueState, depth - 1, 1, childNnuePly, -INF_SCORE, INF_SCORE, true, true, true,
-                                   iterationNodes, pvTable, pvLength, &childLeaf);
+                                   iterationNodes, iterationStats, pvTable, pvLength, &childLeaf);
             } else {
                 if (i == 0) {
                     SearchLeaf* childLeafOut = collectBestMoveLeaf ? &childLeaf : nullptr;
                     score = -alphaBeta(pos, nnueState, depth - 1, 1, childNnuePly, -beta, -alpha, true, true, true,
-                                       iterationNodes, pvTable, pvLength, childLeafOut);
+                                       iterationNodes, iterationStats, pvTable, pvLength, childLeafOut);
                 } else {
                     score = -alphaBeta(pos, nnueState, depth - 1, 1, childNnuePly, -alpha - 1, -alpha, false, true, true,
-                                       iterationNodes, pvTable, pvLength, nullptr);
+                                       iterationNodes, iterationStats, pvTable, pvLength, nullptr);
                     if (score > alpha) {
                         SearchLeaf* childLeafOut = collectBestMoveLeaf ? &childLeaf : nullptr;
                         score = -alphaBeta(pos, nnueState, depth - 1, 1, childNnuePly, -beta, -alpha, true, true, true,
-                                           iterationNodes, pvTable, pvLength, childLeafOut);
+                                           iterationNodes, iterationStats, pvTable, pvLength, childLeafOut);
                     }
                 }
             }
@@ -984,6 +998,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         }
 
         result.nodes += iterationNodes;
+        addSearchStats(result.stats, iterationStats);
         if (interrupted) {
             result.completed = false;
             break;

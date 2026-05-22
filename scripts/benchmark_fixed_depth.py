@@ -15,8 +15,10 @@ DEFAULT_POSITIONS = [
     ("tactical", "position fen rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8"),
 ]
 
-INFO_RE = re.compile(r"^info depth (\d+) score .* nodes (\d+) time (\d+) nps (\d+)")
+INFO_RE = re.compile(r"^info depth (\d+) score .* nodes (\d+) time (\d+) nps (\d+)(.*)$")
 BESTMOVE_RE = re.compile(r"^bestmove\s+(\S+)")
+EXTRA_INFO_RE = re.compile(r"\b(qnodes|cut1|cut2|cut3|cut4p)\s+(\d+)\b")
+SEARCH_STAT_KEYS = ("qnodes", "cut1", "cut2", "cut3", "cut4p")
 
 
 def parse_position(value):
@@ -112,12 +114,16 @@ def run_once(engine_argv, position_cmd, depth):
             stdout_lines.append(line)
             match = INFO_RE.match(line)
             if match and int(match.group(1)) == depth:
+                extra_info = {key: int(value) for key, value in EXTRA_INFO_RE.findall(match.group(5))}
                 last_info = {
                     "nodes": int(match.group(2)),
                     "engine_ms": int(match.group(3)),
                     "nps": int(match.group(4)),
                     "line": line,
                 }
+                for key in SEARCH_STAT_KEYS:
+                    if key in extra_info:
+                        last_info[key] = extra_info[key]
             bestmove_match = BESTMOVE_RE.match(line)
             if bestmove_match:
                 bestmove = bestmove_match.group(1)
@@ -164,13 +170,18 @@ def summarize_variant(runs):
     median_engine_ms = statistics.median(run["engine_ms"] for run in runs)
     median_wall_ms = statistics.median(run["wall_ms"] for run in runs)
     median_nodes = statistics.median(run["nodes"] for run in runs)
-    return {
+    summary = {
         "runs": runs,
         "median_engine_ms": median_engine_ms,
         "median_wall_ms": round(median_wall_ms, 3),
         "median_nps": statistics.median(run["nps"] for run in runs),
         "nodes": median_nodes,
     }
+    for key in SEARCH_STAT_KEYS:
+        values = [run[key] for run in runs if key in run]
+        if len(values) == len(runs):
+            summary[key] = statistics.median(values)
+    return summary
 
 
 def pct_delta(candidate, baseline):
@@ -195,6 +206,9 @@ def summarize_totals(positions):
             ),
             "weighted_nps": int(total_nodes * 1000 / total_engine_ms) if total_engine_ms > 0 else 0,
         }
+        for key in SEARCH_STAT_KEYS:
+            if all(key in variant for variant in variant_summaries):
+                totals[variant_name][f"total_{key}"] = sum(variant[key] for variant in variant_summaries)
 
     base = totals["baseline"]
     cand = totals["candidate"]
@@ -204,7 +218,26 @@ def summarize_totals(positions):
         "total_wall_ms_pct": pct_delta(cand["total_wall_ms"], base["total_wall_ms"]),
         "weighted_nps_pct": pct_delta(cand["weighted_nps"], base["weighted_nps"]),
     }
+    for key in SEARCH_STAT_KEYS:
+        total_key = f"total_{key}"
+        if total_key in base and total_key in cand:
+            totals["delta"][f"{key}_pct"] = pct_delta(cand[total_key], base[total_key])
     return totals
+
+
+def format_search_stats(values):
+    if "qnodes" not in values:
+        return ""
+    cut_values = [values.get(key, 0) for key in ("cut1", "cut2", "cut3", "cut4p")]
+    cut_total = sum(cut_values)
+    cut1_pct = round(cut_values[0] * 100.0 / cut_total, 2) if cut_total else 0.0
+    qnode_pct = round(values["qnodes"] * 100.0 / values["nodes"], 2) if values["nodes"] else 0.0
+    return (
+        f" qnodes={format_number(values['qnodes'])} qnodes_pct={qnode_pct}% "
+        f"cuts={format_number(cut_total)} cut1={format_number(cut_values[0])} "
+        f"cut2={format_number(cut_values[1])} cut3={format_number(cut_values[2])} "
+        f"cut4p={format_number(cut_values[3])} cut1_pct={cut1_pct}%"
+    )
 
 
 def format_number(value):
@@ -330,6 +363,7 @@ def main():
                 f"median_engine_ms={format_number(variant['median_engine_ms'])} "
                 f"median_wall_ms={variant['median_wall_ms']:.3f} median_nps={format_number(variant['median_nps'])} "
                 f"bestmove={variant['runs'][0]['bestmove']}"
+                f"{format_search_stats(variant)}"
             )
         delta = position["delta"]
         lines.append(
@@ -347,6 +381,7 @@ def main():
             f"total_engine_ms={format_number(variant['total_engine_ms'])} "
             f"median_engine_ms_per_position={format_number(variant['median_engine_ms_per_position'])} "
             f"weighted_nps={variant['weighted_nps']}"
+            f"{format_search_stats({'nodes': variant['total_nodes'], **{key: variant[f'total_{key}'] for key in SEARCH_STAT_KEYS if f'total_{key}' in variant}})}"
         )
     delta = aggregate["delta"]
     lines.append(

@@ -87,7 +87,12 @@ void printSearchInfo(const SearchResult& result, void*) {
     printUCIScore(result.score);
     std::cout << " nodes " << result.nodes
               << " time " << result.elapsedMs
-              << " nps " << nps;
+              << " nps " << nps
+              << " qnodes " << result.stats.qnodes
+              << " cut1 " << result.stats.nonPvCutoffs[0]
+              << " cut2 " << result.stats.nonPvCutoffs[1]
+              << " cut3 " << result.stats.nonPvCutoffs[2]
+              << " cut4p " << result.stats.nonPvCutoffs[3];
     if (result.pvLength > 0) {
         std::cout << " pv";
         for (int i = 0; i < result.pvLength; i++) std::cout << " " << moveToUCI(result.pv[i]);
