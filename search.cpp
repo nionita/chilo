@@ -11,8 +11,8 @@ namespace {
 
 constexpr int INF_SCORE = 30000;
 constexpr int DELTA_MARGIN = 200;
-constexpr int NULL_MOVE_REDUCTION = 2;
-constexpr int DEEP_NULL_MOVE_REDUCTION = 3;
+constexpr int NULL_MOVE_REDUCTION = 3;
+constexpr int DEEP_NULL_MOVE_REDUCTION = 4;
 constexpr int LMR_LEVEL1_MOVE_INDEX = 2;
 constexpr int LMR_LEVEL2_MOVE_INDEX = 6;
 constexpr int LMR_LEVEL3_MOVE_INDEX = 12;
@@ -760,7 +760,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
         noteNullMoveTry(stats, depth);
         NullMoveState nullState;
         doNullMove(pos, nullState);
-        int reduction = depth >= 6 ? DEEP_NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION;
+        int reduction = depth > 10 ? DEEP_NULL_MOVE_REDUCTION : NULL_MOVE_REDUCTION;
         int score = -alphaBeta(pos, nnueState, depth - 1 - reduction, ply + 1, nnuePly, -beta, -beta + 1,
                                false, false, false, nodes, stats, pvTable, pvLength, nullptr);
         undoNullMove(pos, nullState);
