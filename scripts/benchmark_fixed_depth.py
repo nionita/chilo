@@ -6,6 +6,7 @@ import random
 import re
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -340,6 +341,21 @@ def format_number(value):
     return str(value)
 
 
+def format_duration(seconds):
+    seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def progress_interval(position_count):
+    if position_count <= 0:
+        return 1
+    return max(1, position_count // 50)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compare two UCI binaries at a fixed search depth.")
     parser.add_argument("--baseline", required=True, help="Path to the baseline UCI binary")
@@ -363,6 +379,7 @@ def main():
         help="Benchmark position as 'name::uci position command'; can be repeated",
     )
     parser.add_argument("--output-dir", help="Optional directory for JSON and text summaries")
+    parser.add_argument("--no-progress", action="store_true", help="Do not print progress updates to stderr")
     args = parser.parse_args()
     if args.depth <= 0:
         parser.error("--depth must be positive")
@@ -411,7 +428,19 @@ def main():
         "candidate": build_engine_argv(candidate, candidate_weights),
     }
 
-    for position in positions:
+    total_positions = len(positions)
+    report_every = progress_interval(total_positions)
+    progress_start = time.perf_counter()
+    if not args.no_progress:
+        runs_per_position = 2 * (args.warmups + args.runs)
+        print(
+            f"progress: 0/{total_positions} positions complete, "
+            f"{runs_per_position} engine runs per position",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    for position_index, position in enumerate(positions, start=1):
         position_result = {**position, "variants": {}}
 
         for variant_name in ("baseline", "candidate"):
@@ -432,6 +461,20 @@ def main():
             "nps_pct": pct_delta(cand["median_nps"], base["median_nps"]),
         }
         results["positions"].append(position_result)
+
+        if not args.no_progress and (
+            position_index == 1 or position_index == total_positions or position_index % report_every == 0
+        ):
+            elapsed = time.perf_counter() - progress_start
+            remaining = total_positions - position_index
+            eta = (elapsed / position_index) * remaining if position_index > 0 else 0
+            print(
+                f"progress: {position_index}/{total_positions} positions complete "
+                f"({remaining} left), elapsed {format_duration(elapsed)}, "
+                f"eta {format_duration(eta)}, last={position['name']}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     results["aggregate"] = summarize_totals(results["positions"])
 
