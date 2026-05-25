@@ -984,6 +984,15 @@ int testStaticExchangeEval() {
         }
     }
 
+    {
+        Position p = parseFEN("rn2k1nr/ppp3pp/1b1P4/8/2NP4/2PK4/PP3p1P/R1BQ1BqR w kq - 3 4");
+        Move move;
+        if (!parseUCIMove(p, "h1g1", move) || staticExchangeEval(p, move) >= 0) {
+            std::cout << "  FAIL (expected queen capture h1g1 to be SEE-negative due to promotion recapture)\n";
+            return 1;
+        }
+    }
+
     std::cout << "  PASS\n";
     return 0;
 }

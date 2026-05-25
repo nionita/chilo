@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -314,7 +315,29 @@ int staticExchangeEvalExact(const Position& pos, const Move& move, const SeeMove
 
 bool staticExchangeEvalIsNonNegative(const Position& pos, const Move& move) {
     SeeMoveInfo info = makeSeeMoveInfo(pos, move);
-    if (info.capturedPiece != EMPTY && info.gain >= info.occupyingValue) return true;
+    Color recapturingSide = opposite(pos.sideToMove);
+    Piece recapturingPawn = recapturingSide == WHITE ? W_PAWN : B_PAWN;
+    bool pawnRecaptureCanPromote =
+        promotionSquare(recapturingSide, info.targetSq) &&
+        (pos.pieceBitboards[recapturingSide][pieceTypeIndex(recapturingPawn)] &
+         attackTables().pawnAttackers[recapturingSide][info.targetSq]) != 0;
+
+    if (info.capturedPiece != EMPTY && info.gain >= info.occupyingValue && !pawnRecaptureCanPromote) {
+#if defined(CHESS_VALIDATE_STATE)
+        int exactSee = staticExchangeEvalExact(pos, move, info);
+        if (exactSee < 0) {
+            std::fprintf(stderr,
+                         "SEE fast-path mismatch: fen=\"%s\" move=%s gain=%d occupying_value=%d exact_see=%d\n",
+                         positionToFEN(pos).c_str(),
+                         moveToUCI(move).c_str(),
+                         info.gain,
+                         info.occupyingValue,
+                         exactSee);
+        }
+        assert(exactSee >= 0);
+#endif
+        return true;
+    }
     return staticExchangeEvalExact(pos, move, info) >= 0;
 }
 
