@@ -63,6 +63,15 @@ struct SeeState {
     uint64_t occupancyAll;
 };
 
+struct SeeMoveInfo {
+    Piece capturedPiece;
+    Piece movingPiece;
+    Piece occupyingPiece;
+    int targetSq;
+    int gain;
+    int occupyingValue;
+};
+
 struct SearchLeaf {
     Position pos{};
     int score = 0;
@@ -268,6 +277,47 @@ int seeGain(SeeState& state, int sq, Color side, Piece targetPiece) {
     return 0;
 }
 
+SeeMoveInfo makeSeeMoveInfo(const Position& pos, const Move& move) {
+    Piece movingPiece = pieceAt(pos, move.from);
+    Piece occupyingPiece = move.promotion != EMPTY ? move.promotion : movingPiece;
+    Piece capturedPiece = capturedPieceForMove(pos, move);
+    return {
+        capturedPiece,
+        movingPiece,
+        occupyingPiece,
+        move.to,
+        moveValueGuess(capturedPiece) + promotionGain(move),
+        moveValueGuess(occupyingPiece),
+    };
+}
+
+int staticExchangeEvalExact(const Position& pos, const Move& move, const SeeMoveInfo& info) {
+    if (info.capturedPiece == EMPTY) return move.promotion != EMPTY ? promotionGain(move) : 0;
+
+    SeeState state{};
+    initSeeState(pos, state);
+
+    Color us = pos.sideToMove;
+    Color them = opposite(us);
+
+    removeSeePiece(state, us, info.movingPiece, move.from);
+    if (move.isEnPassant) {
+        int capSq = (us == WHITE ? R(move.to) - 1 : R(move.to) + 1) * 8 + F(move.to);
+        removeSeePiece(state, them, info.capturedPiece, capSq);
+    } else {
+        removeSeePiece(state, them, info.capturedPiece, info.targetSq);
+    }
+    addSeePiece(state, us, info.occupyingPiece, info.targetSq);
+
+    return info.gain - seeGain(state, info.targetSq, them, info.occupyingPiece);
+}
+
+bool staticExchangeEvalIsNonNegative(const Position& pos, const Move& move) {
+    SeeMoveInfo info = makeSeeMoveInfo(pos, move);
+    if (info.capturedPiece != EMPTY && info.gain >= info.occupyingValue) return true;
+    return staticExchangeEvalExact(pos, move, info) >= 0;
+}
+
 int captureOrderScore(const Position& pos, const Move& move) {
     Piece movingPiece = pieceAt(pos, move.from);
     Piece capturedPiece = capturedPieceForMove(pos, move);
@@ -415,8 +465,7 @@ int moveOrderScore(const Position& pos, const Move& move, const Move* preferredM
     if (preferredMove != nullptr && movesEqual(move, *preferredMove)) return 1000000;
 
     if (isCaptureMove(pos, move)) {
-        int see = staticExchangeEval(pos, move);
-        int bucket = see >= 0 ? 900000 : 100000;
+        int bucket = staticExchangeEvalIsNonNegative(pos, move) ? 900000 : 100000;
         return bucket + captureOrderScore(pos, move);
     }
 
@@ -663,7 +712,7 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
         if (!inCheckNow) {
-            if (isCaptureMove(pos, move) && staticExchangeEval(pos, move) < 0) {
+            if (isCaptureMove(pos, move) && !staticExchangeEvalIsNonNegative(pos, move)) {
                 stats.qSeeSkipped++;
                 continue;
             }
@@ -874,29 +923,8 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
 }  // namespace
 
 int staticExchangeEval(const Position& pos, const Move& move) {
-    Piece capturedPiece = capturedPieceForMove(pos, move);
-    if (capturedPiece == EMPTY) return move.promotion != EMPTY ? promotionGain(move) : 0;
-
-    SeeState state{};
-    initSeeState(pos, state);
-
-    Color us = pos.sideToMove;
-    Color them = opposite(us);
-    Piece movingPiece = pieceAt(pos, move.from);
-    Piece occupyingPiece = move.promotion != EMPTY ? move.promotion : movingPiece;
-    int targetSq = move.to;
-
-    removeSeePiece(state, us, movingPiece, move.from);
-    if (move.isEnPassant) {
-        int capSq = (us == WHITE ? R(move.to) - 1 : R(move.to) + 1) * 8 + F(move.to);
-        removeSeePiece(state, them, capturedPiece, capSq);
-    } else {
-        removeSeePiece(state, them, capturedPiece, targetSq);
-    }
-    addSeePiece(state, us, occupyingPiece, targetSq);
-
-    int gain = moveValueGuess(capturedPiece) + promotionGain(move);
-    return gain - seeGain(state, targetSq, them, occupyingPiece);
+    SeeMoveInfo info = makeSeeMoveInfo(pos, move);
+    return staticExchangeEvalExact(pos, move, info);
 }
 
 std::vector<MoveOrderingEntry> collectMoveOrderingDiagnostics(
