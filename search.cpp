@@ -657,29 +657,16 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
         return alpha;
     }
 
-    if (!inCheckNow) {
-        int filteredCount = 0;
-        for (int i = 0; i < moveCount; i++) {
-            const Move& move = moves[i];
-            if (isCaptureMove(pos, move) && staticExchangeEval(pos, move) < 0) {
-                stats.qSeeSkipped++;
-                continue;
-            }
-            moves[filteredCount++] = move;
-        }
-        moveCount = filteredCount;
-        if (moveCount == 0) {
-            setLeaf(leaf, pos, standPat, false, false);
-            return alpha;
-        }
-    }
-
     orderQSMoves(pos, moves, moveCount);
 
     int searchedMoveIndex = 0;
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
         if (!inCheckNow) {
+            if (isCaptureMove(pos, move) && staticExchangeEval(pos, move) < 0) {
+                stats.qSeeSkipped++;
+                continue;
+            }
             Piece capturedPiece = capturedPieceForMove(pos, move);
             int gainUpperBound = standPat + moveValueGuess(capturedPiece) + promotionGain(move) + DELTA_MARGIN;
             if (gainUpperBound < alpha) {

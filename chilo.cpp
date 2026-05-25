@@ -11,7 +11,7 @@
 namespace {
 
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const char* CHILO_VERSION = "0.6.14"
+const char* CHILO_VERSION = "0.6.15"
 #if defined(CHILO_AVX2)
     " avx2"
 #endif
