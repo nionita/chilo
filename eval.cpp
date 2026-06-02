@@ -21,7 +21,7 @@ namespace {
 
 using chilo::nnue_generated::TinyNnueData;
 
-constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB1";
+constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB2";
 constexpr std::size_t WEIGHTS_BIN_TEXT_FIELD_SIZE = 64;
 
 struct RuntimeNnue {
@@ -54,9 +54,9 @@ struct WeightsBinHeader {
     char contractSha256[WEIGHTS_BIN_TEXT_FIELD_SIZE];
 };
 
-static_assert(std::string_view(chilo::nnue_generated::kContractId) == "chilo.tiny_nnue.v2",
+static_assert(std::string_view(chilo::nnue_generated::kContractId) == "chilo.tiny_nnue.v3",
               "Unexpected generated NNUE contract id");
-static_assert(chilo::nnue_generated::kVersion == 2, "Unexpected generated NNUE contract version");
+static_assert(chilo::nnue_generated::kVersion == 3, "Unexpected generated NNUE contract version");
 static_assert(chilo::nnue_generated::kPerspectiveCount == 2, "Unexpected generated NNUE perspective count");
 static_assert(chilo::nnue_generated::kPiecePlaneCount == 13, "Unexpected generated NNUE piece plane count");
 static_assert(chilo::nnue_generated::kSquareCount == 64, "Unexpected generated NNUE square count");
@@ -114,11 +114,12 @@ RuntimeNnue builtInNnue() {
     runtime.perspectiveCount = chilo::nnue_generated::kPerspectiveCount;
     runtime.piecePlaneCount = chilo::nnue_generated::kPiecePlaneCount;
     runtime.squareCount = chilo::nnue_generated::kSquareCount;
-    runtime.inputWeights.assign(&builtIn.inputWeights[0][0][0][0],
-                                &builtIn.inputWeights[0][0][0][0] +
-                                    runtime.perspectiveCount * runtime.piecePlaneCount * runtime.squareCount * runtime.hiddenSize);
+    runtime.inputWeights.assign(&builtIn.inputWeights[0][0][0],
+                                &builtIn.inputWeights[0][0][0] +
+                                    runtime.piecePlaneCount * runtime.squareCount * runtime.hiddenSize);
     runtime.hiddenBias.assign(&builtIn.hiddenBias[0], &builtIn.hiddenBias[0] + runtime.hiddenSize);
-    runtime.outputWeights.assign(&builtIn.outputWeights[0], &builtIn.outputWeights[0] + runtime.hiddenSize);
+    runtime.outputWeights.assign(&builtIn.outputWeights[0],
+                                 &builtIn.outputWeights[0] + chilo::nnue_generated::kOutputSize);
     runtime.outputBias = builtIn.outputBias;
     return runtime;
 }
@@ -157,9 +158,7 @@ bool validateRuntimeNnue(const RuntimeNnue& net, std::string& error) {
         return false;
     }
     std::string productError;
-    std::size_t inputCount = checkedProduct(
-        {net.perspectiveCount, net.piecePlaneCount, net.squareCount, net.hiddenSize},
-        productError);
+    std::size_t inputCount = checkedProduct({net.piecePlaneCount, net.squareCount, net.hiddenSize}, productError);
     if (!productError.empty()) {
         error = productError;
         return false;
@@ -169,7 +168,7 @@ bool validateRuntimeNnue(const RuntimeNnue& net, std::string& error) {
         return false;
     }
     if (net.hiddenBias.size() != static_cast<std::size_t>(net.hiddenSize) ||
-        net.outputWeights.size() != static_cast<std::size_t>(net.hiddenSize)) {
+        net.outputWeights.size() != static_cast<std::size_t>(2 * net.hiddenSize)) {
         error = "NNUE hidden/output payload size is inconsistent";
         return false;
     }
@@ -206,9 +205,7 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
     net.squareCount = static_cast<int>(header.squareCount);
 
     std::string productError;
-    std::size_t inputCount = checkedProduct(
-        {net.perspectiveCount, net.piecePlaneCount, net.squareCount, net.hiddenSize},
-        productError);
+    std::size_t inputCount = checkedProduct({net.piecePlaneCount, net.squareCount, net.hiddenSize}, productError);
     if (!productError.empty()) {
         error = productError;
         return false;
@@ -216,7 +213,7 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
 
     net.inputWeights.resize(inputCount);
     net.hiddenBias.resize(static_cast<std::size_t>(net.hiddenSize));
-    net.outputWeights.resize(static_cast<std::size_t>(net.hiddenSize));
+    net.outputWeights.resize(static_cast<std::size_t>(2 * net.hiddenSize));
     if (!readExactBytes(input, net.inputWeights.data(), net.inputWeights.size() * sizeof(int16_t)) ||
         !readExactBytes(input, net.hiddenBias.data(), net.hiddenBias.size() * sizeof(int16_t)) ||
         !readExactBytes(input, net.outputWeights.data(), net.outputWeights.size() * sizeof(int16_t)) ||
@@ -258,22 +255,20 @@ int relativePiecePlane(Piece piece, Color color) {
     return pieceColor(piece) == color ? baseType : baseType + 6;
 }
 
-std::size_t inputWeightOffset(const RuntimeNnue& net, int perspective, Color color, Piece piece, int sq) {
+std::size_t inputWeightOffset(const RuntimeNnue& net, Color color, Piece piece, int sq) {
     int relativePiece = relativePiecePlane(piece, color);
     int relativeSquare = normalizeSquareForColor(sq, color);
-    return (((static_cast<std::size_t>(perspective) * net.piecePlaneCount + static_cast<std::size_t>(relativePiece)) *
-                 net.squareCount +
+    return ((static_cast<std::size_t>(relativePiece) * net.squareCount +
              static_cast<std::size_t>(relativeSquare)) *
             net.hiddenSize);
 }
 
-std::size_t accumulatorOffset(const RuntimeNnue& net, Color color, int perspective) {
-    return (static_cast<std::size_t>(color) * net.perspectiveCount + static_cast<std::size_t>(perspective)) *
-           net.hiddenSize;
+std::size_t accumulatorOffset(const RuntimeNnue& net, Color color) {
+    return static_cast<std::size_t>(color) * net.hiddenSize;
 }
 
 std::size_t accumulatorValueCount(const RuntimeNnue& net) {
-    return static_cast<std::size_t>(net.perspectiveCount) * 2 * net.hiddenSize;
+    return static_cast<std::size_t>(net.perspectiveCount) * net.hiddenSize;
 }
 
 bool accumulatorMatchesCurrentNet(const NnueAccumulator& acc, const RuntimeNnue& net) {
@@ -328,7 +323,6 @@ void updateAccumulatorFeatureUnchecked(const RuntimeNnue& net, NnueAccumulator& 
     const int hiddenSize = net.hiddenSize;
     const std::size_t hidden = static_cast<std::size_t>(hiddenSize);
     const std::size_t planeStride = static_cast<std::size_t>(net.squareCount) * hidden;
-    const std::size_t perspectiveStride = static_cast<std::size_t>(net.piecePlaneCount) * planeStride;
 
     const int whitePlane = relativePiecePlane(piece, WHITE);
     const int blackPlane = relativePiecePlane(piece, BLACK);
@@ -336,29 +330,21 @@ void updateAccumulatorFeatureUnchecked(const RuntimeNnue& net, NnueAccumulator& 
     const int blackSquare = normalizeSquareForColor(sq, BLACK);
     const int16_t* input = net.inputWeights.data();
 
-    const int16_t* whiteActiveWeights =
+    const int16_t* whiteWeights =
         input + static_cast<std::size_t>(whitePlane) * planeStride + static_cast<std::size_t>(whiteSquare) * hidden;
-    const int16_t* whitePassiveWeights = whiteActiveWeights + perspectiveStride;
-    const int16_t* blackActiveWeights =
+    const int16_t* blackWeights =
         input + static_cast<std::size_t>(blackPlane) * planeStride + static_cast<std::size_t>(blackSquare) * hidden;
-    const int16_t* blackPassiveWeights = blackActiveWeights + perspectiveStride;
 
     int32_t* values = acc.values.data();
-    int32_t* whiteActiveLane = values;
-    int32_t* whitePassiveLane = values + hidden;
-    int32_t* blackActiveLane = values + 2 * hidden;
-    int32_t* blackPassiveLane = values + 3 * hidden;
+    int32_t* whiteLane = values;
+    int32_t* blackLane = values + hidden;
 
     if (add) {
-        addWeightsToLane(whiteActiveLane, whiteActiveWeights, hiddenSize);
-        addWeightsToLane(whitePassiveLane, whitePassiveWeights, hiddenSize);
-        addWeightsToLane(blackActiveLane, blackActiveWeights, hiddenSize);
-        addWeightsToLane(blackPassiveLane, blackPassiveWeights, hiddenSize);
+        addWeightsToLane(whiteLane, whiteWeights, hiddenSize);
+        addWeightsToLane(blackLane, blackWeights, hiddenSize);
     } else {
-        subWeightsFromLane(whiteActiveLane, whiteActiveWeights, hiddenSize);
-        subWeightsFromLane(whitePassiveLane, whitePassiveWeights, hiddenSize);
-        subWeightsFromLane(blackActiveLane, blackActiveWeights, hiddenSize);
-        subWeightsFromLane(blackPassiveLane, blackPassiveWeights, hiddenSize);
+        subWeightsFromLane(whiteLane, whiteWeights, hiddenSize);
+        subWeightsFromLane(blackLane, blackWeights, hiddenSize);
     }
 }
 
@@ -405,33 +391,31 @@ NnueMoveDelta buildMoveDelta(const Position& pos, const Move& move) {
     return delta;
 }
 
-int64_t scoreFromLane(const int32_t* hidden) {
+int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
     const RuntimeNnue& net = currentNnue();
 
     const int scaledClipMax = net.clipMax * net.inputScale;
     int64_t score = net.outputBias;
     for (int i = 0; i < net.hiddenSize; ++i) {
-        score += static_cast<int64_t>(clippedRelu(hidden[i], scaledClipMax)) *
+        score += static_cast<int64_t>(clippedRelu(first[i], scaledClipMax)) *
                  net.outputWeights[static_cast<std::size_t>(i)];
+        score += static_cast<int64_t>(clippedRelu(second[i], scaledClipMax)) *
+                 net.outputWeights[static_cast<std::size_t>(net.hiddenSize + i)];
     }
     return score;
 }
 
-int64_t perspectiveScore(const Position& pos, int perspective) {
+void buildAccumulatorLane(const Position& pos, Color color, std::vector<int32_t>& hidden) {
     const RuntimeNnue& net = currentNnue();
-    thread_local std::vector<int32_t> hidden;
     hidden.assign(net.hiddenBias.begin(), net.hiddenBias.end());
 
-    Color color = perspective == 0 ? pos.sideToMove : oppositeColor(pos.sideToMove);
     uint64_t occupied = pos.occupancyAll;
     while (occupied) {
         int sq = popLsb(occupied);
         Piece piece = pieceAt(pos, sq);
-        const int16_t* weights = net.inputWeights.data() + inputWeightOffset(net, perspective, color, piece, sq);
+        const int16_t* weights = net.inputWeights.data() + inputWeightOffset(net, color, piece, sq);
         for (int i = 0; i < net.hiddenSize; ++i) hidden[static_cast<std::size_t>(i)] += weights[i];
     }
-
-    return scoreFromLane(hidden.data());
 }
 
 }  // namespace
@@ -453,10 +437,8 @@ void initNnueAccumulator(const Position& pos, NnueAccumulator& acc) {
 
     for (int colorValue = WHITE; colorValue <= BLACK; ++colorValue) {
         Color color = static_cast<Color>(colorValue);
-        for (int perspective = 0; perspective < net.perspectiveCount; ++perspective) {
-            int32_t* lane = acc.values.data() + accumulatorOffset(net, color, perspective);
-            for (int i = 0; i < net.hiddenSize; ++i) lane[i] = net.hiddenBias[static_cast<std::size_t>(i)];
-        }
+        int32_t* lane = acc.values.data() + accumulatorOffset(net, color);
+        for (int i = 0; i < net.hiddenSize; ++i) lane[i] = net.hiddenBias[static_cast<std::size_t>(i)];
     }
 
     uint64_t occupied = pos.occupancyAll;
@@ -505,19 +487,23 @@ int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc) {
         return evaluate(pos);
     }
 
-    Color passiveSide = oppositeColor(pos.sideToMove);
-    const int32_t* activeHidden = acc.values.data() + accumulatorOffset(net, pos.sideToMove, 0);
-    const int32_t* passiveHidden = acc.values.data() + accumulatorOffset(net, passiveSide, 1);
-    int64_t activePerspective = scoreFromLane(activeHidden);
-    int64_t passivePerspective = scoreFromLane(passiveHidden);
-    int64_t finalDivisor = static_cast<int64_t>(2) * net.inputScale * net.outputScale;
-    return roundDivide(activePerspective - passivePerspective, finalDivisor);
+    const Color passiveSide = oppositeColor(pos.sideToMove);
+    const int32_t* activeHidden = acc.values.data() + accumulatorOffset(net, pos.sideToMove);
+    const int32_t* passiveHidden = acc.values.data() + accumulatorOffset(net, passiveSide);
+    int64_t score = scoreFromLanes(activeHidden, passiveHidden);
+    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.outputScale;
+    return roundDivide(score, finalDivisor);
 }
 
 int evaluate(const Position& pos) {
     const RuntimeNnue& net = currentNnue();
-    int64_t activePerspective = perspectiveScore(pos, 0);
-    int64_t passivePerspective = perspectiveScore(pos, 1);
-    int64_t finalDivisor = static_cast<int64_t>(2) * net.inputScale * net.outputScale;
-    return roundDivide(activePerspective - passivePerspective, finalDivisor);
+    thread_local std::vector<int32_t> whiteHidden;
+    thread_local std::vector<int32_t> blackHidden;
+    buildAccumulatorLane(pos, WHITE, whiteHidden);
+    buildAccumulatorLane(pos, BLACK, blackHidden);
+    const int32_t* activeHidden = pos.sideToMove == WHITE ? whiteHidden.data() : blackHidden.data();
+    const int32_t* passiveHidden = pos.sideToMove == WHITE ? blackHidden.data() : whiteHidden.data();
+    int64_t score = scoreFromLanes(activeHidden, passiveHidden);
+    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.outputScale;
+    return roundDivide(score, finalDivisor);
 }

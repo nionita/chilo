@@ -187,11 +187,12 @@ def update_activation_stats(model, pieces, squares, piece_count, side_to_move, a
     torch = __import__("torch")
     max_pieces = pieces.shape[1]
     mask = (torch.arange(max_pieces, device=pieces.device).unsqueeze(0) < piece_count.unsqueeze(1)).float()
-    for perspective in (0, 1):
-        relative_pieces, normalized_squares = model.relative_features(perspective, pieces, squares, side_to_move)
-        selected = model.input_weights[perspective, relative_pieces, normalized_squares]
-        hidden = model.hidden_bias.unsqueeze(0) + (selected * mask.unsqueeze(-1)).sum(dim=1)
-        activation_stats.update(hidden, model.clip_max)
+    white = model.accumulator(0, pieces, squares, mask)
+    black = model.accumulator(1, pieces, squares, mask)
+    white_first = torch.cat([white, black], dim=1)
+    black_first = torch.cat([black, white], dim=1)
+    stm_is_white = (side_to_move == 0).float().unsqueeze(1)
+    activation_stats.update(stm_is_white * white_first + (1.0 - stm_is_white) * black_first, model.clip_max)
 
 
 def evaluate_model(

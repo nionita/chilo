@@ -1,6 +1,6 @@
 {
-  "contract_id": "chilo.tiny_nnue.v2",
-  "version": 2,
+  "contract_id": "chilo.tiny_nnue.v3",
+  "version": 3,
   "architecture": "TinyNnue",
   "default_hidden_size": 64,
   "clip_max": 255,
@@ -58,11 +58,11 @@
   },
   "square_indexing": "a1=0, h1=7, a8=56, h8=63",
   "perspective_semantics": {
-    "0": "active_side_to_move",
-    "1": "passive_opponent"
+    "0": "white_perspective",
+    "1": "black_perspective"
   },
   "square_normalization": "normalize relative to perspective color; black perspective uses mirror_square=(7-rank)*8+file",
-  "input_layout": "input_weights[perspective][relative_piece][normalized_square][hidden]",
+  "input_layout": "input_weights[relative_piece][normalized_square][hidden]",
   "activation": "clipped_relu",
-  "output_formula": "score=(active_perspective-passive_perspective)/2"
+  "output_formula": "score=linear(concat(clipped(stm_accumulator), clipped(non_stm_accumulator)))"
 }

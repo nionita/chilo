@@ -40,7 +40,9 @@ class NnuePipelineTest(unittest.TestCase):
         pieces = record["pieces"][: int(record["piece_count"])].tolist()
         squares = record["squares"][: int(record["piece_count"])].tolist()
         score = integer_model_eval(seeded, int(record["side_to_move"]), pieces, squares, int(contract["clip_max"]))
-        self.assertEqual(score, 905)
+        self.assertEqual(seeded["input_weights"].shape, (13, 64, 64))
+        self.assertEqual(seeded["output_weights"].shape, (128,))
+        self.assertEqual(score, 0)
 
     def test_assign_shard_splits(self):
         splits = assign_shard_splits(total_shards=10, validation_fraction=0.2, seed=7)
@@ -112,13 +114,15 @@ class NnuePipelineTest(unittest.TestCase):
             )
 
             header_text = header_path.read_text(encoding="utf-8")
-            self.assertIn('kContractId[] = "chilo.tiny_nnue.v2"', header_text)
+            self.assertIn('kContractId[] = "chilo.tiny_nnue.v3"', header_text)
             self.assertIn("inline constexpr int kHiddenSize = 64;", header_text)
             self.assertIn("inline constexpr int kInputScale = 64;", header_text)
             self.assertIn("inline constexpr int kOutputScale = 32;", header_text)
+            self.assertIn("inline constexpr int kOutputSize = 128;", header_text)
             export_manifest = json.loads(export_manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(export_manifest["format"], "chilo.nnue_export.v4")
+            self.assertEqual(export_manifest["format"], "chilo.nnue_export.v5")
             self.assertEqual(export_manifest["hidden_size"], 64)
+            self.assertEqual(export_manifest["output_size"], 128)
             self.assertEqual(export_manifest["quantization"], "scaled_int16")
             self.assertEqual(export_manifest["input_scale"], 64)
             self.assertEqual(export_manifest["output_scale"], 32)

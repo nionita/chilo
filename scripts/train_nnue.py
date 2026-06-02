@@ -282,13 +282,12 @@ def main() -> int:
         with torch.no_grad():
             max_pieces = pieces.shape[1]
             mask = (torch.arange(max_pieces, device=pieces.device).unsqueeze(0) < piece_count.unsqueeze(1)).float()
-            hidden_values = []
-            for perspective in (0, 1):
-                relative_pieces, normalized_squares = model.relative_features(perspective, pieces, squares, side_to_move)
-                selected = model.input_weights[perspective, relative_pieces, normalized_squares]
-                hidden = model.hidden_bias.unsqueeze(0) + (selected * mask.unsqueeze(-1)).sum(dim=1)
-                hidden_values.append(hidden)
-            return torch.cat(hidden_values, dim=0)
+            white = model.accumulator(0, pieces, squares, mask)
+            black = model.accumulator(1, pieces, squares, mask)
+            white_first = torch.cat([white, black], dim=1)
+            black_first = torch.cat([black, white], dim=1)
+            stm_is_white = (side_to_move == 0).float().unsqueeze(1)
+            return stm_is_white * white_first + (1.0 - stm_is_white) * black_first
 
     def activation_stats(hidden):
         values = hidden.detach()

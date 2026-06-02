@@ -18,12 +18,13 @@ from nnue_common import (
     iter_dataset_records,
     load_contract,
     load_dataset_manifest,
-    relative_feature,
+    opposite_color,
+    relative_feature_for_color,
 )
 
 DEFAULT_INPUT_SCALE = 64
 DEFAULT_OUTPUT_SCALE = 32
-WEIGHTS_BIN_MAGIC = b"CHNNUEB1"
+WEIGHTS_BIN_MAGIC = b"CHNNUEB2"
 WEIGHTS_BIN_HEADER_STRUCT = struct.Struct("<8sIIIIIII64s64s")
 
 
@@ -83,6 +84,10 @@ def hidden_size_from_weights(weights: Dict[str, np.ndarray | int]) -> int:
     return int(np.asarray(weights["hidden_bias"]).shape[0])
 
 
+def output_size_from_weights(weights: Dict[str, np.ndarray | int]) -> int:
+    return int(np.asarray(weights["output_weights"]).shape[0])
+
+
 def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weights, quantized_weights, tolerance: float,
                      max_samples: int) -> Dict[str, object]:
     load_dataset_manifest(dataset_path, contract)
@@ -108,15 +113,15 @@ def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weig
         pieces = record["pieces"][: int(record["piece_count"])].tolist()
         squares = record["squares"][: int(record["piece_count"])].tolist()
 
-        perspective_scores = []
-        for perspective in (0, 1):
+        accumulators = []
+        for color in (0, 1):
             hidden = hidden_bias_float.copy()
             for piece, square in zip(pieces, squares):
-                relative_piece_value, relative_square = relative_feature(side_to_move, perspective, piece, square)
-                hidden += input_weights_float[perspective, relative_piece_value, relative_square]
-            activated = np.clip(hidden, 0.0, float(clip_max))
-            perspective_scores.append(output_bias_float + float((activated * output_weights_float).sum()))
-        float_score = 0.5 * (perspective_scores[0] - perspective_scores[1])
+                relative_piece_value, relative_square = relative_feature_for_color(color, piece, square)
+                hidden += input_weights_float[relative_piece_value, relative_square]
+            accumulators.append(np.clip(hidden, 0.0, float(clip_max)))
+        dense_input = np.concatenate([accumulators[side_to_move], accumulators[opposite_color(side_to_move)]])
+        float_score = output_bias_float + float((dense_input * output_weights_float).sum())
         quantized_score = integer_model_eval(quantized_weights, side_to_move, pieces, squares, clip_max)
         diffs.append(abs(float_score - quantized_score))
 
@@ -148,6 +153,7 @@ def format_nested_initializer(array: np.ndarray, indent: int = 4) -> str:
 
 def write_header(path: Path, contract: Dict[str, object], weights: Dict[str, np.ndarray | int]) -> None:
     hidden_size = hidden_size_from_weights(weights)
+    output_size = output_size_from_weights(weights)
     header = f"""#ifndef GENERATED_NNUE_WEIGHTS_H
 #define GENERATED_NNUE_WEIGHTS_H
 
@@ -166,11 +172,12 @@ inline constexpr int kOutputScale = {int(weights['output_scale'])};
 inline constexpr int kPerspectiveCount = {int(contract['perspectives'])};
 inline constexpr int kPiecePlaneCount = {int(contract['piece_planes'])};
 inline constexpr int kSquareCount = {int(contract['board_squares'])};
+inline constexpr int kOutputSize = {output_size};
 
 struct TinyNnueData {{
-    int16_t inputWeights[kPerspectiveCount][kPiecePlaneCount][kSquareCount][kHiddenSize];
+    int16_t inputWeights[kPiecePlaneCount][kSquareCount][kHiddenSize];
     int16_t hiddenBias[kHiddenSize];
-    int16_t outputWeights[kHiddenSize];
+    int16_t outputWeights[kOutputSize];
     int32_t outputBias;
 }};
 
@@ -280,11 +287,12 @@ def main() -> int:
         output_bin.parent.mkdir(parents=True, exist_ok=True)
         write_bin(output_bin, contract, quantized_weights, clip_max)
     manifest = {
-        "format": "chilo.nnue_export.v4",
+        "format": "chilo.nnue_export.v5",
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
         "architecture": contract["architecture"],
         "hidden_size": hidden_size,
+        "output_size": output_size_from_weights(quantized_weights),
         "clip_max": clip_max,
         "source": source,
         "quantization": "scaled_int16",
