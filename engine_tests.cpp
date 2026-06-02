@@ -1,6 +1,11 @@
 #include "chess.h"
+#include "generated/generated_nnue_weights.h"
 
+#include <array>
 #include <cctype>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -110,6 +115,75 @@ void recordSearchSample(const SearchSample& sample, void* userData) {
     SampleCapture* capture = static_cast<SampleCapture*>(userData);
     capture->calls++;
     capture->lastSample = sample;
+}
+
+template <typename T>
+void writeBinaryValue(std::ofstream& output, const T& value) {
+    output.write(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+std::array<char, 64> fixedNnueTextField(const char* text) {
+    std::array<char, 64> field{};
+    std::size_t length = std::strlen(text);
+    if (length > field.size()) length = field.size();
+    std::memcpy(field.data(), text, length);
+    return field;
+}
+
+bool writeSyntheticNnueWeights(const std::string& path) {
+    constexpr int hiddenSize = 8;
+    constexpr int clipMax = 255;
+    constexpr int inputScale = 1;
+    constexpr int outputScale = 1;
+    constexpr int perspectiveCount = 2;
+    constexpr int piecePlaneCount = 13;
+    constexpr int squareCount = 64;
+
+    std::ofstream output(path, std::ios::binary);
+    if (!output) return false;
+
+    const char magic[8] = {'C', 'H', 'N', 'N', 'U', 'E', 'B', '2'};
+    output.write(magic, sizeof(magic));
+    writeBinaryValue(output, static_cast<uint32_t>(hiddenSize));
+    writeBinaryValue(output, static_cast<uint32_t>(clipMax));
+    writeBinaryValue(output, static_cast<uint32_t>(inputScale));
+    writeBinaryValue(output, static_cast<uint32_t>(outputScale));
+    writeBinaryValue(output, static_cast<uint32_t>(perspectiveCount));
+    writeBinaryValue(output, static_cast<uint32_t>(piecePlaneCount));
+    writeBinaryValue(output, static_cast<uint32_t>(squareCount));
+
+    auto contractId = fixedNnueTextField(chilo::nnue_generated::kContractId);
+    auto contractHash = fixedNnueTextField(chilo::nnue_generated::kContractSha256);
+    output.write(contractId.data(), static_cast<std::streamsize>(contractId.size()));
+    output.write(contractHash.data(), static_cast<std::streamsize>(contractHash.size()));
+
+    std::array<int16_t, piecePlaneCount * squareCount * hiddenSize> inputWeights{};
+    for (int piece = 0; piece < piecePlaneCount; ++piece) {
+        for (int sq = 0; sq < squareCount; ++sq) {
+            for (int h = 0; h < hiddenSize; ++h) {
+                int value = ((piece * 17 + sq * 5 + h * 11) % 29) - 9;
+                if ((piece + sq + h) % 7 == 0) value -= 13;
+                inputWeights[(piece * squareCount + sq) * hiddenSize + h] = static_cast<int16_t>(value);
+            }
+        }
+    }
+    output.write(reinterpret_cast<const char*>(inputWeights.data()),
+                 static_cast<std::streamsize>(inputWeights.size() * sizeof(inputWeights[0])));
+
+    const std::array<int16_t, hiddenSize> hiddenBias = {23, 31, 47, 59, 71, 83, 97, 109};
+    output.write(reinterpret_cast<const char*>(hiddenBias.data()),
+                 static_cast<std::streamsize>(hiddenBias.size() * sizeof(hiddenBias[0])));
+
+    const std::array<int16_t, 2 * hiddenSize> outputWeights = {
+        3, -5, 7, -11, 13, -17, 19, -23,
+        29, -31, 37, -41, 43, -47, 53, -59,
+    };
+    output.write(reinterpret_cast<const char*>(outputWeights.data()),
+                 static_cast<std::streamsize>(outputWeights.size() * sizeof(outputWeights[0])));
+
+    const int32_t outputBias = 17;
+    writeBinaryValue(output, outputBias);
+    return output.good();
 }
 
 int testMirrorPositions() {
@@ -1099,6 +1173,70 @@ int testSearchFindsMateInOneForBothSides() {
     return 0;
 }
 
+int testNnuePerspectiveSymmetryWithRuntimeWeights() {
+    std::cout << "Test 23: NNUE Perspective Symmetry With Runtime Weights Test\n";
+
+    const std::string weightsPath = "/tmp/chilo-nnue-perspective-symmetry.bin";
+    if (!writeSyntheticNnueWeights(weightsPath)) {
+        std::cout << "  FAIL (could not write synthetic NNUE weights)\n";
+        return 1;
+    }
+
+    std::string error;
+    if (!loadNnueWeightsFile(weightsPath, error)) {
+        std::cout << "  FAIL (could not load synthetic NNUE weights: " << error << ")\n";
+        return 1;
+    }
+
+    const std::string symmetryFens[] = {
+        "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+        "4k3/8/8/3P4/8/8/8/4K3 w - - 0 1",
+        "4k3/8/6n1/8/3B4/8/6PP/4K3 w - - 0 1",
+        "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",
+        "4k3/7p/8/8/8/2N5/7P/R3K3 w - - 0 1",
+        "2r1k3/8/8/1p6/6P1/8/3N4/4K3 b - - 0 17",
+    };
+
+    bool sawNonZero = false;
+    for (const std::string& fen : symmetryFens) {
+        Position original = parseFEN(fen);
+        Position flipped = parseFEN(flipPositionAndColors(fen));
+
+        int originalEval = evaluate(original);
+        int flippedEval = evaluate(flipped);
+        if (originalEval != flippedEval) {
+            std::cout << "  FAIL (runtime NNUE eval symmetry mismatch for FEN: " << fen
+                      << ", original " << originalEval << ", flipped " << flippedEval << ")\n";
+            return 1;
+        }
+        if (originalEval != 0) sawNonZero = true;
+
+        NnueAccumulator originalAccumulator;
+        NnueAccumulator flippedAccumulator;
+        initNnueAccumulator(original, originalAccumulator);
+        initNnueAccumulator(flipped, flippedAccumulator);
+
+        int originalIncremental = evaluateWithAccumulator(original, originalAccumulator);
+        int flippedIncremental = evaluateWithAccumulator(flipped, flippedAccumulator);
+        if (originalIncremental != originalEval || flippedIncremental != flippedEval) {
+            std::cout << "  FAIL (runtime NNUE accumulator/rebuild mismatch for FEN: " << fen << ")\n";
+            return 1;
+        }
+        if (originalIncremental != flippedIncremental) {
+            std::cout << "  FAIL (runtime NNUE accumulator symmetry mismatch for FEN: " << fen << ")\n";
+            return 1;
+        }
+    }
+
+    if (!sawNonZero) {
+        std::cout << "  FAIL (synthetic NNUE test was vacuous; all evaluations were zero)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int main() {
     std::cout << "=== Engine Regression Tests ===\n\n";
     
@@ -1125,6 +1263,7 @@ int main() {
     failures += testSearchPrefersQuietPromotion();
     failures += testMateScoreHelpers();
     failures += testSearchFindsMateInOneForBothSides();
+    failures += testNnuePerspectiveSymmetryWithRuntimeWeights();
     
     std::cout << "\n=== Summary ===\n";
     if (failures == 0) std::cout << "All tests PASSED\n";
