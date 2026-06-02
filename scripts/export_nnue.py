@@ -12,6 +12,7 @@ import numpy as np
 from nnue_common import (
     build_seeded_weights,
     compact_json,
+    contract_hidden2_size,
     contract_hidden_size,
     feature_contract_compatible,
     integer_model_eval,
@@ -23,9 +24,10 @@ from nnue_common import (
 )
 
 DEFAULT_INPUT_SCALE = 64
+DEFAULT_HIDDEN_SCALE = 32
 DEFAULT_OUTPUT_SCALE = 32
-WEIGHTS_BIN_MAGIC = b"CHNNUEB2"
-WEIGHTS_BIN_HEADER_STRUCT = struct.Struct("<8sIIIIIII64s64s")
+WEIGHTS_BIN_MAGIC = b"CHNNUEB3"
+WEIGHTS_BIN_HEADER_STRUCT = struct.Struct("<8sIIIIIIIII64s64s")
 
 
 def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.ndarray | int]]:
@@ -41,24 +43,33 @@ def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.n
     model_meta = checkpoint.get("model", {})
     state_dict = checkpoint["state_dict"]
     hidden_size = int(model_meta.get("hidden_size", state_dict["hidden_bias"].shape[0]))
+    hidden2_size = int(model_meta.get("hidden2_size", state_dict["hidden2_bias"].shape[0]))
     weights = {
         "input_weights": state_dict["input_weights"].detach().cpu().numpy(),
         "hidden_bias": state_dict["hidden_bias"].detach().cpu().numpy(),
+        "hidden2_weights": state_dict["hidden2_weights"].detach().cpu().numpy(),
+        "hidden2_bias": state_dict["hidden2_bias"].detach().cpu().numpy(),
         "output_weights": state_dict["output_weights"].detach().cpu().numpy(),
         "output_bias": float(state_dict["output_bias"].detach().cpu().numpy().reshape(-1)[0]),
     }
     metadata = {
         "contract": contract,
         "hidden_size": hidden_size,
+        "hidden2_size": hidden2_size,
         "clip_max": int(model_meta.get("clip_max", contract.get("clip_max", 255))),
         "architecture": model_meta.get("architecture", contract.get("architecture", "TinyNnue")),
     }
     return metadata, weights
 
 
-def quantize_weights(weights: Dict[str, np.ndarray | int], input_scale: int, output_scale: int) -> Dict[str, np.ndarray | int]:
-    if input_scale <= 0 or output_scale <= 0:
-        raise SystemExit("input_scale and output_scale must be positive integers.")
+def quantize_weights(
+    weights: Dict[str, np.ndarray | int],
+    input_scale: int,
+    hidden_scale: int,
+    output_scale: int,
+) -> Dict[str, np.ndarray | int]:
+    if input_scale <= 0 or hidden_scale <= 0 or output_scale <= 0:
+        raise SystemExit("input_scale, hidden_scale, and output_scale must be positive integers.")
     quantized = {}
     for name in ("input_weights", "hidden_bias"):
         rounded = np.rint(np.asarray(weights[name], dtype=np.float64) * input_scale)
@@ -66,22 +77,37 @@ def quantize_weights(weights: Dict[str, np.ndarray | int], input_scale: int, out
             raise SystemExit(f"{name} does not fit in int16 after rounding; export refused.")
         quantized[name] = rounded.astype(np.int16)
 
+    rounded_hidden2_weights = np.rint(np.asarray(weights["hidden2_weights"], dtype=np.float64) * hidden_scale)
+    if np.any(rounded_hidden2_weights < np.iinfo(np.int16).min) or np.any(rounded_hidden2_weights > np.iinfo(np.int16).max):
+        raise SystemExit("hidden2_weights do not fit in int16 after scaled rounding; export refused.")
+    quantized["hidden2_weights"] = rounded_hidden2_weights.astype(np.int16)
+
+    rounded_hidden2_bias = np.rint(np.asarray(weights["hidden2_bias"], dtype=np.float64) * input_scale * hidden_scale)
+    if np.any(rounded_hidden2_bias < np.iinfo(np.int32).min) or np.any(rounded_hidden2_bias > np.iinfo(np.int32).max):
+        raise SystemExit("hidden2_bias does not fit in int32 after scaled rounding; export refused.")
+    quantized["hidden2_bias"] = rounded_hidden2_bias.astype(np.int32)
+
     rounded_output_weights = np.rint(np.asarray(weights["output_weights"], dtype=np.float64) * output_scale)
     if np.any(rounded_output_weights < np.iinfo(np.int16).min) or np.any(rounded_output_weights > np.iinfo(np.int16).max):
         raise SystemExit("output_weights do not fit in int16 after scaled rounding; export refused.")
     quantized["output_weights"] = rounded_output_weights.astype(np.int16)
 
-    output_bias = int(round(float(weights["output_bias"]) * input_scale * output_scale))
+    output_bias = int(round(float(weights["output_bias"]) * input_scale * hidden_scale * output_scale))
     if output_bias < np.iinfo(np.int32).min or output_bias > np.iinfo(np.int32).max:
         raise SystemExit("output_bias does not fit in int32 after scaled rounding; export refused.")
     quantized["output_bias"] = output_bias
     quantized["input_scale"] = int(input_scale)
+    quantized["hidden_scale"] = int(hidden_scale)
     quantized["output_scale"] = int(output_scale)
     return quantized
 
 
 def hidden_size_from_weights(weights: Dict[str, np.ndarray | int]) -> int:
     return int(np.asarray(weights["hidden_bias"]).shape[0])
+
+
+def hidden2_size_from_weights(weights: Dict[str, np.ndarray | int]) -> int:
+    return int(np.asarray(weights["hidden2_bias"]).shape[0])
 
 
 def output_size_from_weights(weights: Dict[str, np.ndarray | int]) -> int:
@@ -94,6 +120,8 @@ def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weig
 
     input_weights_float = np.asarray(float_weights["input_weights"], dtype=np.float64)
     hidden_bias_float = np.asarray(float_weights["hidden_bias"], dtype=np.float64)
+    hidden2_weights_float = np.asarray(float_weights["hidden2_weights"], dtype=np.float64)
+    hidden2_bias_float = np.asarray(float_weights["hidden2_bias"], dtype=np.float64)
     output_weights_float = np.asarray(float_weights["output_weights"], dtype=np.float64)
     output_bias_float = float(float_weights["output_bias"])
 
@@ -121,7 +149,8 @@ def validate_dataset(dataset_path: Path, contract: Dict[str, object], float_weig
                 hidden += input_weights_float[relative_piece_value, relative_square]
             accumulators.append(np.clip(hidden, 0.0, float(clip_max)))
         dense_input = np.concatenate([accumulators[side_to_move], accumulators[opposite_color(side_to_move)]])
-        float_score = output_bias_float + float((dense_input * output_weights_float).sum())
+        hidden2 = np.clip(hidden2_bias_float + hidden2_weights_float.dot(dense_input), 0.0, float(clip_max))
+        float_score = output_bias_float + float((hidden2 * output_weights_float).sum())
         quantized_score = integer_model_eval(quantized_weights, side_to_move, pieces, squares, clip_max)
         diffs.append(abs(float_score - quantized_score))
 
@@ -153,6 +182,7 @@ def format_nested_initializer(array: np.ndarray, indent: int = 4) -> str:
 
 def write_header(path: Path, contract: Dict[str, object], weights: Dict[str, np.ndarray | int]) -> None:
     hidden_size = hidden_size_from_weights(weights)
+    hidden2_size = hidden2_size_from_weights(weights)
     output_size = output_size_from_weights(weights)
     header = f"""#ifndef GENERATED_NNUE_WEIGHTS_H
 #define GENERATED_NNUE_WEIGHTS_H
@@ -166,17 +196,22 @@ inline constexpr char kContractId[] = "{contract['contract_id']}";
 inline constexpr char kContractSha256[] = "{contract['contract_sha256']}";
 inline constexpr int kVersion = {int(contract['version'])};
 inline constexpr int kHiddenSize = {hidden_size};
+inline constexpr int kHidden2Size = {hidden2_size};
 inline constexpr int kClipMax = {int(contract['clip_max'])};
 inline constexpr int kInputScale = {int(weights['input_scale'])};
+inline constexpr int kHiddenScale = {int(weights['hidden_scale'])};
 inline constexpr int kOutputScale = {int(weights['output_scale'])};
 inline constexpr int kPerspectiveCount = {int(contract['perspectives'])};
 inline constexpr int kPiecePlaneCount = {int(contract['piece_planes'])};
 inline constexpr int kSquareCount = {int(contract['board_squares'])};
+inline constexpr int kAccumulatorOutputSize = 2 * kHiddenSize;
 inline constexpr int kOutputSize = {output_size};
 
 struct TinyNnueData {{
     int16_t inputWeights[kPiecePlaneCount][kSquareCount][kHiddenSize];
     int16_t hiddenBias[kHiddenSize];
+    int16_t hidden2Weights[kHidden2Size][kAccumulatorOutputSize];
+    int32_t hidden2Bias[kHidden2Size];
     int16_t outputWeights[kOutputSize];
     int32_t outputBias;
 }};
@@ -184,6 +219,8 @@ struct TinyNnueData {{
 inline constexpr TinyNnueData kTinyNnue = {{
     {format_nested_initializer(np.asarray(weights['input_weights']), 4)},
     {format_nested_initializer(np.asarray(weights['hidden_bias']), 4)},
+    {format_nested_initializer(np.asarray(weights['hidden2_weights']), 4)},
+    {format_nested_initializer(np.asarray(weights['hidden2_bias']), 4)},
     {format_nested_initializer(np.asarray(weights['output_weights']), 4)},
     {int(weights['output_bias'])}
 }};
@@ -205,11 +242,14 @@ def fixed_ascii_bytes(text: str, size: int) -> bytes:
 
 def write_bin(path: Path, contract: Dict[str, object], weights: Dict[str, np.ndarray | int], clip_max: int) -> None:
     hidden_size = hidden_size_from_weights(weights)
+    hidden2_size = hidden2_size_from_weights(weights)
     header = WEIGHTS_BIN_HEADER_STRUCT.pack(
         WEIGHTS_BIN_MAGIC,
         hidden_size,
+        hidden2_size,
         int(clip_max),
         int(weights["input_scale"]),
+        int(weights["hidden_scale"]),
         int(weights["output_scale"]),
         int(contract["perspectives"]),
         int(contract["piece_planes"]),
@@ -222,6 +262,8 @@ def write_bin(path: Path, contract: Dict[str, object], weights: Dict[str, np.nda
         handle.write(header)
         handle.write(np.asarray(weights["input_weights"], dtype="<i2").tobytes(order="C"))
         handle.write(np.asarray(weights["hidden_bias"], dtype="<i2").tobytes(order="C"))
+        handle.write(np.asarray(weights["hidden2_weights"], dtype="<i2").tobytes(order="C"))
+        handle.write(np.asarray(weights["hidden2_bias"], dtype="<i4").tobytes(order="C"))
         handle.write(np.asarray(weights["output_weights"], dtype="<i2").tobytes(order="C"))
         handle.write(np.asarray([weights["output_bias"]], dtype="<i4").tobytes(order="C"))
 
@@ -235,6 +277,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-samples", type=int, default=256, help="Maximum number of validation positions to sample from the dataset.")
     parser.add_argument("--tolerance", type=float, default=0.0, help="Maximum allowed max absolute drift during quantization validation.")
     parser.add_argument("--input-scale", type=int, default=DEFAULT_INPUT_SCALE, help="Scale factor applied to input weights and hidden bias before integer export.")
+    parser.add_argument("--hidden-scale", type=int, default=DEFAULT_HIDDEN_SCALE, help="Scale factor applied to second-layer weights before integer export.")
     parser.add_argument("--output-scale", type=int, default=DEFAULT_OUTPUT_SCALE, help="Scale factor applied to output weights before integer export.")
     parser.add_argument("--output-header", default=None, help="Optional path to write the generated_nnue_weights.h file.")
     parser.add_argument("--output-manifest", default=None, help="Optional path to write the export manifest JSON.")
@@ -253,9 +296,10 @@ def main() -> int:
 
     source = "seeded"
     hidden_size = contract_hidden_size(contract)
+    hidden2_size = contract_hidden2_size(contract)
     clip_max = int(contract["clip_max"])
     if args.seeded:
-        float_weights = build_seeded_weights(contract, hidden_size)
+        float_weights = build_seeded_weights(contract, hidden_size, hidden2_size)
     else:
         checkpoint_meta, float_weights = load_torch_checkpoint(Path(args.checkpoint))
         source = str(Path(args.checkpoint).resolve())
@@ -263,9 +307,10 @@ def main() -> int:
         if not feature_contract_compatible(contract, checkpoint_contract):
             raise SystemExit("Checkpoint feature contract does not match the requested export contract.")
         hidden_size = int(checkpoint_meta["hidden_size"])
+        hidden2_size = int(checkpoint_meta["hidden2_size"])
         clip_max = int(checkpoint_meta["clip_max"])
 
-    quantized_weights = quantize_weights(float_weights, args.input_scale, args.output_scale)
+    quantized_weights = quantize_weights(float_weights, args.input_scale, args.hidden_scale, args.output_scale)
     validation = {"validation_samples": 0, "validation_split": "none", "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
     if args.dataset_dir:
         validation = validate_dataset(
@@ -287,16 +332,18 @@ def main() -> int:
         output_bin.parent.mkdir(parents=True, exist_ok=True)
         write_bin(output_bin, contract, quantized_weights, clip_max)
     manifest = {
-        "format": "chilo.nnue_export.v5",
+        "format": "chilo.nnue_export.v6",
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
         "architecture": contract["architecture"],
         "hidden_size": hidden_size,
+        "hidden2_size": hidden2_size,
         "output_size": output_size_from_weights(quantized_weights),
         "clip_max": clip_max,
         "source": source,
-        "quantization": "scaled_int16",
+        "quantization": "scaled_int16_int32_bias",
         "input_scale": int(args.input_scale),
+        "hidden_scale": int(args.hidden_scale),
         "output_scale": int(args.output_scale),
         "output_bin": str(output_bin.resolve()) if output_bin else None,
         "validation": validation,

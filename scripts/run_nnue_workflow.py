@@ -69,7 +69,8 @@ def parse_args() -> argparse.Namespace:
         ),
         default="random",
     )
-    parser.add_argument("--hidden-size", type=int, default=32)
+    parser.add_argument("--hidden-size", type=int, default=0)
+    parser.add_argument("--hidden2-size", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--shuffle-buffer-size", type=int, default=262144)
     parser.add_argument("--no-shuffle", dest="shuffle", action="store_false", help="Disable training shard/sample shuffling.")
@@ -220,13 +221,15 @@ def main() -> int:
             args.device,
             "--init",
             args.init,
-            "--hidden-size",
-            str(args.hidden_size),
             "--shuffle-buffer-size",
             str(args.shuffle_buffer_size),
             "--report-batches",
             str(args.report_batches),
         ]
+        if args.hidden_size > 0:
+            train_cmd.extend(["--hidden-size", str(args.hidden_size)])
+        if args.hidden2_size > 0:
+            train_cmd.extend(["--hidden2-size", str(args.hidden2_size)])
         if args.seed is not None:
             train_cmd.extend(["--seed", str(args.seed)])
         if args.num_workers is not None:

@@ -107,6 +107,7 @@ def main() -> int:
         quantized = quantize_weights(
             float_weights,
             int(export_manifest["input_scale"]),
+            int(export_manifest["hidden_scale"]),
             int(export_manifest["output_scale"]),
         )
         test_fens = [

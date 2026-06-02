@@ -21,7 +21,7 @@ namespace {
 
 using chilo::nnue_generated::TinyNnueData;
 
-constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB2";
+constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB3";
 constexpr std::size_t WEIGHTS_BIN_TEXT_FIELD_SIZE = 64;
 
 struct RuntimeNnue {
@@ -29,14 +29,18 @@ struct RuntimeNnue {
     std::string contractSha256;
     int version = 0;
     int hiddenSize = 0;
+    int hidden2Size = 0;
     int clipMax = 0;
     int inputScale = 0;
+    int hiddenScale = 0;
     int outputScale = 0;
     int perspectiveCount = 0;
     int piecePlaneCount = 0;
     int squareCount = 0;
     std::vector<int16_t> inputWeights;
     std::vector<int16_t> hiddenBias;
+    std::vector<int16_t> hidden2Weights;
+    std::vector<int32_t> hidden2Bias;
     std::vector<int16_t> outputWeights;
     int32_t outputBias = 0;
 };
@@ -44,8 +48,10 @@ struct RuntimeNnue {
 struct WeightsBinHeader {
     char magic[8];
     uint32_t hiddenSize;
+    uint32_t hidden2Size;
     uint32_t clipMax;
     uint32_t inputScale;
+    uint32_t hiddenScale;
     uint32_t outputScale;
     uint32_t perspectiveCount;
     uint32_t piecePlaneCount;
@@ -54,9 +60,9 @@ struct WeightsBinHeader {
     char contractSha256[WEIGHTS_BIN_TEXT_FIELD_SIZE];
 };
 
-static_assert(std::string_view(chilo::nnue_generated::kContractId) == "chilo.tiny_nnue.v3",
+static_assert(std::string_view(chilo::nnue_generated::kContractId) == "chilo.tiny_nnue.v4",
               "Unexpected generated NNUE contract id");
-static_assert(chilo::nnue_generated::kVersion == 3, "Unexpected generated NNUE contract version");
+static_assert(chilo::nnue_generated::kVersion == 4, "Unexpected generated NNUE contract version");
 static_assert(chilo::nnue_generated::kPerspectiveCount == 2, "Unexpected generated NNUE perspective count");
 static_assert(chilo::nnue_generated::kPiecePlaneCount == 13, "Unexpected generated NNUE piece plane count");
 static_assert(chilo::nnue_generated::kSquareCount == 64, "Unexpected generated NNUE square count");
@@ -108,8 +114,10 @@ RuntimeNnue builtInNnue() {
     runtime.contractSha256 = chilo::nnue_generated::kContractSha256;
     runtime.version = chilo::nnue_generated::kVersion;
     runtime.hiddenSize = chilo::nnue_generated::kHiddenSize;
+    runtime.hidden2Size = chilo::nnue_generated::kHidden2Size;
     runtime.clipMax = chilo::nnue_generated::kClipMax;
     runtime.inputScale = chilo::nnue_generated::kInputScale;
+    runtime.hiddenScale = chilo::nnue_generated::kHiddenScale;
     runtime.outputScale = chilo::nnue_generated::kOutputScale;
     runtime.perspectiveCount = chilo::nnue_generated::kPerspectiveCount;
     runtime.piecePlaneCount = chilo::nnue_generated::kPiecePlaneCount;
@@ -118,6 +126,10 @@ RuntimeNnue builtInNnue() {
                                 &builtIn.inputWeights[0][0][0] +
                                     runtime.piecePlaneCount * runtime.squareCount * runtime.hiddenSize);
     runtime.hiddenBias.assign(&builtIn.hiddenBias[0], &builtIn.hiddenBias[0] + runtime.hiddenSize);
+    runtime.hidden2Weights.assign(&builtIn.hidden2Weights[0][0],
+                                  &builtIn.hidden2Weights[0][0] +
+                                      runtime.hidden2Size * 2 * runtime.hiddenSize);
+    runtime.hidden2Bias.assign(&builtIn.hidden2Bias[0], &builtIn.hidden2Bias[0] + runtime.hidden2Size);
     runtime.outputWeights.assign(&builtIn.outputWeights[0],
                                  &builtIn.outputWeights[0] + chilo::nnue_generated::kOutputSize);
     runtime.outputBias = builtIn.outputBias;
@@ -153,7 +165,8 @@ bool validateRuntimeNnue(const RuntimeNnue& net, std::string& error) {
         error = "NNUE tensor dimensions do not match the engine";
         return false;
     }
-    if (net.hiddenSize <= 0 || net.inputScale <= 0 || net.outputScale <= 0) {
+    if (net.hiddenSize <= 0 || net.hidden2Size <= 0 || net.inputScale <= 0 || net.hiddenScale <= 0 ||
+        net.outputScale <= 0) {
         error = "NNUE metadata contains non-positive hidden size or scales";
         return false;
     }
@@ -167,8 +180,15 @@ bool validateRuntimeNnue(const RuntimeNnue& net, std::string& error) {
         error = "NNUE input weight payload size is inconsistent";
         return false;
     }
+    std::size_t hidden2WeightCount = checkedProduct({net.hidden2Size, 2 * net.hiddenSize}, productError);
+    if (!productError.empty()) {
+        error = productError;
+        return false;
+    }
     if (net.hiddenBias.size() != static_cast<std::size_t>(net.hiddenSize) ||
-        net.outputWeights.size() != static_cast<std::size_t>(2 * net.hiddenSize)) {
+        net.hidden2Weights.size() != hidden2WeightCount ||
+        net.hidden2Bias.size() != static_cast<std::size_t>(net.hidden2Size) ||
+        net.outputWeights.size() != static_cast<std::size_t>(net.hidden2Size)) {
         error = "NNUE hidden/output payload size is inconsistent";
         return false;
     }
@@ -197,8 +217,10 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
     net.contractSha256 = trimFixedString(header.contractSha256, sizeof(header.contractSha256));
     net.version = chilo::nnue_generated::kVersion;
     net.hiddenSize = static_cast<int>(header.hiddenSize);
+    net.hidden2Size = static_cast<int>(header.hidden2Size);
     net.clipMax = static_cast<int>(header.clipMax);
     net.inputScale = static_cast<int>(header.inputScale);
+    net.hiddenScale = static_cast<int>(header.hiddenScale);
     net.outputScale = static_cast<int>(header.outputScale);
     net.perspectiveCount = static_cast<int>(header.perspectiveCount);
     net.piecePlaneCount = static_cast<int>(header.piecePlaneCount);
@@ -213,9 +235,18 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
 
     net.inputWeights.resize(inputCount);
     net.hiddenBias.resize(static_cast<std::size_t>(net.hiddenSize));
-    net.outputWeights.resize(static_cast<std::size_t>(2 * net.hiddenSize));
+    std::size_t hidden2WeightCount = checkedProduct({net.hidden2Size, 2 * net.hiddenSize}, productError);
+    if (!productError.empty()) {
+        error = productError;
+        return false;
+    }
+    net.hidden2Weights.resize(hidden2WeightCount);
+    net.hidden2Bias.resize(static_cast<std::size_t>(net.hidden2Size));
+    net.outputWeights.resize(static_cast<std::size_t>(net.hidden2Size));
     if (!readExactBytes(input, net.inputWeights.data(), net.inputWeights.size() * sizeof(int16_t)) ||
         !readExactBytes(input, net.hiddenBias.data(), net.hiddenBias.size() * sizeof(int16_t)) ||
+        !readExactBytes(input, net.hidden2Weights.data(), net.hidden2Weights.size() * sizeof(int16_t)) ||
+        !readExactBytes(input, net.hidden2Bias.data(), net.hidden2Bias.size() * sizeof(int32_t)) ||
         !readExactBytes(input, net.outputWeights.data(), net.outputWeights.size() * sizeof(int16_t)) ||
         !readExact(input, net.outputBias)) {
         error = "NNUE binary payload is truncated";
@@ -239,6 +270,10 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
 
 int clippedRelu(int value, int scaledClipMax) {
     return std::clamp(value, 0, scaledClipMax);
+}
+
+int64_t clippedRelu64(int64_t value, int64_t scaledClipMax) {
+    return std::clamp<int64_t>(value, 0, scaledClipMax);
 }
 
 Color oppositeColor(Color color) {
@@ -312,6 +347,31 @@ void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 #else
     for (int i = 0; i < hiddenSize; ++i) lane[i] -= weights[i];
 #endif
+}
+
+int64_t dotClippedLane(const int32_t* lane, const int16_t* weights, int hiddenSize, int scaledClipMax) {
+    int64_t sum = 0;
+#if defined(CHILO_AVX2)
+    int i = 0;
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i clip = _mm256_set1_epi32(scaledClipMax);
+    alignas(32) int32_t products[8];
+    for (; i + 8 <= hiddenSize; i += 8) {
+        __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
+        values = _mm256_max_epi32(zero, _mm256_min_epi32(values, clip));
+        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
+        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+        const __m256i product = _mm256_mullo_epi32(values, expandedWeights);
+        _mm256_store_si256(reinterpret_cast<__m256i*>(products), product);
+        for (int j = 0; j < 8; ++j) sum += products[j];
+    }
+    for (; i < hiddenSize; ++i) sum += static_cast<int64_t>(clippedRelu(lane[i], scaledClipMax)) * weights[i];
+#else
+    for (int i = 0; i < hiddenSize; ++i) {
+        sum += static_cast<int64_t>(clippedRelu(lane[i], scaledClipMax)) * weights[i];
+    }
+#endif
+    return sum;
 }
 
 void updateAccumulatorFeatureUnchecked(const RuntimeNnue& net, NnueAccumulator& acc, Piece piece, int sq, bool add) {
@@ -395,12 +455,18 @@ int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
     const RuntimeNnue& net = currentNnue();
 
     const int scaledClipMax = net.clipMax * net.inputScale;
+    const int64_t scaledHidden2ClipMax =
+        static_cast<int64_t>(net.clipMax) * net.inputScale * net.hiddenScale;
     int64_t score = net.outputBias;
-    for (int i = 0; i < net.hiddenSize; ++i) {
-        score += static_cast<int64_t>(clippedRelu(first[i], scaledClipMax)) *
-                 net.outputWeights[static_cast<std::size_t>(i)];
-        score += static_cast<int64_t>(clippedRelu(second[i], scaledClipMax)) *
-                 net.outputWeights[static_cast<std::size_t>(net.hiddenSize + i)];
+    const int denseInputSize = 2 * net.hiddenSize;
+    for (int h = 0; h < net.hidden2Size; ++h) {
+        const int16_t* weights =
+            net.hidden2Weights.data() + static_cast<std::size_t>(h) * static_cast<std::size_t>(denseInputSize);
+        int64_t hidden2Value = net.hidden2Bias[static_cast<std::size_t>(h)];
+        hidden2Value += dotClippedLane(first, weights, net.hiddenSize, scaledClipMax);
+        hidden2Value += dotClippedLane(second, weights + net.hiddenSize, net.hiddenSize, scaledClipMax);
+        hidden2Value = clippedRelu64(hidden2Value, scaledHidden2ClipMax);
+        score += hidden2Value * net.outputWeights[static_cast<std::size_t>(h)];
     }
     return score;
 }
@@ -491,7 +557,7 @@ int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc) {
     const int32_t* activeHidden = acc.values.data() + accumulatorOffset(net, pos.sideToMove);
     const int32_t* passiveHidden = acc.values.data() + accumulatorOffset(net, passiveSide);
     int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.outputScale;
+    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.hiddenScale * net.outputScale;
     return roundDivide(score, finalDivisor);
 }
 
@@ -504,6 +570,6 @@ int evaluate(const Position& pos) {
     const int32_t* activeHidden = pos.sideToMove == WHITE ? whiteHidden.data() : blackHidden.data();
     const int32_t* passiveHidden = pos.sideToMove == WHITE ? blackHidden.data() : whiteHidden.data();
     int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.outputScale;
+    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.hiddenScale * net.outputScale;
     return roundDivide(score, finalDivisor);
 }

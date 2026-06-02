@@ -17,13 +17,13 @@ Optional AVX2-specific release outputs live under `build/release-avx2` and `buil
 
 ## NNUE State
 
-The active evaluator is `TinyNnue` with active/passive perspectives:
+The active evaluator is `TinyNnue` with white/black perspective accumulators:
 
-- perspective `0` is the side to move
-- perspective `1` is the opponent
+- the two accumulator lanes are stored as white perspective and black perspective
+- inference orders them as side-to-move first, opponent second
 - raw board pieces are remapped to friendly/enemy input planes per perspective
 - square normalization mirrors black perspectives
-- the score is `(active_perspective - passive_perspective) / 2`
+- the clipped accumulator pair feeds a second ClippedReLU hidden layer before the scalar output
 
 Search evaluates through lazy NNUE accumulators: move deltas are pushed before `doMove`, but hidden sums are only updated when a node actually needs static eval. `evaluate(pos)` remains the full-rebuild reference path for tools, parity tests, and fallback cases.
 

@@ -10,6 +10,7 @@ from typing import Dict, List
 import numpy as np
 
 from nnue_common import (
+    contract_hidden2_size,
     contract_hidden_size,
     load_contract,
     load_dataset_manifest,
@@ -33,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contract", default=None, help="Optional path to nnue_contract.json.")
     parser.add_argument("--hidden-size", type=int, default=0,
                         help="Hidden layer size. Defaults to the contract's default hidden size.")
+    parser.add_argument("--hidden2-size", type=int, default=0,
+                        help="Second hidden layer size. Defaults to the contract's default second hidden size.")
     parser.add_argument("--init", choices=INIT_CHOICES, default="random")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="cpu")
@@ -180,7 +183,7 @@ def build_loader(DataLoader, dataset_root: Path, shard_metas: List[Dict[str, obj
 
 
 def initialize_custom_random_scaled(model, nn, input_std: float, hidden_bias: float, output_std: float) -> None:
-    initialize_random_scaled(model, nn, input_std, hidden_bias, output_std)
+    initialize_random_scaled(model, nn, input_std, hidden_bias, 0.05, 0.5, output_std)
 
 
 def update_activation_stats(model, pieces, squares, piece_count, side_to_move, activation_stats: FractionStats) -> None:
@@ -310,6 +313,7 @@ def sweep_rows(
     TinyNnueModel,
     contract: Dict[str, object],
     hidden_size: int,
+    hidden2_size: int,
     device,
     DataLoader,
     dataset_root: Path,
@@ -331,7 +335,7 @@ def sweep_rows(
                 random.seed(row_seed)
                 np.random.seed(row_seed)
                 torch.manual_seed(row_seed)
-                model = TinyNnueModel(contract, hidden_size, "random").to(device)
+                model = TinyNnueModel(contract, hidden_size, hidden2_size, "random").to(device)
                 initialize_custom_random_scaled(model, nn, input_std, hidden_bias, output_std)
                 loader = build_loader(DataLoader, dataset_root, shard_metas, args)
                 result = evaluate_model(
@@ -444,8 +448,9 @@ def main() -> int:
 
     contract = load_contract(Path(args.contract) if args.contract else None)
     hidden_size = args.hidden_size if args.hidden_size > 0 else contract_hidden_size(contract)
-    if hidden_size <= 0:
-        raise SystemExit("--hidden-size must be positive.")
+    hidden2_size = args.hidden2_size if args.hidden2_size > 0 else contract_hidden2_size(contract)
+    if hidden_size <= 0 or hidden2_size <= 0:
+        raise SystemExit("--hidden-size and --hidden2-size must be positive.")
     manifest_path, manifest = load_dataset_manifest(Path(args.dataset), contract)
     dataset_root = manifest_path.parent
 
@@ -473,6 +478,7 @@ def main() -> int:
             TinyNnueModel,
             contract,
             hidden_size,
+            hidden2_size,
             device,
             DataLoader,
             dataset_root,
@@ -487,7 +493,7 @@ def main() -> int:
         return 0
 
     loader = build_loader(DataLoader, dataset_root, shard_metas, args)
-    model = TinyNnueModel(contract, hidden_size, args.init).to(device)
+    model = TinyNnueModel(contract, hidden_size, hidden2_size, args.init).to(device)
     result = evaluate_model(model, loader, sample_limit, args)
     print_single_report(manifest_path, args.split, selected_samples, args.init, hidden_size, args.seed, result)
     return 0

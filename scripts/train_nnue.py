@@ -21,6 +21,8 @@ except ImportError:
 
 from nnue_common import (
     compact_json,
+    contract_hidden2_size,
+    contract_hidden_size,
     load_contract,
     load_dataset_manifest,
     shard_metas_for_split,
@@ -28,7 +30,6 @@ from nnue_common import (
 )
 from nnue_torch import INIT_CHOICES, load_torch, make_tiny_nnue_model
 
-DEFAULT_HIDDEN_SIZE = 32
 DEFAULT_BATCH_SIZE = 4096
 DEFAULT_LEARNING_RATE = 1e-3
 DEFAULT_WEIGHT_DECAY = 0.0
@@ -118,7 +119,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-D", "--device", default="auto", help="Training device: auto, cpu, cuda, or another torch device string.")
     parser.add_argument("-i", "--init", choices=INIT_CHOICES, default="random")
     parser.add_argument("-H", "--hidden-size", type=int, default=0,
-                        help=f"Hidden layer size for the trained NNUE. Defaults to {DEFAULT_HIDDEN_SIZE}, or the checkpoint size when resuming.")
+                        help="Accumulator hidden layer size. Defaults to the contract value, or the checkpoint size when resuming.")
+    parser.add_argument("--hidden2-size", type=int, default=0,
+                        help="Second dense hidden layer size. Defaults to the contract value, or the checkpoint size when resuming.")
     parser.add_argument("-W", "--num-workers", type=int, default=None,
                         help="DataLoader worker count. Defaults to 3 on CUDA and 0 otherwise.")
     parser.add_argument("-B", "--shuffle-buffer-size", type=int, default=DEFAULT_SHUFFLE_BUFFER_SIZE)
@@ -209,9 +212,16 @@ def main() -> int:
         checkpoint_hidden_size = int(checkpoint_model.get("hidden_size", 0))
         if checkpoint_hidden_size <= 0:
             raise SystemExit(f"Checkpoint {args.resume_checkpoint} does not contain a valid hidden size.")
+        checkpoint_hidden2_size = int(checkpoint_model.get("hidden2_size", 0))
+        if checkpoint_hidden2_size <= 0:
+            raise SystemExit(f"Checkpoint {args.resume_checkpoint} does not contain a valid second hidden size.")
         if args.hidden_size > 0 and args.hidden_size != checkpoint_hidden_size:
             raise SystemExit(
                 f"--hidden-size {args.hidden_size} does not match checkpoint hidden size {checkpoint_hidden_size}."
+            )
+        if args.hidden2_size > 0 and args.hidden2_size != checkpoint_hidden2_size:
+            raise SystemExit(
+                f"--hidden2-size {args.hidden2_size} does not match checkpoint second hidden size {checkpoint_hidden2_size}."
             )
         resume_epoch_offset = checkpoint_history_length(resume_checkpoint)
 
@@ -220,9 +230,15 @@ def main() -> int:
     elif resume_checkpoint is not None:
         hidden_size = int(resume_checkpoint["model"]["hidden_size"])
     else:
-        hidden_size = DEFAULT_HIDDEN_SIZE
-    if hidden_size <= 0:
-        raise SystemExit("--hidden-size must be positive.")
+        hidden_size = contract_hidden_size(contract)
+    if args.hidden2_size > 0:
+        hidden2_size = args.hidden2_size
+    elif resume_checkpoint is not None:
+        hidden2_size = int(resume_checkpoint["model"]["hidden2_size"])
+    else:
+        hidden2_size = contract_hidden2_size(contract)
+    if hidden_size <= 0 or hidden2_size <= 0:
+        raise SystemExit("--hidden-size and --hidden2-size must be positive.")
     manifest_path, manifest = load_dataset_manifest(Path(args.dataset), contract)
 
     train_shards = shard_metas_for_split(manifest, "train")
@@ -304,11 +320,16 @@ def main() -> int:
     def weight_stats():
         input_values = model.input_weights.detach().float()
         hidden_bias_values = model.hidden_bias.detach().float()
+        hidden2_values = model.hidden2_weights.detach().float()
+        hidden2_bias_values = model.hidden2_bias.detach().float()
         output_values = model.output_weights.detach().float()
         return {
             "input_std": float(input_values.std(unbiased=False).item()),
             "hidden_bias_mean": float(hidden_bias_values.mean().item()),
             "hidden_bias_std": float(hidden_bias_values.std(unbiased=False).item()),
+            "hidden2_std": float(hidden2_values.std(unbiased=False).item()),
+            "hidden2_bias_mean": float(hidden2_bias_values.mean().item()),
+            "hidden2_bias_std": float(hidden2_bias_values.std(unbiased=False).item()),
             "output_std": float(output_values.std(unbiased=False).item()),
             "output_abs_max": float(output_values.abs().max().item()),
         }
@@ -346,6 +367,10 @@ def main() -> int:
                     writer.add_histogram("hist/input_grad", train_diag["input_grad"], epoch)
                 if train_diag["hidden_bias_grad"] is not None:
                     writer.add_histogram("hist/hidden_bias_grad", train_diag["hidden_bias_grad"], epoch)
+                if train_diag["hidden2_grad"] is not None:
+                    writer.add_histogram("hist/hidden2_grad", train_diag["hidden2_grad"], epoch)
+                if train_diag["hidden2_bias_grad"] is not None:
+                    writer.add_histogram("hist/hidden2_bias_grad", train_diag["hidden2_bias_grad"], epoch)
                 if train_diag["output_grad"] is not None:
                     writer.add_histogram("hist/output_grad", train_diag["output_grad"], epoch)
             if val_diag is not None:
@@ -353,11 +378,13 @@ def main() -> int:
                 writer.add_histogram("hist/hidden_pre_activation_val", val_diag["hidden_tensor"], epoch)
             writer.add_histogram("hist/input_weights", model.input_weights.detach().cpu(), epoch)
             writer.add_histogram("hist/hidden_bias", model.hidden_bias.detach().cpu(), epoch)
+            writer.add_histogram("hist/hidden2_weights", model.hidden2_weights.detach().cpu(), epoch)
+            writer.add_histogram("hist/hidden2_bias", model.hidden2_bias.detach().cpu(), epoch)
             writer.add_histogram("hist/output_weights", model.output_weights.detach().cpu(), epoch)
 
     device = torch.device(resolved_device)
     TinyNnueModel = make_tiny_nnue_model(torch, nn)
-    model = TinyNnueModel(contract, hidden_size, args.init).to(device)
+    model = TinyNnueModel(contract, hidden_size, hidden2_size, args.init).to(device)
     if resume_checkpoint is not None:
         state_dict = resume_checkpoint.get("state_dict")
         if not isinstance(state_dict, dict):
@@ -404,12 +431,16 @@ def main() -> int:
                         "grads": {
                             "input_norm": grad_norm(model.input_weights),
                             "hidden_bias_norm": grad_norm(model.hidden_bias),
+                            "hidden2_norm": grad_norm(model.hidden2_weights),
+                            "hidden2_bias_norm": grad_norm(model.hidden2_bias),
                             "output_norm": grad_norm(model.output_weights),
                         },
                         "pred_tensor": pred_cp.detach().cpu(),
                         "hidden_tensor": hidden.detach().cpu(),
                         "input_grad": model.input_weights.grad.detach().cpu() if model.input_weights.grad is not None else None,
                         "hidden_bias_grad": model.hidden_bias.grad.detach().cpu() if model.hidden_bias.grad is not None else None,
+                        "hidden2_grad": model.hidden2_weights.grad.detach().cpu() if model.hidden2_weights.grad is not None else None,
+                        "hidden2_bias_grad": model.hidden2_bias.grad.detach().cpu() if model.hidden2_bias.grad is not None else None,
                         "output_grad": model.output_weights.grad.detach().cpu() if model.output_weights.grad is not None else None,
                     }
 
@@ -479,6 +510,7 @@ def main() -> int:
                 "model": {
                     "architecture": contract["architecture"],
                     "hidden_size": hidden_size,
+                    "hidden2_size": hidden2_size,
                     "clip_max": int(contract["clip_max"]),
                 },
                 "dataset": {
@@ -524,6 +556,7 @@ def main() -> int:
         "contract_sha256": contract["contract_sha256"],
         "dataset_manifest": str(manifest_path.resolve()),
         "hidden_size": hidden_size,
+        "hidden2_size": hidden2_size,
         "train_shards": len(train_shards),
         "val_shards": len(val_shards),
         "train_samples": train_samples,

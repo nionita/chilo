@@ -15,7 +15,15 @@ DATASET_FORMAT = "chilo.nnue_dataset.v2"
 DATASET_MANIFEST_NAME = "manifest.json"
 SHARD_DIR_NAME = "shards"
 DEFAULT_HIDDEN_SIZE = 64
-CONTRACT_HASH_EXCLUDED_KEYS = {"hidden_size", "default_hidden_size", "contract_path", "contract_sha256"}
+DEFAULT_HIDDEN2_SIZE = 32
+CONTRACT_HASH_EXCLUDED_KEYS = {
+    "hidden_size",
+    "hidden2_size",
+    "default_hidden_size",
+    "default_hidden2_size",
+    "contract_path",
+    "contract_sha256",
+}
 
 PIECE_FROM_FEN = {
     "P": 1,
@@ -49,6 +57,9 @@ def load_contract(path: Path | None = None) -> Dict[str, object]:
     with contract_path.open("r", encoding="utf-8") as handle:
         contract = json.load(handle)
     contract["default_hidden_size"] = int(contract.get("default_hidden_size", contract.get("hidden_size", DEFAULT_HIDDEN_SIZE)))
+    contract["default_hidden2_size"] = int(
+        contract.get("default_hidden2_size", contract.get("hidden2_size", DEFAULT_HIDDEN2_SIZE))
+    )
     contract["contract_sha256"] = contract_sha256(contract)
     contract["contract_path"] = str(contract_path)
     return contract
@@ -62,6 +73,10 @@ def contract_sha256(contract: Dict[str, object]) -> str:
 
 def contract_hidden_size(contract: Dict[str, object]) -> int:
     return int(contract.get("hidden_size", contract.get("default_hidden_size", DEFAULT_HIDDEN_SIZE)))
+
+
+def contract_hidden2_size(contract: Dict[str, object]) -> int:
+    return int(contract.get("hidden2_size", contract.get("default_hidden2_size", DEFAULT_HIDDEN2_SIZE)))
 
 
 def feature_contract_compatible(reference_contract: Dict[str, object], candidate_contract: Dict[str, object]) -> bool:
@@ -314,18 +329,27 @@ def pawn_advance_weight(square: int) -> int:
     return (square >> 3) * 4
 
 
-def build_seeded_weights(contract: Dict[str, object], hidden_size: int | None = None) -> Dict[str, np.ndarray | int]:
+def build_seeded_weights(
+    contract: Dict[str, object],
+    hidden_size: int | None = None,
+    hidden2_size: int | None = None,
+) -> Dict[str, np.ndarray | int]:
     hidden_size = contract_hidden_size(contract) if hidden_size is None else int(hidden_size)
-    if hidden_size <= 0:
-        raise ValueError("Seeded NNUE initialization requires hidden_size > 0.")
+    hidden2_size = contract_hidden2_size(contract) if hidden2_size is None else int(hidden2_size)
+    if hidden_size <= 0 or hidden2_size <= 0:
+        raise ValueError("Seeded NNUE initialization requires hidden sizes > 0.")
     input_weights = np.zeros((13, 64, hidden_size), dtype=np.int16)
     hidden_bias = np.zeros((hidden_size,), dtype=np.int16)
-    output_weights = np.zeros((2 * hidden_size,), dtype=np.int16)
+    hidden2_weights = np.zeros((hidden2_size, 2 * hidden_size), dtype=np.int16)
+    hidden2_bias = np.zeros((hidden2_size,), dtype=np.int32)
+    output_weights = np.zeros((hidden2_size,), dtype=np.int16)
     output_bias = 0
 
     return {
         "input_weights": input_weights,
         "hidden_bias": hidden_bias,
+        "hidden2_weights": hidden2_weights,
+        "hidden2_bias": hidden2_bias,
         "output_weights": output_weights,
         "output_bias": output_bias,
     }
@@ -352,12 +376,16 @@ def integer_model_eval(
 ) -> int:
     input_weights = weights["input_weights"]
     hidden_bias = weights["hidden_bias"].astype(np.int64)
+    hidden2_weights = weights["hidden2_weights"].astype(np.int64)
+    hidden2_bias = weights["hidden2_bias"].astype(np.int64)
     output_weights = weights["output_weights"].astype(np.int64)
     output_bias = int(weights["output_bias"])
     input_scale = int(weights.get("input_scale", 1))
+    hidden_scale = int(weights.get("hidden_scale", 1))
     output_scale = int(weights.get("output_scale", 1))
     scaled_clip_max = clip_max * input_scale
-    total_scale = input_scale * output_scale
+    scaled_hidden2_clip_max = clip_max * input_scale * hidden_scale
+    total_scale = input_scale * hidden_scale * output_scale
 
     accumulators: List[np.ndarray] = []
     for color in (0, 1):
@@ -370,5 +398,7 @@ def integer_model_eval(
     first = accumulators[side_to_move]
     second = accumulators[opposite_color(side_to_move)]
     dense_input = np.concatenate([first, second])
-    score = output_bias + int((dense_input * output_weights).sum())
+    hidden2 = hidden2_bias + hidden2_weights.dot(dense_input)
+    hidden2 = np.clip(hidden2, 0, scaled_hidden2_clip_max)
+    score = output_bias + int((hidden2 * output_weights).sum())
     return round_divide(score, total_scale)
