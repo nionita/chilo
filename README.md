@@ -19,6 +19,7 @@ Small chess engine project with:
 - `chilo.cpp`: UCI engine binary entry point
 - `selfplay_collect.cpp`: self-play training-data collector
 - `eval_fen.cpp`: tiny CLI for evaluating one or more FENs with the compiled engine
+- `nnue_eval_bench.cpp`: rebuilt/incremental NNUE evaluation throughput benchmark
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
@@ -65,6 +66,7 @@ This builds under `build/release/`:
 - `chilo`
 - `selfplay_collect`
 - `eval_fen`
+- `nnue_eval_bench`
 
 These targets use:
 
@@ -287,6 +289,22 @@ build/release/eval_fen --weights /path/to/weights.bin "4k3/8/8/8/8/8/8/3QK3 w - 
 ```
 
 Like `chilo`, `eval_fen` also checks for a same-basename sidecar `.bin` if no explicit `--weights` path is given.
+
+### NNUE Evaluation Benchmark
+
+Measure rebuilt and incremental NNUE evaluation throughput without including
+process startup or FEN parsing:
+
+```bash
+build/release-avx2/nnue_eval_bench \
+  --weights /path/to/weights.bin \
+  --passes 200000 \
+  --mode both
+```
+
+Use `--fen-file /path/to/positions.fen` to replace the built-in representative
+position set. The benchmark verifies rebuilt and incremental evaluation parity
+before timing and reports a checksum for comparing binaries.
 
 ### Tests
 

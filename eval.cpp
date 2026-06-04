@@ -349,27 +349,55 @@ void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 #endif
 }
 
-int64_t dotClippedLane(const int32_t* lane, const int16_t* weights, int hiddenSize, int scaledClipMax) {
-    int64_t sum = 0;
+void buildDenseInput(const int32_t* first, const int32_t* second, int32_t* denseInput, int hiddenSize,
+                     int scaledClipMax) {
 #if defined(CHILO_AVX2)
     int i = 0;
     const __m256i zero = _mm256_setzero_si256();
     const __m256i clip = _mm256_set1_epi32(scaledClipMax);
-    alignas(32) int32_t products[8];
     for (; i + 8 <= hiddenSize; i += 8) {
-        __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
-        values = _mm256_max_epi32(zero, _mm256_min_epi32(values, clip));
-        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
-        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
-        const __m256i product = _mm256_mullo_epi32(values, expandedWeights);
-        _mm256_store_si256(reinterpret_cast<__m256i*>(products), product);
-        for (int j = 0; j < 8; ++j) sum += products[j];
+        __m256i firstValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(first + i));
+        __m256i secondValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(second + i));
+        firstValues = _mm256_max_epi32(zero, _mm256_min_epi32(firstValues, clip));
+        secondValues = _mm256_max_epi32(zero, _mm256_min_epi32(secondValues, clip));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(denseInput + i), firstValues);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(denseInput + hiddenSize + i), secondValues);
     }
-    for (; i < hiddenSize; ++i) sum += static_cast<int64_t>(clippedRelu(lane[i], scaledClipMax)) * weights[i];
+    for (; i < hiddenSize; ++i) {
+        denseInput[i] = clippedRelu(first[i], scaledClipMax);
+        denseInput[hiddenSize + i] = clippedRelu(second[i], scaledClipMax);
+    }
 #else
     for (int i = 0; i < hiddenSize; ++i) {
-        sum += static_cast<int64_t>(clippedRelu(lane[i], scaledClipMax)) * weights[i];
+        denseInput[i] = clippedRelu(first[i], scaledClipMax);
+        denseInput[hiddenSize + i] = clippedRelu(second[i], scaledClipMax);
     }
+#endif
+}
+
+int64_t dotDenseInput(const int32_t* input, const int16_t* weights, int inputSize) {
+    int64_t sum = 0;
+#if defined(CHILO_AVX2)
+    int i = 0;
+    __m256i evenSum = _mm256_setzero_si256();
+    __m256i oddSum = _mm256_setzero_si256();
+    for (; i + 8 <= inputSize; i += 8) {
+        const __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(input + i));
+        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
+        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+        evenSum = _mm256_add_epi64(evenSum, _mm256_mul_epi32(values, expandedWeights));
+        oddSum = _mm256_add_epi64(
+            oddSum,
+            _mm256_mul_epi32(_mm256_srli_epi64(values, 32), _mm256_srli_epi64(expandedWeights, 32)));
+    }
+    const __m256i total = _mm256_add_epi64(evenSum, oddSum);
+    const __m128i total128 =
+        _mm_add_epi64(_mm256_castsi256_si128(total), _mm256_extracti128_si256(total, 1));
+    const __m128i high64 = _mm_unpackhi_epi64(total128, total128);
+    sum = _mm_cvtsi128_si64(_mm_add_epi64(total128, high64));
+    for (; i < inputSize; ++i) sum += static_cast<int64_t>(input[i]) * weights[i];
+#else
+    for (int i = 0; i < inputSize; ++i) sum += static_cast<int64_t>(input[i]) * weights[i];
 #endif
     return sum;
 }
@@ -459,12 +487,15 @@ int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
         static_cast<int64_t>(net.clipMax) * net.inputScale * net.hiddenScale;
     int64_t score = net.outputBias;
     const int denseInputSize = 2 * net.hiddenSize;
+    thread_local std::vector<int32_t> denseInput;
+    denseInput.resize(static_cast<std::size_t>(denseInputSize));
+    buildDenseInput(first, second, denseInput.data(), net.hiddenSize, scaledClipMax);
+
     for (int h = 0; h < net.hidden2Size; ++h) {
         const int16_t* weights =
             net.hidden2Weights.data() + static_cast<std::size_t>(h) * static_cast<std::size_t>(denseInputSize);
         int64_t hidden2Value = net.hidden2Bias[static_cast<std::size_t>(h)];
-        hidden2Value += dotClippedLane(first, weights, net.hiddenSize, scaledClipMax);
-        hidden2Value += dotClippedLane(second, weights + net.hiddenSize, net.hiddenSize, scaledClipMax);
+        hidden2Value += dotDenseInput(denseInput.data(), weights, denseInputSize);
         hidden2Value = clippedRelu64(hidden2Value, scaledHidden2ClipMax);
         score += hidden2Value * net.outputWeights[static_cast<std::size_t>(h)];
     }

@@ -439,3 +439,99 @@ The practical sequence is:
 9. Re-profile before deciding whether lazy accumulators are worth the larger
    implementation effort.
 
+## Stage 1 Results
+
+Stage 1 was implemented on branch `nnue-v3-dense-kernel` without changing the
+network format, quantization, or evaluation results.
+
+The dense scoring path now:
+
+- clamps the active and passive accumulator lanes once into one contiguous
+  dense input buffer
+- performs one dense dot product per hidden neuron instead of two clipped lane
+  dot products
+- uses AVX2 `int32_t` to `int64_t` even/odd products and in-register reduction
+  instead of storing products to memory and summing them scalarly
+
+The benchmark net was:
+
+```text
+/home/nicu/NNUE/runs/g3hl1/chilo-g3hl1.bin
+contract: chilo.tiny_nnue.v4
+dimensions: 64 -> 32 -> 1
+input_scale: 256
+hidden_scale: 32
+output_scale: 32
+```
+
+### Evaluator microbenchmark
+
+`nnue_eval_bench` used its built-in eight-position corpus, 300000 passes, and
+three measured runs per binary. The table reports median evaluations per
+second. All variants produced the same checksum.
+
+| Build and mode | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| generic rebuilt | 187099 | 237953 | +27.18% |
+| generic incremental | 273579 | 395470 | +44.55% |
+| AVX2 rebuilt | 236397 | 435439 | +84.20% |
+| AVX2 incremental | 398081 | 1499812 | +276.76% |
+
+Example command:
+
+```sh
+build/release-avx2/nnue_eval_bench \
+    --weights /home/nicu/NNUE/runs/g3hl1/chilo-g3hl1.bin \
+    --passes 300000 \
+    --mode both
+```
+
+### Fixed-depth AVX2 search
+
+The existing fixed-depth benchmark compared preserved pre-change and
+post-change AVX2 binaries with the same `g3hl1` runtime net.
+
+Default three-position workload, depth 10, five measured runs after one
+warm-up:
+
+| Metric | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| total nodes | 1412457 | 1412457 | 0.00% |
+| total engine time | 4358 ms | 1852 ms | -57.50% |
+| weighted NPS | 324106 | 762665 | +135.31% |
+
+```sh
+python3 scripts/benchmark_fixed_depth.py \
+    --baseline /tmp/chilo-nnue-v3-stage1-baseline/chilo-avx2 \
+    --candidate build/release-avx2/chilo \
+    --weights /home/nicu/NNUE/runs/g3hl1/chilo-g3hl1.bin \
+    --depth 10 \
+    --runs 5 \
+    --warmups 1 \
+    --output-dir /tmp/chilo-bench/nnue-v3-stage1-default
+```
+
+First 50 positions from `open-moves.fen`, depth 8, one measured run:
+
+| Metric | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| total nodes | 11708156 | 11708156 | 0.00% |
+| total engine time | 37103 ms | 16170 ms | -56.42% |
+| weighted NPS | 315558 | 724066 | +129.46% |
+
+```sh
+python3 scripts/benchmark_fixed_depth.py \
+    --baseline /tmp/chilo-nnue-v3-stage1-baseline/chilo-avx2 \
+    --candidate build/release-avx2/chilo \
+    --weights /home/nicu/NNUE/runs/g3hl1/chilo-g3hl1.bin \
+    --fen-file /home/nicu/Tune/open-moves/open-moves.fen \
+    --max-positions 50 \
+    --depth 8 \
+    --runs 1 \
+    --warmups 0 \
+    --output-dir /tmp/chilo-bench/nnue-v3-stage1-open-moves
+```
+
+Both search workloads retained identical node counts, best moves, and detailed
+search statistics. This confirms that Stage 1 is a pure inference speed
+improvement.
