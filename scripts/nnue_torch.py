@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from nnue_common import build_seeded_weights
@@ -15,6 +17,10 @@ RANDOM_SCALED_HIDDEN_BIAS = 0.5
 RANDOM_SCALED_HIDDEN2_STD = 0.05
 RANDOM_SCALED_HIDDEN2_BIAS = 0.5
 RANDOM_SCALED_OUTPUT_STD = 25.0
+RANDOM_EXPECTED_ACTIVE_PIECES = 16.0
+RANDOM_ACCUMULATOR_BIAS = 1.0
+RANDOM_HIDDEN2_BIAS = 1.0
+RANDOM_OUTPUT_STD_NUMERATOR = 64.0
 RANDOM_SCALE_PRESETS = {
     "random-scaled": (
         RANDOM_SCALED_INPUT_STD,
@@ -30,6 +36,27 @@ RANDOM_SCALE_PRESETS = {
     "random-sweep-5": (0.50, 8.0, 0.05, 0.5, 100.0),
 }
 INIT_CHOICES = ("seeded", "seeded-noise", "random", *RANDOM_SCALE_PRESETS.keys())
+
+
+def initialize_random_fan_in(model, nn) -> None:
+    input_std = 1.0 / math.sqrt(RANDOM_EXPECTED_ACTIVE_PIECES)
+    hidden2_fan_in = int(model.hidden2_weights.shape[1])
+    hidden2_std = math.sqrt(2.0 / hidden2_fan_in)
+    output_fan_in = int(model.output_weights.numel())
+    output_std = RANDOM_OUTPUT_STD_NUMERATOR / math.sqrt(output_fan_in)
+
+    nn.init.normal_(model.input_weights, mean=0.0, std=input_std)
+    nn.init.constant_(model.hidden_bias, RANDOM_ACCUMULATOR_BIAS)
+    nn.init.normal_(model.hidden2_weights, mean=0.0, std=hidden2_std)
+    nn.init.constant_(model.hidden2_bias, RANDOM_HIDDEN2_BIAS)
+    nn.init.normal_(model.output_weights, mean=0.0, std=output_std)
+    nn.init.zeros_(model.output_bias)
+
+    hidden2_weights = model.hidden2_weights.detach()
+    hidden2_weights.sub_(hidden2_weights.mean(dim=1, keepdim=True))
+    if output_fan_in > 1:
+        output_weights = model.output_weights.detach()
+        output_weights.sub_(output_weights.mean())
 
 
 def initialize_random_scaled(
@@ -89,12 +116,7 @@ def make_tiny_nnue_model(torch, nn):
                     self.hidden2_bias.data.add_(torch.randn_like(self.hidden2_bias) * SEEDED_NOISE_HIDDEN2_BIAS_STD)
                     self.output_weights.data.add_(torch.randn_like(self.output_weights) * SEEDED_NOISE_OUTPUT_STD)
             elif init_mode == "random":
-                nn.init.normal_(self.input_weights, mean=0.0, std=0.05)
-                nn.init.zeros_(self.hidden_bias)
-                nn.init.normal_(self.hidden2_weights, mean=0.0, std=0.05)
-                nn.init.zeros_(self.hidden2_bias)
-                nn.init.normal_(self.output_weights, mean=0.0, std=0.05)
-                nn.init.zeros_(self.output_bias)
+                initialize_random_fan_in(self, nn)
             elif init_mode in RANDOM_SCALE_PRESETS:
                 initialize_random_scaled(self, nn, *RANDOM_SCALE_PRESETS[init_mode])
             else:
@@ -121,7 +143,7 @@ def make_tiny_nnue_model(torch, nn):
             selected = self.input_weights[relative_pieces, normalized_squares]
             return self.hidden_bias.unsqueeze(0) + (selected * mask.unsqueeze(-1)).sum(dim=1)
 
-        def forward(self, pieces, squares, piece_count, side_to_move):
+        def _forward_components(self, pieces, squares, piece_count, side_to_move):
             max_pieces = pieces.shape[1]
             mask = (torch.arange(max_pieces, device=pieces.device).unsqueeze(0) < piece_count.unsqueeze(1)).float()
             white = self.accumulator(0, pieces, squares, mask)
@@ -131,11 +153,20 @@ def make_tiny_nnue_model(torch, nn):
             stm_is_white = (side_to_move == 0).float().unsqueeze(1)
             dense_input = stm_is_white * white_first + (1.0 - stm_is_white) * black_first
             activated = torch.clamp(dense_input, 0.0, self.clip_max)
-            hidden2 = torch.clamp(
-                torch.nn.functional.linear(activated, self.hidden2_weights, self.hidden2_bias),
-                0.0,
-                self.clip_max,
-            )
-            return (self.output_bias + (hidden2 * self.output_weights.unsqueeze(0)).sum(dim=1)).squeeze(-1)
+            hidden2_pre = torch.nn.functional.linear(activated, self.hidden2_weights, self.hidden2_bias)
+            hidden2 = torch.clamp(hidden2_pre, 0.0, self.clip_max)
+            score = (self.output_bias + (hidden2 * self.output_weights.unsqueeze(0)).sum(dim=1)).squeeze(-1)
+            return score, dense_input, hidden2_pre
+
+        def forward_with_intermediates(self, pieces, squares, piece_count, side_to_move):
+            score, dense_input, hidden2_pre = self._forward_components(pieces, squares, piece_count, side_to_move)
+            return score, {
+                "accumulator_pre": dense_input,
+                "hidden2_pre": hidden2_pre,
+            }
+
+        def forward(self, pieces, squares, piece_count, side_to_move):
+            score, _, _ = self._forward_components(pieces, squares, piece_count, side_to_move)
+            return score
 
     return TinyNnueModel

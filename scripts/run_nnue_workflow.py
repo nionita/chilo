@@ -50,6 +50,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--lr-schedule", choices=("constant", "step", "cosine"), default="constant")
+    parser.add_argument("--lr-step-size", type=int, default=10)
+    parser.add_argument("--lr-gamma", type=float, default=0.5)
+    parser.add_argument("--min-learning-rate", type=float, default=0.0)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--score-scale", type=float, default=600.0)
     parser.add_argument("--result-weight", type=float, default=0.25)
@@ -211,6 +215,14 @@ def main() -> int:
             str(args.batch_size),
             "--learning-rate",
             str(args.learning_rate),
+            "--lr-schedule",
+            args.lr_schedule,
+            "--lr-step-size",
+            str(args.lr_step_size),
+            "--lr-gamma",
+            str(args.lr_gamma),
+            "--min-learning-rate",
+            str(args.min_learning_rate),
             "--weight-decay",
             str(args.weight_decay),
             "--score-scale",

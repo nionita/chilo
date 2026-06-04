@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -25,8 +26,11 @@ from nnue_common import (
     load_contract,
     load_dataset_manifest,
 )
+from nnue_torch import make_tiny_nnue_model
+from train_nnue import learning_rate_for_epoch
 
 TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
+TENSORBOARD_AVAILABLE = importlib.util.find_spec("tensorboard") is not None
 
 
 class NnuePipelineTest(unittest.TestCase):
@@ -51,6 +55,51 @@ class NnuePipelineTest(unittest.TestCase):
         self.assertEqual(len(splits), 10)
         self.assertEqual(splits.count("val"), 2)
         self.assertEqual(splits.count("train"), 8)
+
+    def test_learning_rate_schedules(self):
+        constant = [learning_rate_for_epoch("constant", 0.01, 0.001, epoch, 5, 2, 0.5) for epoch in range(1, 6)]
+        step = [learning_rate_for_epoch("step", 0.01, 0.001, epoch, 5, 2, 0.5) for epoch in range(1, 6)]
+        cosine = [learning_rate_for_epoch("cosine", 0.01, 0.001, epoch, 5, 2, 0.5) for epoch in range(1, 6)]
+        one_epoch = learning_rate_for_epoch("cosine", 0.01, 0.001, 1, 1, 2, 0.5)
+
+        self.assertEqual(constant, [0.01] * 5)
+        self.assertEqual(step, [0.01, 0.01, 0.005, 0.005, 0.0025])
+        self.assertAlmostEqual(cosine[0], 0.01)
+        self.assertAlmostEqual(cosine[-1], 0.001)
+        self.assertGreater(cosine[1], cosine[2])
+        self.assertGreater(cosine[2], cosine[3])
+        self.assertEqual(one_epoch, 0.01)
+
+    @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
+    def test_random_initialization_is_fan_in_aware_and_deterministic(self):
+        import torch
+
+        contract = load_contract()
+        TinyNnueModel = make_tiny_nnue_model(torch, torch.nn)
+
+        torch.manual_seed(17)
+        model_a = TinyNnueModel(contract, 64, 32, "random")
+        torch.manual_seed(17)
+        model_b = TinyNnueModel(contract, 64, 32, "random")
+
+        for name, value in model_a.state_dict().items():
+            self.assertTrue(torch.equal(value, model_b.state_dict()[name]), name)
+
+        self.assertTrue(torch.allclose(model_a.hidden2_weights.mean(dim=1), torch.zeros(32), atol=1e-6))
+        self.assertAlmostEqual(float(model_a.output_weights.mean().item()), 0.0, places=6)
+        self.assertAlmostEqual(float(model_a.hidden_bias.mean().item()), 1.0, places=6)
+        self.assertAlmostEqual(float(model_a.hidden2_bias.mean().item()), 1.0, places=6)
+        self.assertAlmostEqual(float(model_a.input_weights.std(unbiased=False).item()), 1.0 / math.sqrt(16.0), delta=0.01)
+        self.assertAlmostEqual(
+            float(model_a.hidden2_weights.std(unbiased=False).item()),
+            math.sqrt(2.0 / 128.0),
+            delta=0.01,
+        )
+        self.assertAlmostEqual(
+            float(model_a.output_weights.std(unbiased=False).item()),
+            64.0 / math.sqrt(32.0),
+            delta=3.0,
+        )
 
     def test_prepare_and_export_seeded(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -212,6 +261,129 @@ class NnuePipelineTest(unittest.TestCase):
                 rows = list(csv.reader(handle))
             self.assertEqual(rows[0], ["eval_fen", "score", "result"])
             self.assertEqual(len(rows) - 1, 3)
+
+    @unittest.skipUnless(TORCH_AVAILABLE and TENSORBOARD_AVAILABLE, "PyTorch/TensorBoard not installed in this environment")
+    def test_tensorboard_hidden2_tags_and_resume_schedule_restart(self):
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            csv_path = temp_dir / "samples.csv"
+            with csv_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["eval_fen", "score", "result"])
+                writer.writerow(["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"])
+                writer.writerow(["4k3/8/8/8/8/8/8/4K3 w - - 0 1", "0", "0"])
+                writer.writerow(["4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", "31", "0"])
+                writer.writerow(["4k3/8/8/8/8/3n4/8/4K3 b - - 0 1", "-31", "0"])
+
+            dataset_dir = temp_dir / "dataset"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "prepare_nnue_dataset.py"),
+                    "--input",
+                    str(csv_path),
+                    "--output-dir",
+                    str(dataset_dir),
+                    "--samples-per-shard",
+                    "2",
+                    "--validation-fraction",
+                    "0.5",
+                    "--seed",
+                    "7",
+                    "--overwrite",
+                ],
+                check=True,
+            )
+
+            diagnostic = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "diagnose_nnue_init.py"),
+                    "--dataset",
+                    str(dataset_dir),
+                    "--max-samples",
+                    "4",
+                    "--percentile-samples",
+                    "4",
+                    "--batch-size",
+                    "2",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("accumulator_activation:", diagnostic.stdout)
+            self.assertIn("hidden2_activation:", diagnostic.stdout)
+
+            first_training_dir = temp_dir / "training-first"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "train_nnue.py"),
+                    "--dataset",
+                    str(dataset_dir),
+                    "--output-dir",
+                    str(first_training_dir),
+                    "--epochs",
+                    "1",
+                    "--batch-size",
+                    "2",
+                    "--no-shuffle",
+                    "--seed",
+                    "11",
+                ],
+                check=True,
+            )
+
+            resumed_training_dir = temp_dir / "training-resumed"
+            tensorboard_dir = resumed_training_dir / "tb"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "train_nnue.py"),
+                    "--dataset",
+                    str(dataset_dir),
+                    "--output-dir",
+                    str(resumed_training_dir),
+                    "--epochs",
+                    "2",
+                    "--batch-size",
+                    "2",
+                    "--learning-rate",
+                    "0.01",
+                    "--lr-schedule",
+                    "cosine",
+                    "--min-learning-rate",
+                    "0.001",
+                    "--resume-checkpoint",
+                    str(first_training_dir / "best.pt"),
+                    "--tensorboard-dir",
+                    str(tensorboard_dir),
+                    "--no-shuffle",
+                    "--seed",
+                    "13",
+                ],
+                check=True,
+            )
+
+            manifest = json.loads((resumed_training_dir / "training_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["lr_schedule"], "cosine")
+            self.assertEqual([entry["epoch"] for entry in manifest["history"]], [2, 3])
+            self.assertEqual([entry["learning_rate"] for entry in manifest["history"]], [0.01, 0.001])
+
+            event_files = list(tensorboard_dir.glob("events.out.tfevents.*"))
+            self.assertEqual(len(event_files), 1)
+            events = EventAccumulator(str(event_files[0]))
+            events.Reload()
+            scalar_tags = set(events.Tags()["scalars"])
+            histogram_tags = set(events.Tags()["histograms"])
+            self.assertIn("activation/hidden2_val_clip_frac", scalar_tags)
+            self.assertIn("activation/hidden2_val_dead_unit_count", scalar_tags)
+            self.assertIn("activation/accumulator_val_zero_frac", scalar_tags)
+            self.assertIn("hist/hidden2_pre_activation_val", histogram_tags)
+            self.assertIn("hist/hidden2_zero_frac_val", histogram_tags)
 
     @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
     def test_train_seeded_noise_wakes_dormant_output_units(self):

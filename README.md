@@ -28,7 +28,7 @@ Small chess engine project with:
 - `scripts/nnue_contract.json`: feature/model contract shared by training, export, and C++ inference
 - `scripts/prepare_nnue_dataset.py`: sharded NNUE dataset preprocessor
 - `scripts/run_fastchess_sprt.py`: fastchess SPRT wrapper for testing binaries or runtime NNUE nets
-- `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets; hidden size is chosen here, not in dataset prep
+- `scripts/train_nnue.py`: PyTorch NNUE trainer for sharded datasets; hidden sizes are chosen here, not in dataset prep
 - `scripts/export_nnue.py`: scaled quantized export to the generated C++ header and/or a runtime-loadable `.bin` artifact
 - `scripts/run_nnue_workflow.py`: orchestration helper for dedup -> prepare -> train -> export
 - `scripts/verify_nnue_workflow.py`: end-to-end smoke check for preprocess -> train -> export -> C++
@@ -427,10 +427,13 @@ Train the current tiny NNUE on the sharded dataset:
   --output-dir data/nnue_training \
   --epochs 8 \
   --batch-size 256 \
-  --hidden-size 64
+  --hidden-size 64 \
+  --hidden2-size 32 \
+  --lr-schedule cosine \
+  --min-learning-rate 0.0001
 ```
 
-The default hidden size comes from `scripts/nnue_contract.json` and is currently `64`. Prepared datasets are feature caches and are not tied to a hidden size; checkpoints and exported weights are.
+The default hidden sizes come from `scripts/nnue_contract.json` and are currently `64` and `32`. Prepared datasets are feature caches and are not tied to hidden sizes; checkpoints and exported weights are. The `random` initializer is fan-in-aware for the sparse accumulator, second hidden layer, and output layer; its scales depend on each layer's effective input count, not the total network parameter count. Use `--lr-schedule constant`, `step`, or `cosine` to control learning-rate decay over a run; schedules restart when `--resume-checkpoint` is used as a warm start.
 
 Export the best checkpoint back into generated C++ fallback weights and/or a runtime-loadable `.bin`:
 

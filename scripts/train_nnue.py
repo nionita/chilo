@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import time
@@ -34,6 +35,89 @@ DEFAULT_BATCH_SIZE = 4096
 DEFAULT_LEARNING_RATE = 1e-3
 DEFAULT_WEIGHT_DECAY = 0.0
 DEFAULT_SHUFFLE_BUFFER_SIZE = 262144
+LR_SCHEDULE_CHOICES = ("constant", "step", "cosine")
+
+
+def learning_rate_for_epoch(
+    schedule: str,
+    base_learning_rate: float,
+    min_learning_rate: float,
+    local_epoch: int,
+    total_epochs: int,
+    step_size: int,
+    gamma: float,
+) -> float:
+    if schedule == "constant":
+        return base_learning_rate
+    if schedule == "step":
+        return base_learning_rate * (gamma ** ((local_epoch - 1) // step_size))
+    if schedule == "cosine":
+        if total_epochs <= 1 or local_epoch <= 1:
+            return base_learning_rate
+        if local_epoch >= total_epochs:
+            return min_learning_rate
+        progress = (local_epoch - 1) / (total_epochs - 1)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_learning_rate + (base_learning_rate - min_learning_rate) * cosine
+    raise ValueError(f"Unsupported learning-rate schedule: {schedule}")
+
+
+class ActivationAccumulator:
+    def __init__(self) -> None:
+        self.value_count = 0
+        self.sample_count = 0
+        self.value_sum = 0.0
+        self.value_sum_sq = 0.0
+        self.zero_counts: np.ndarray | None = None
+        self.clip_counts: np.ndarray | None = None
+
+    def update(self, values, clip_max: float) -> None:
+        detached = values.detach()
+        self.value_count += int(detached.numel())
+        self.sample_count += int(detached.shape[0])
+        self.value_sum += float(detached.sum().item())
+        self.value_sum_sq += float((detached * detached).sum().item())
+
+        zero_counts = (detached <= 0.0).sum(dim=0).cpu().numpy().astype(np.int64, copy=False)
+        clip_counts = (detached >= clip_max).sum(dim=0).cpu().numpy().astype(np.int64, copy=False)
+        if self.zero_counts is None:
+            self.zero_counts = zero_counts.copy()
+            self.clip_counts = clip_counts.copy()
+        else:
+            self.zero_counts += zero_counts
+            self.clip_counts += clip_counts
+
+    def summary(self) -> Dict[str, object]:
+        if self.value_count == 0 or self.sample_count == 0 or self.zero_counts is None or self.clip_counts is None:
+            return {
+                "zero_frac": 0.0,
+                "clip_frac": 0.0,
+                "linear_frac": 0.0,
+                "pre_mean": 0.0,
+                "pre_std": 0.0,
+                "dead_unit_count": 0,
+                "saturated_unit_count": 0,
+                "per_unit_zero_frac": np.asarray([], dtype=np.float32),
+                "per_unit_clip_frac": np.asarray([], dtype=np.float32),
+            }
+
+        zero_frac = float(self.zero_counts.sum() / self.value_count)
+        clip_frac = float(self.clip_counts.sum() / self.value_count)
+        mean = self.value_sum / self.value_count
+        variance = max(0.0, self.value_sum_sq / self.value_count - mean * mean)
+        per_unit_zero = self.zero_counts.astype(np.float64) / self.sample_count
+        per_unit_clip = self.clip_counts.astype(np.float64) / self.sample_count
+        return {
+            "zero_frac": zero_frac,
+            "clip_frac": clip_frac,
+            "linear_frac": max(0.0, 1.0 - zero_frac - clip_frac),
+            "pre_mean": mean,
+            "pre_std": math.sqrt(variance),
+            "dead_unit_count": int((per_unit_zero >= 0.99).sum()),
+            "saturated_unit_count": int((per_unit_clip >= 0.99).sum()),
+            "per_unit_zero_frac": per_unit_zero.astype(np.float32),
+            "per_unit_clip_frac": per_unit_clip.astype(np.float32),
+        }
 
 
 class ShardedSparseDataset(IterableDataset):
@@ -112,6 +196,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-e", "--epochs", type=int, default=8)
     parser.add_argument("-b", "--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("-l", "--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    parser.add_argument("--lr-schedule", choices=LR_SCHEDULE_CHOICES, default="constant",
+                        help="Learning-rate schedule applied over this training run.")
+    parser.add_argument("--lr-step-size", type=int, default=10,
+                        help="Epoch interval for --lr-schedule step.")
+    parser.add_argument("--lr-gamma", type=float, default=0.5,
+                        help="Learning-rate multiplier for --lr-schedule step.")
+    parser.add_argument("--min-learning-rate", type=float, default=0.0,
+                        help="Final learning rate for --lr-schedule cosine.")
     parser.add_argument("-w", "--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY)
     parser.add_argument("-s", "--score-scale", type=float, default=600.0)
     parser.add_argument("-r", "--result-weight", type=float, default=0.25)
@@ -189,6 +281,14 @@ def main() -> int:
         raise SystemExit("--num-workers must be zero or positive.")
     if args.report_batches <= 0:
         raise SystemExit("--report-batches must be positive.")
+    if args.learning_rate <= 0.0:
+        raise SystemExit("--learning-rate must be positive.")
+    if args.lr_step_size <= 0:
+        raise SystemExit("--lr-step-size must be positive.")
+    if args.lr_gamma <= 0.0:
+        raise SystemExit("--lr-gamma must be positive.")
+    if args.min_learning_rate < 0.0 or args.min_learning_rate > args.learning_rate:
+        raise SystemExit("--min-learning-rate must be in the range [0, --learning-rate].")
 
     contract = load_contract(Path(args.contract) if args.contract else None)
     torch, nn, DataLoader = load_torch()
@@ -294,27 +394,20 @@ def main() -> int:
             "p95": float(quantiles[1].item()),
         }
 
-    def hidden_pre_activations(pieces, squares, piece_count, side_to_move):
-        with torch.no_grad():
-            max_pieces = pieces.shape[1]
-            mask = (torch.arange(max_pieces, device=pieces.device).unsqueeze(0) < piece_count.unsqueeze(1)).float()
-            white = model.accumulator(0, pieces, squares, mask)
-            black = model.accumulator(1, pieces, squares, mask)
-            white_first = torch.cat([white, black], dim=1)
-            black_first = torch.cat([black, white], dim=1)
-            stm_is_white = (side_to_move == 0).float().unsqueeze(1)
-            return stm_is_white * white_first + (1.0 - stm_is_white) * black_first
-
-    def activation_stats(hidden):
-        values = hidden.detach()
-        total = max(int(values.numel()), 1)
-        zero = int((values <= 0.0).sum().item())
-        clipped = int((values >= model.clip_max).sum().item())
-        linear = total - zero - clipped
+    def activation_diagnostics(intermediates) -> Dict[str, object]:
+        accumulator = ActivationAccumulator()
+        hidden2 = ActivationAccumulator()
+        accumulator.update(intermediates["accumulator_pre"], model.clip_max)
+        hidden2.update(intermediates["hidden2_pre"], model.clip_max)
         return {
-            "zero_frac": zero / total,
-            "clip_frac": clipped / total,
-            "linear_frac": linear / total,
+            "activations": {
+                "accumulator": accumulator.summary(),
+                "hidden2": hidden2.summary(),
+            },
+            "activation_tensors": {
+                "accumulator": intermediates["accumulator_pre"].detach().cpu(),
+                "hidden2": intermediates["hidden2_pre"].detach().cpu(),
+            },
         }
 
     def weight_stats():
@@ -339,19 +432,26 @@ def main() -> int:
             return 0.0
         return float(parameter.grad.detach().norm().item())
 
-    def log_tensorboard_stats(writer, epoch: int, train_diag, val_diag, train_loss, val_loss) -> None:
+    def log_tensorboard_stats(writer, epoch: int, train_diag, val_diag, train_loss, val_loss, learning_rate: float) -> None:
         writer.add_scalar("loss/train", train_loss, epoch)
         if val_loss is not None:
             writer.add_scalar("loss/val", val_loss, epoch)
-        writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
+        writer.add_scalar("lr", learning_rate, epoch)
 
         for prefix, diag in (("train", train_diag), ("val", val_diag)):
             if diag is None:
                 continue
             for key, value in diag["pred"].items():
                 writer.add_scalar(f"pred/{prefix}_{key}", value, epoch)
-            for key, value in diag["activation"].items():
+            accumulator_stats = diag["activations"]["accumulator"]
+            for key in ("zero_frac", "clip_frac", "linear_frac"):
+                value = accumulator_stats[key]
                 writer.add_scalar(f"activation/{prefix}_{key}", value, epoch)
+            for layer in ("accumulator", "hidden2"):
+                for key, value in diag["activations"][layer].items():
+                    if key.startswith("per_unit_"):
+                        continue
+                    writer.add_scalar(f"activation/{layer}_{prefix}_{key}", value, epoch)
 
         for key, value in weight_stats().items():
             writer.add_scalar(f"weights/{key}", value, epoch)
@@ -362,7 +462,7 @@ def main() -> int:
         if args.tensorboard_histograms:
             if train_diag is not None:
                 writer.add_histogram("hist/pred_cp_train", train_diag["pred_tensor"], epoch)
-                writer.add_histogram("hist/hidden_pre_activation_train", train_diag["hidden_tensor"], epoch)
+                writer.add_histogram("hist/hidden_pre_activation_train", train_diag["activation_tensors"]["accumulator"], epoch)
                 if train_diag["input_grad"] is not None:
                     writer.add_histogram("hist/input_grad", train_diag["input_grad"], epoch)
                 if train_diag["hidden_bias_grad"] is not None:
@@ -375,7 +475,26 @@ def main() -> int:
                     writer.add_histogram("hist/output_grad", train_diag["output_grad"], epoch)
             if val_diag is not None:
                 writer.add_histogram("hist/pred_cp_val", val_diag["pred_tensor"], epoch)
-                writer.add_histogram("hist/hidden_pre_activation_val", val_diag["hidden_tensor"], epoch)
+                writer.add_histogram("hist/hidden_pre_activation_val", val_diag["activation_tensors"]["accumulator"], epoch)
+            for prefix, diag in (("train", train_diag), ("val", val_diag)):
+                if diag is None:
+                    continue
+                for layer in ("accumulator", "hidden2"):
+                    writer.add_histogram(
+                        f"hist/{layer}_pre_activation_{prefix}",
+                        diag["activation_tensors"][layer],
+                        epoch,
+                    )
+                    writer.add_histogram(
+                        f"hist/{layer}_zero_frac_{prefix}",
+                        diag["activations"][layer]["per_unit_zero_frac"],
+                        epoch,
+                    )
+                    writer.add_histogram(
+                        f"hist/{layer}_clip_frac_{prefix}",
+                        diag["activations"][layer]["per_unit_clip_frac"],
+                        epoch,
+                    )
             writer.add_histogram("hist/input_weights", model.input_weights.detach().cpu(), epoch)
             writer.add_histogram("hist/hidden_bias", model.hidden_bias.detach().cpu(), epoch)
             writer.add_histogram("hist/hidden2_weights", model.hidden2_weights.detach().cpu(), epoch)
@@ -402,6 +521,17 @@ def main() -> int:
     try:
         for local_epoch in range(1, args.epochs + 1):
             epoch = resume_epoch_offset + local_epoch
+            epoch_learning_rate = learning_rate_for_epoch(
+                args.lr_schedule,
+                args.learning_rate,
+                args.min_learning_rate,
+                local_epoch,
+                args.epochs,
+                args.lr_step_size,
+                args.lr_gamma,
+            )
+            for parameter_group in optimizer.param_groups:
+                parameter_group["lr"] = epoch_learning_rate
             train_loader = build_loader(train_shards, shuffle=args.shuffle, epoch=epoch)
             val_loader = build_loader(val_shards, shuffle=False, epoch=epoch)
 
@@ -419,15 +549,14 @@ def main() -> int:
                 result = batch["result"].to(device)
 
                 optimizer.zero_grad(set_to_none=True)
-                pred_cp = model(pieces, squares, piece_count, side_to_move)
+                pred_cp, intermediates = model.forward_with_intermediates(pieces, squares, piece_count, side_to_move)
                 loss = target_loss(pred_cp, score, result)
                 loss.backward()
 
                 if tensorboard_writer is not None and train_diag is None:
-                    hidden = hidden_pre_activations(pieces, squares, piece_count, side_to_move)
-                    train_diag = {
+                    train_diag = activation_diagnostics(intermediates)
+                    train_diag.update({
                         "pred": prediction_stats(pred_cp),
-                        "activation": activation_stats(hidden),
                         "grads": {
                             "input_norm": grad_norm(model.input_weights),
                             "hidden_bias_norm": grad_norm(model.hidden_bias),
@@ -436,13 +565,12 @@ def main() -> int:
                             "output_norm": grad_norm(model.output_weights),
                         },
                         "pred_tensor": pred_cp.detach().cpu(),
-                        "hidden_tensor": hidden.detach().cpu(),
                         "input_grad": model.input_weights.grad.detach().cpu() if model.input_weights.grad is not None else None,
                         "hidden_bias_grad": model.hidden_bias.grad.detach().cpu() if model.hidden_bias.grad is not None else None,
                         "hidden2_grad": model.hidden2_weights.grad.detach().cpu() if model.hidden2_weights.grad is not None else None,
                         "hidden2_bias_grad": model.hidden2_bias.grad.detach().cpu() if model.hidden2_bias.grad is not None else None,
                         "output_grad": model.output_weights.grad.detach().cpu() if model.output_weights.grad is not None else None,
-                    }
+                    })
 
                 optimizer.step()
 
@@ -465,6 +593,9 @@ def main() -> int:
                 model.eval()
                 val_loss_sum = 0.0
                 val_items = 0
+                val_accumulator_activations = ActivationAccumulator()
+                val_hidden2_activations = ActivationAccumulator()
+                val_first_batch = None
                 with torch.no_grad():
                     for batch in val_loader:
                         pieces = batch["pieces"].to(device)
@@ -473,27 +604,46 @@ def main() -> int:
                         side_to_move = batch["side_to_move"].to(device)
                         score = batch["score"].to(device)
                         result = batch["result"].to(device)
-                        pred_cp = model(pieces, squares, piece_count, side_to_move)
+                        pred_cp, intermediates = model.forward_with_intermediates(pieces, squares, piece_count, side_to_move)
                         loss = target_loss(pred_cp, score, result)
-                        if tensorboard_writer is not None and val_diag is None:
-                            hidden = hidden_pre_activations(pieces, squares, piece_count, side_to_move)
-                            val_diag = {
+                        if tensorboard_writer is not None:
+                            val_accumulator_activations.update(intermediates["accumulator_pre"], model.clip_max)
+                            val_hidden2_activations.update(intermediates["hidden2_pre"], model.clip_max)
+                        if tensorboard_writer is not None and val_first_batch is None:
+                            val_first_batch = {
                                 "pred": prediction_stats(pred_cp),
-                                "activation": activation_stats(hidden),
                                 "pred_tensor": pred_cp.detach().cpu(),
-                                "hidden_tensor": hidden.detach().cpu(),
+                                "activation_tensors": {
+                                    "accumulator": intermediates["accumulator_pre"].detach().cpu(),
+                                    "hidden2": intermediates["hidden2_pre"].detach().cpu(),
+                                },
                             }
                         batch_items = int(pieces.shape[0])
                         val_loss_sum += float(loss.item()) * batch_items
                         val_items += batch_items
                 val_loss = val_loss_sum / max(val_items, 1)
+                if val_first_batch is not None:
+                    val_diag = val_first_batch
+                    val_diag["activations"] = {
+                        "accumulator": val_accumulator_activations.summary(),
+                        "hidden2": val_hidden2_activations.summary(),
+                    }
 
             if tensorboard_writer is not None:
-                log_tensorboard_stats(tensorboard_writer, epoch, train_diag, val_diag, train_loss, val_loss)
+                log_tensorboard_stats(
+                    tensorboard_writer,
+                    epoch,
+                    train_diag,
+                    val_diag,
+                    train_loss,
+                    val_loss,
+                    epoch_learning_rate,
+                )
                 tensorboard_writer.flush()
 
             epoch_summary = {
                 "epoch": epoch,
+                "learning_rate": epoch_learning_rate,
                 "train_loss": train_loss,
                 "val_loss": val_loss,
                 "train_samples": train_items,
@@ -501,7 +651,7 @@ def main() -> int:
             }
             history.append(epoch_summary)
             print(
-                f"epoch={epoch} train_loss={train_loss:.6f} train_samples={train_items}" +
+                f"epoch={epoch} lr={epoch_learning_rate:.6g} train_loss={train_loss:.6f} train_samples={train_items}" +
                 (f" val_loss={val_loss:.6f} val_samples={val_samples}" if val_loss is not None else "")
             )
 
@@ -525,6 +675,10 @@ def main() -> int:
                     "epochs": args.epochs,
                     "batch_size": args.batch_size,
                     "learning_rate": args.learning_rate,
+                    "lr_schedule": args.lr_schedule,
+                    "lr_step_size": args.lr_step_size,
+                    "lr_gamma": args.lr_gamma,
+                    "min_learning_rate": args.min_learning_rate,
                     "weight_decay": args.weight_decay,
                     "score_scale": args.score_scale,
                     "result_weight": args.result_weight,
@@ -564,6 +718,10 @@ def main() -> int:
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
+        "lr_schedule": args.lr_schedule,
+        "lr_step_size": args.lr_step_size,
+        "lr_gamma": args.lr_gamma,
+        "min_learning_rate": args.min_learning_rate,
         "weight_decay": args.weight_decay,
         "score_scale": args.score_scale,
         "result_weight": args.result_weight,

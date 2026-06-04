@@ -139,6 +139,9 @@ class FractionStats:
     def clip_frac(self) -> float:
         return self.clip_count / self.total_count if self.total_count else 0.0
 
+    def linear_frac(self) -> float:
+        return max(0.0, 1.0 - self.zero_frac() - self.clip_frac())
+
 
 def print_stats(name: str, stats: OnlineStats, reservoir: Reservoir | None = None) -> None:
     print(
@@ -186,18 +189,6 @@ def initialize_custom_random_scaled(model, nn, input_std: float, hidden_bias: fl
     initialize_random_scaled(model, nn, input_std, hidden_bias, 0.05, 0.5, output_std)
 
 
-def update_activation_stats(model, pieces, squares, piece_count, side_to_move, activation_stats: FractionStats) -> None:
-    torch = __import__("torch")
-    max_pieces = pieces.shape[1]
-    mask = (torch.arange(max_pieces, device=pieces.device).unsqueeze(0) < piece_count.unsqueeze(1)).float()
-    white = model.accumulator(0, pieces, squares, mask)
-    black = model.accumulator(1, pieces, squares, mask)
-    white_first = torch.cat([white, black], dim=1)
-    black_first = torch.cat([black, white], dim=1)
-    stm_is_white = (side_to_move == 0).float().unsqueeze(1)
-    activation_stats.update(stm_is_white * white_first + (1.0 - stm_is_white) * black_first, model.clip_max)
-
-
 def evaluate_model(
     model,
     loader,
@@ -210,7 +201,10 @@ def evaluate_model(
     target_stats = OnlineStats()
     error_stats = OnlineStats()
     loss_stats = OnlineStats()
-    activation_stats = FractionStats()
+    activation_stats = {
+        "accumulator": FractionStats(),
+        "hidden2": FractionStats(),
+    }
     pred_reservoir = Reservoir(args.percentile_samples, args.seed + 17) if args.percentile_samples else None
     score_reservoir = Reservoir(args.percentile_samples, args.seed + 29) if args.percentile_samples else None
 
@@ -230,11 +224,12 @@ def evaluate_model(
             score = batch["score"][:remaining].to(next(model.parameters()).device)
             result = batch["result"][:remaining].to(next(model.parameters()).device)
 
-            pred_cp = model(pieces, squares, piece_count, side_to_move)
+            pred_cp, intermediates = model.forward_with_intermediates(pieces, squares, piece_count, side_to_move)
             pred_bounded = torch.tanh(pred_cp / args.score_scale)
             target = (1.0 - args.result_weight) * torch.tanh(score / args.score_scale) + args.result_weight * result
             loss = (pred_bounded - target) ** 2
-            update_activation_stats(model, pieces, squares, piece_count, side_to_move, activation_stats)
+            activation_stats["accumulator"].update(intermediates["accumulator_pre"], model.clip_max)
+            activation_stats["hidden2"].update(intermediates["hidden2_pre"], model.clip_max)
 
             pred_np = pred_cp.detach().cpu().numpy()
             score_np = score.detach().cpu().numpy()
@@ -269,8 +264,14 @@ def evaluate_model(
         "loss_stats": loss_stats,
         "pred_percentiles": pred_percentiles,
         "score_percentiles": score_percentiles,
-        "zero_frac": activation_stats.zero_frac(),
-        "clip_frac": activation_stats.clip_frac(),
+        "activations": {
+            layer: {
+                "zero_frac": stats.zero_frac(),
+                "clip_frac": stats.clip_frac(),
+                "linear_frac": stats.linear_frac(),
+            }
+            for layer, stats in activation_stats.items()
+        },
     }
 
 
@@ -304,7 +305,12 @@ def print_single_report(
     print_stats("bounded_target", result["target_stats"])
     print_stats("pred_minus_score_cp", result["error_stats"])
     print_stats("bounded_mse", result["loss_stats"])
-    print(f"hidden_activation: zero_frac={result['zero_frac']:.6f} clip_frac={result['clip_frac']:.6f}")
+    for layer in ("accumulator", "hidden2"):
+        stats = result["activations"][layer]
+        print(
+            f"{layer}_activation: zero_frac={stats['zero_frac']:.6f} "
+            f"clip_frac={stats['clip_frac']:.6f} linear_frac={stats['linear_frac']:.6f}"
+        )
 
 
 def sweep_rows(
@@ -348,6 +354,8 @@ def sweep_rows(
                 pred_stats = result["pred_stats"]
                 loss_stats = result["loss_stats"]
                 pred_percentiles = result["pred_percentiles"]
+                accumulator_activation = result["activations"]["accumulator"]
+                hidden2_activation = result["activations"]["hidden2"]
                 row = {
                     "rank": 0,
                     "row": row_index,
@@ -364,14 +372,18 @@ def sweep_rows(
                     "pred_p50": pred_percentiles.get("p50", 0.0),
                     "pred_p95": pred_percentiles.get("p95", 0.0),
                     "bounded_mse_mean": loss_stats.mean(),
-                    "zero_frac": result["zero_frac"],
-                    "clip_frac": result["clip_frac"],
+                    "accumulator_zero_frac": accumulator_activation["zero_frac"],
+                    "accumulator_clip_frac": accumulator_activation["clip_frac"],
+                    "hidden2_zero_frac": hidden2_activation["zero_frac"],
+                    "hidden2_clip_frac": hidden2_activation["clip_frac"],
                 }
                 rows.append(row)
                 print(
                     f"row={row_index}/{total} input_std={input_std:g} hidden_bias={hidden_bias:g} "
                     f"output_std={output_std:g} pred_std={row['pred_std']:.3f} "
-                    f"mse={row['bounded_mse_mean']:.6f} zero={row['zero_frac']:.4f} clip={row['clip_frac']:.4f}"
+                    f"mse={row['bounded_mse_mean']:.6f} "
+                    f"acc_zero={row['accumulator_zero_frac']:.4f} acc_clip={row['accumulator_clip_frac']:.4f} "
+                    f"h2_zero={row['hidden2_zero_frac']:.4f} h2_clip={row['hidden2_clip_frac']:.4f}"
                 )
     rows.sort(key=lambda item: float(item["bounded_mse_mean"]))
     for rank, row in enumerate(rows, start=1):
@@ -393,7 +405,7 @@ def print_sweep_table(
     )
     print(
         "rank row input_std hidden_bias output_std pred_std pred_p05 pred_p50 pred_p95 "
-        "mse zero_frac clip_frac"
+        "mse acc_zero acc_clip h2_zero h2_clip"
     )
     for row in rows[:SWEEP_TABLE_LIMIT]:
         print(
@@ -401,7 +413,9 @@ def print_sweep_table(
             f"{float(row['input_std']):9.3g} {float(row['hidden_bias']):11.3g} {float(row['output_std']):10.3g} "
             f"{float(row['pred_std']):8.3f} {float(row['pred_p05']):8.3f} "
             f"{float(row['pred_p50']):8.3f} {float(row['pred_p95']):8.3f} "
-            f"{float(row['bounded_mse_mean']):.6f} {float(row['zero_frac']):.6f} {float(row['clip_frac']):.6f}"
+            f"{float(row['bounded_mse_mean']):.6f} "
+            f"{float(row['accumulator_zero_frac']):.6f} {float(row['accumulator_clip_frac']):.6f} "
+            f"{float(row['hidden2_zero_frac']):.6f} {float(row['hidden2_clip_frac']):.6f}"
         )
 
 
@@ -422,8 +436,10 @@ def write_sweep_csv(rows: List[Dict[str, object]], path: Path) -> None:
         "pred_p50",
         "pred_p95",
         "bounded_mse_mean",
-        "zero_frac",
-        "clip_frac",
+        "accumulator_zero_frac",
+        "accumulator_clip_frac",
+        "hidden2_zero_frac",
+        "hidden2_clip_frac",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
