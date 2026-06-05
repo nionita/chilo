@@ -21,8 +21,9 @@ namespace {
 
 using chilo::nnue_generated::TinyNnueData;
 
-constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB3";
+constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB4";
 constexpr std::size_t WEIGHTS_BIN_TEXT_FIELD_SIZE = 64;
+constexpr int BYTE_ACTIVATION_SCALE = 127;
 
 struct RuntimeNnue {
     std::string contractId;
@@ -34,14 +35,15 @@ struct RuntimeNnue {
     int inputScale = 0;
     int hiddenScale = 0;
     int outputScale = 0;
+    int activationScale = 0;
     int perspectiveCount = 0;
     int piecePlaneCount = 0;
     int squareCount = 0;
     std::vector<int16_t> inputWeights;
     std::vector<int16_t> hiddenBias;
-    std::vector<int16_t> hidden2Weights;
+    std::vector<int8_t> hidden2Weights;
     std::vector<int32_t> hidden2Bias;
-    std::vector<int16_t> outputWeights;
+    std::vector<int8_t> outputWeights;
     int32_t outputBias = 0;
 };
 
@@ -53,6 +55,7 @@ struct WeightsBinHeader {
     uint32_t inputScale;
     uint32_t hiddenScale;
     uint32_t outputScale;
+    uint32_t activationScale;
     uint32_t perspectiveCount;
     uint32_t piecePlaneCount;
     uint32_t squareCount;
@@ -63,6 +66,8 @@ struct WeightsBinHeader {
 static_assert(std::string_view(chilo::nnue_generated::kContractId) == "chilo.tiny_nnue.v4",
               "Unexpected generated NNUE contract id");
 static_assert(chilo::nnue_generated::kVersion == 4, "Unexpected generated NNUE contract version");
+static_assert(chilo::nnue_generated::kActivationScale == BYTE_ACTIVATION_SCALE,
+              "Unexpected generated NNUE activation scale");
 static_assert(chilo::nnue_generated::kPerspectiveCount == 2, "Unexpected generated NNUE perspective count");
 static_assert(chilo::nnue_generated::kPiecePlaneCount == 13, "Unexpected generated NNUE piece plane count");
 static_assert(chilo::nnue_generated::kSquareCount == 64, "Unexpected generated NNUE square count");
@@ -119,6 +124,7 @@ RuntimeNnue builtInNnue() {
     runtime.inputScale = chilo::nnue_generated::kInputScale;
     runtime.hiddenScale = chilo::nnue_generated::kHiddenScale;
     runtime.outputScale = chilo::nnue_generated::kOutputScale;
+    runtime.activationScale = chilo::nnue_generated::kActivationScale;
     runtime.perspectiveCount = chilo::nnue_generated::kPerspectiveCount;
     runtime.piecePlaneCount = chilo::nnue_generated::kPiecePlaneCount;
     runtime.squareCount = chilo::nnue_generated::kSquareCount;
@@ -166,7 +172,7 @@ bool validateRuntimeNnue(const RuntimeNnue& net, std::string& error) {
         return false;
     }
     if (net.hiddenSize <= 0 || net.hidden2Size <= 0 || net.inputScale <= 0 || net.hiddenScale <= 0 ||
-        net.outputScale <= 0) {
+        net.outputScale <= 0 || net.activationScale <= 0 || net.activationScale > BYTE_ACTIVATION_SCALE) {
         error = "NNUE metadata contains non-positive hidden size or scales";
         return false;
     }
@@ -222,6 +228,7 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
     net.inputScale = static_cast<int>(header.inputScale);
     net.hiddenScale = static_cast<int>(header.hiddenScale);
     net.outputScale = static_cast<int>(header.outputScale);
+    net.activationScale = static_cast<int>(header.activationScale);
     net.perspectiveCount = static_cast<int>(header.perspectiveCount);
     net.piecePlaneCount = static_cast<int>(header.piecePlaneCount);
     net.squareCount = static_cast<int>(header.squareCount);
@@ -245,9 +252,9 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
     net.outputWeights.resize(static_cast<std::size_t>(net.hidden2Size));
     if (!readExactBytes(input, net.inputWeights.data(), net.inputWeights.size() * sizeof(int16_t)) ||
         !readExactBytes(input, net.hiddenBias.data(), net.hiddenBias.size() * sizeof(int16_t)) ||
-        !readExactBytes(input, net.hidden2Weights.data(), net.hidden2Weights.size() * sizeof(int16_t)) ||
+        !readExactBytes(input, net.hidden2Weights.data(), net.hidden2Weights.size() * sizeof(int8_t)) ||
         !readExactBytes(input, net.hidden2Bias.data(), net.hidden2Bias.size() * sizeof(int32_t)) ||
-        !readExactBytes(input, net.outputWeights.data(), net.outputWeights.size() * sizeof(int16_t)) ||
+        !readExactBytes(input, net.outputWeights.data(), net.outputWeights.size() * sizeof(int8_t)) ||
         !readExact(input, net.outputBias)) {
         error = "NNUE binary payload is truncated";
         return false;
@@ -268,12 +275,16 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
     return true;
 }
 
-int clippedRelu(int value, int scaledClipMax) {
-    return std::clamp(value, 0, scaledClipMax);
+int roundDividePositive(int64_t value, int64_t divisor) {
+    assert(value >= 0);
+    assert(divisor > 0);
+    return static_cast<int>((value + divisor / 2) / divisor);
 }
 
-int64_t clippedRelu64(int64_t value, int64_t scaledClipMax) {
-    return std::clamp<int64_t>(value, 0, scaledClipMax);
+uint8_t byteActivationFromScaledValue(int64_t value, int64_t scaledClipMax, int activationScale) {
+    int64_t clipped = std::clamp<int64_t>(value, 0, scaledClipMax);
+    int activated = roundDividePositive(clipped * activationScale, scaledClipMax);
+    return static_cast<uint8_t>(std::clamp(activated, 0, activationScale));
 }
 
 Color oppositeColor(Color color) {
@@ -349,55 +360,34 @@ void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 #endif
 }
 
-void buildDenseInput(const int32_t* first, const int32_t* second, int32_t* denseInput, int hiddenSize,
-                     int scaledClipMax) {
-#if defined(CHILO_AVX2)
-    int i = 0;
-    const __m256i zero = _mm256_setzero_si256();
-    const __m256i clip = _mm256_set1_epi32(scaledClipMax);
-    for (; i + 8 <= hiddenSize; i += 8) {
-        __m256i firstValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(first + i));
-        __m256i secondValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(second + i));
-        firstValues = _mm256_max_epi32(zero, _mm256_min_epi32(firstValues, clip));
-        secondValues = _mm256_max_epi32(zero, _mm256_min_epi32(secondValues, clip));
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(denseInput + i), firstValues);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(denseInput + hiddenSize + i), secondValues);
-    }
-    for (; i < hiddenSize; ++i) {
-        denseInput[i] = clippedRelu(first[i], scaledClipMax);
-        denseInput[hiddenSize + i] = clippedRelu(second[i], scaledClipMax);
-    }
-#else
+void buildDenseInput(const int32_t* first, const int32_t* second, uint8_t* denseInput, int hiddenSize,
+                     int scaledClipMax, int activationScale) {
     for (int i = 0; i < hiddenSize; ++i) {
-        denseInput[i] = clippedRelu(first[i], scaledClipMax);
-        denseInput[hiddenSize + i] = clippedRelu(second[i], scaledClipMax);
+        denseInput[i] = byteActivationFromScaledValue(first[i], scaledClipMax, activationScale);
+        denseInput[hiddenSize + i] = byteActivationFromScaledValue(second[i], scaledClipMax, activationScale);
     }
-#endif
 }
 
-int64_t dotDenseInput(const int32_t* input, const int16_t* weights, int inputSize) {
-    int64_t sum = 0;
+int32_t dotByteDenseInput(const uint8_t* input, const int8_t* weights, int inputSize) {
+    int32_t sum = 0;
 #if defined(CHILO_AVX2)
     int i = 0;
-    __m256i evenSum = _mm256_setzero_si256();
-    __m256i oddSum = _mm256_setzero_si256();
-    for (; i + 8 <= inputSize; i += 8) {
+    const __m256i ones = _mm256_set1_epi16(1);
+    __m256i acc = _mm256_setzero_si256();
+    for (; i + 32 <= inputSize; i += 32) {
         const __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(input + i));
-        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
-        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
-        evenSum = _mm256_add_epi64(evenSum, _mm256_mul_epi32(values, expandedWeights));
-        oddSum = _mm256_add_epi64(
-            oddSum,
-            _mm256_mul_epi32(_mm256_srli_epi64(values, 32), _mm256_srli_epi64(expandedWeights, 32)));
+        const __m256i packedWeights = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(weights + i));
+        const __m256i product16 = _mm256_maddubs_epi16(values, packedWeights);
+        const __m256i product32 = _mm256_madd_epi16(product16, ones);
+        acc = _mm256_add_epi32(acc, product32);
     }
-    const __m256i total = _mm256_add_epi64(evenSum, oddSum);
-    const __m128i total128 =
-        _mm_add_epi64(_mm256_castsi256_si128(total), _mm256_extracti128_si256(total, 1));
-    const __m128i high64 = _mm_unpackhi_epi64(total128, total128);
-    sum = _mm_cvtsi128_si64(_mm_add_epi64(total128, high64));
-    for (; i < inputSize; ++i) sum += static_cast<int64_t>(input[i]) * weights[i];
+    const __m128i sum128 = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+    const __m128i sum64 = _mm_add_epi32(sum128, _mm_shuffle_epi32(sum128, _MM_SHUFFLE(1, 0, 3, 2)));
+    const __m128i sum32 = _mm_add_epi32(sum64, _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1)));
+    sum = _mm_cvtsi128_si32(sum32);
+    for (; i < inputSize; ++i) sum += static_cast<int32_t>(input[i]) * weights[i];
 #else
-    for (int i = 0; i < inputSize; ++i) sum += static_cast<int64_t>(input[i]) * weights[i];
+    for (int i = 0; i < inputSize; ++i) sum += static_cast<int32_t>(input[i]) * weights[i];
 #endif
     return sum;
 }
@@ -483,21 +473,21 @@ int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
     const RuntimeNnue& net = currentNnue();
 
     const int scaledClipMax = net.clipMax * net.inputScale;
-    const int64_t scaledHidden2ClipMax =
-        static_cast<int64_t>(net.clipMax) * net.inputScale * net.hiddenScale;
+    const int64_t scaledHidden2ClipMax = static_cast<int64_t>(net.clipMax) * net.hiddenScale;
     int64_t score = net.outputBias;
     const int denseInputSize = 2 * net.hiddenSize;
-    thread_local std::vector<int32_t> denseInput;
+    thread_local std::vector<uint8_t> denseInput;
     denseInput.resize(static_cast<std::size_t>(denseInputSize));
-    buildDenseInput(first, second, denseInput.data(), net.hiddenSize, scaledClipMax);
+    buildDenseInput(first, second, denseInput.data(), net.hiddenSize, scaledClipMax, net.activationScale);
 
     for (int h = 0; h < net.hidden2Size; ++h) {
-        const int16_t* weights =
+        const int8_t* weights =
             net.hidden2Weights.data() + static_cast<std::size_t>(h) * static_cast<std::size_t>(denseInputSize);
         int64_t hidden2Value = net.hidden2Bias[static_cast<std::size_t>(h)];
-        hidden2Value += dotDenseInput(denseInput.data(), weights, denseInputSize);
-        hidden2Value = clippedRelu64(hidden2Value, scaledHidden2ClipMax);
-        score += hidden2Value * net.outputWeights[static_cast<std::size_t>(h)];
+        hidden2Value += dotByteDenseInput(denseInput.data(), weights, denseInputSize);
+        const uint8_t hidden2Activation =
+            byteActivationFromScaledValue(hidden2Value, scaledHidden2ClipMax, net.activationScale);
+        score += static_cast<int32_t>(hidden2Activation) * net.outputWeights[static_cast<std::size_t>(h)];
     }
     return score;
 }
@@ -588,8 +578,7 @@ int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc) {
     const int32_t* activeHidden = acc.values.data() + accumulatorOffset(net, pos.sideToMove);
     const int32_t* passiveHidden = acc.values.data() + accumulatorOffset(net, passiveSide);
     int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.hiddenScale * net.outputScale;
-    return roundDivide(score, finalDivisor);
+    return roundDivide(score, net.outputScale);
 }
 
 int evaluate(const Position& pos) {
@@ -601,6 +590,5 @@ int evaluate(const Position& pos) {
     const int32_t* activeHidden = pos.sideToMove == WHITE ? whiteHidden.data() : blackHidden.data();
     const int32_t* passiveHidden = pos.sideToMove == WHITE ? blackHidden.data() : whiteHidden.data();
     int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    int64_t finalDivisor = static_cast<int64_t>(net.inputScale) * net.hiddenScale * net.outputScale;
-    return roundDivide(score, finalDivisor);
+    return roundDivide(score, net.outputScale);
 }

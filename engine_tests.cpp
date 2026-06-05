@@ -137,6 +137,7 @@ bool writeSyntheticNnueWeights(const std::string& path) {
     constexpr int inputScale = 1;
     constexpr int hiddenScale = 1;
     constexpr int outputScale = 1;
+    constexpr int activationScale = 127;
     constexpr int perspectiveCount = 2;
     constexpr int piecePlaneCount = 13;
     constexpr int squareCount = 64;
@@ -144,7 +145,7 @@ bool writeSyntheticNnueWeights(const std::string& path) {
     std::ofstream output(path, std::ios::binary);
     if (!output) return false;
 
-    const char magic[8] = {'C', 'H', 'N', 'N', 'U', 'E', 'B', '3'};
+    const char magic[8] = {'C', 'H', 'N', 'N', 'U', 'E', 'B', '4'};
     output.write(magic, sizeof(magic));
     writeBinaryValue(output, static_cast<uint32_t>(hiddenSize));
     writeBinaryValue(output, static_cast<uint32_t>(hidden2Size));
@@ -152,6 +153,7 @@ bool writeSyntheticNnueWeights(const std::string& path) {
     writeBinaryValue(output, static_cast<uint32_t>(inputScale));
     writeBinaryValue(output, static_cast<uint32_t>(hiddenScale));
     writeBinaryValue(output, static_cast<uint32_t>(outputScale));
+    writeBinaryValue(output, static_cast<uint32_t>(activationScale));
     writeBinaryValue(output, static_cast<uint32_t>(perspectiveCount));
     writeBinaryValue(output, static_cast<uint32_t>(piecePlaneCount));
     writeBinaryValue(output, static_cast<uint32_t>(squareCount));
@@ -178,12 +180,12 @@ bool writeSyntheticNnueWeights(const std::string& path) {
     output.write(reinterpret_cast<const char*>(hiddenBias.data()),
                  static_cast<std::streamsize>(hiddenBias.size() * sizeof(hiddenBias[0])));
 
-    std::array<int16_t, hidden2Size * 2 * hiddenSize> hidden2Weights{};
+    std::array<int8_t, hidden2Size * 2 * hiddenSize> hidden2Weights{};
     for (int row = 0; row < hidden2Size; ++row) {
         for (int col = 0; col < 2 * hiddenSize; ++col) {
             int value = ((row * 23 + col * 7) % 19) - 8;
             if ((row + col) % 5 == 0) value += 11;
-            hidden2Weights[row * 2 * hiddenSize + col] = static_cast<int16_t>(value);
+            hidden2Weights[row * 2 * hiddenSize + col] = static_cast<int8_t>(value);
         }
     }
     output.write(reinterpret_cast<const char*>(hidden2Weights.data()),
@@ -193,7 +195,7 @@ bool writeSyntheticNnueWeights(const std::string& path) {
     output.write(reinterpret_cast<const char*>(hidden2Bias.data()),
                  static_cast<std::streamsize>(hidden2Bias.size() * sizeof(hidden2Bias[0])));
 
-    const std::array<int16_t, hidden2Size> outputWeights = {3, -5, 7, -11, 13};
+    const std::array<int8_t, hidden2Size> outputWeights = {3, -5, 7, -11, 13};
     output.write(reinterpret_cast<const char*>(outputWeights.data()),
                  static_cast<std::streamsize>(outputWeights.size() * sizeof(outputWeights[0])));
 

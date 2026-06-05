@@ -36,7 +36,11 @@ The engine always has built-in fallback weights from `generated/generated_nnue_w
 - explicit weight-load failure is fatal for `chilo`/`eval_fen`; sidecar load failure falls back to built-in weights
 - runtime `.bin` files may use a different hidden size as long as the feature contract, clip value, dimensions, and scales match
 
-Integer export is scaled `int16` for input weights, hidden bias, and output weights, with `int32` output bias. The input/output scales are export parameters and are recorded in manifests and binary headers.
+Integer export uses the `byte_dense_v1` format: feature-transformer weights
+and accumulator bias stay `int16`, accumulator and hidden-layer activations are
+requantized to `0..127`, dense/output weights are `int8`, and dense/output
+biases are `int32`. Runtime `.bin` files use the `CHNNUEB4` magic and export
+manifests use `chilo.nnue_export.v7`.
 
 ## UCI Search Threading Note
 

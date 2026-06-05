@@ -24,10 +24,11 @@ from nnue_common import (
 )
 
 DEFAULT_INPUT_SCALE = 64
-DEFAULT_HIDDEN_SCALE = 32
-DEFAULT_OUTPUT_SCALE = 32
-WEIGHTS_BIN_MAGIC = b"CHNNUEB3"
-WEIGHTS_BIN_HEADER_STRUCT = struct.Struct("<8sIIIIIIIII64s64s")
+DEFAULT_HIDDEN_SCALE = 8
+DEFAULT_OUTPUT_SCALE = 1
+BYTE_ACTIVATION_SCALE = 127
+WEIGHTS_BIN_MAGIC = b"CHNNUEB4"
+WEIGHTS_BIN_HEADER_STRUCT = struct.Struct("<8sIIIIIIIIII64s64s")
 
 
 def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.ndarray | int]]:
@@ -67,9 +68,12 @@ def quantize_weights(
     input_scale: int,
     hidden_scale: int,
     output_scale: int,
+    clip_max: int,
 ) -> Dict[str, np.ndarray | int]:
     if input_scale <= 0 or hidden_scale <= 0 or output_scale <= 0:
         raise SystemExit("input_scale, hidden_scale, and output_scale must be positive integers.")
+    if clip_max <= 0:
+        raise SystemExit("clip_max must be positive.")
     quantized = {}
     for name in ("input_weights", "hidden_bias"):
         rounded = np.rint(np.asarray(weights[name], dtype=np.float64) * input_scale)
@@ -77,28 +81,31 @@ def quantize_weights(
             raise SystemExit(f"{name} does not fit in int16 after rounding; export refused.")
         quantized[name] = rounded.astype(np.int16)
 
-    rounded_hidden2_weights = np.rint(np.asarray(weights["hidden2_weights"], dtype=np.float64) * hidden_scale)
-    if np.any(rounded_hidden2_weights < np.iinfo(np.int16).min) or np.any(rounded_hidden2_weights > np.iinfo(np.int16).max):
-        raise SystemExit("hidden2_weights do not fit in int16 after scaled rounding; export refused.")
-    quantized["hidden2_weights"] = rounded_hidden2_weights.astype(np.int16)
+    dense_weight_scale = hidden_scale * float(clip_max) / BYTE_ACTIVATION_SCALE
+    rounded_hidden2_weights = np.rint(np.asarray(weights["hidden2_weights"], dtype=np.float64) * dense_weight_scale)
+    if np.any(rounded_hidden2_weights < -BYTE_ACTIVATION_SCALE) or np.any(rounded_hidden2_weights > BYTE_ACTIVATION_SCALE):
+        raise SystemExit("hidden2_weights do not fit in int8 byte-dense range; reduce --hidden-scale.")
+    quantized["hidden2_weights"] = rounded_hidden2_weights.astype(np.int8)
 
-    rounded_hidden2_bias = np.rint(np.asarray(weights["hidden2_bias"], dtype=np.float64) * input_scale * hidden_scale)
+    rounded_hidden2_bias = np.rint(np.asarray(weights["hidden2_bias"], dtype=np.float64) * hidden_scale)
     if np.any(rounded_hidden2_bias < np.iinfo(np.int32).min) or np.any(rounded_hidden2_bias > np.iinfo(np.int32).max):
         raise SystemExit("hidden2_bias does not fit in int32 after scaled rounding; export refused.")
     quantized["hidden2_bias"] = rounded_hidden2_bias.astype(np.int32)
 
-    rounded_output_weights = np.rint(np.asarray(weights["output_weights"], dtype=np.float64) * output_scale)
-    if np.any(rounded_output_weights < np.iinfo(np.int16).min) or np.any(rounded_output_weights > np.iinfo(np.int16).max):
-        raise SystemExit("output_weights do not fit in int16 after scaled rounding; export refused.")
-    quantized["output_weights"] = rounded_output_weights.astype(np.int16)
+    output_weight_scale = output_scale * float(clip_max) / BYTE_ACTIVATION_SCALE
+    rounded_output_weights = np.rint(np.asarray(weights["output_weights"], dtype=np.float64) * output_weight_scale)
+    if np.any(rounded_output_weights < -BYTE_ACTIVATION_SCALE) or np.any(rounded_output_weights > BYTE_ACTIVATION_SCALE):
+        raise SystemExit("output_weights do not fit in int8 byte-dense range; reduce --output-scale.")
+    quantized["output_weights"] = rounded_output_weights.astype(np.int8)
 
-    output_bias = int(round(float(weights["output_bias"]) * input_scale * hidden_scale * output_scale))
+    output_bias = int(round(float(weights["output_bias"]) * output_scale))
     if output_bias < np.iinfo(np.int32).min or output_bias > np.iinfo(np.int32).max:
         raise SystemExit("output_bias does not fit in int32 after scaled rounding; export refused.")
     quantized["output_bias"] = output_bias
     quantized["input_scale"] = int(input_scale)
     quantized["hidden_scale"] = int(hidden_scale)
     quantized["output_scale"] = int(output_scale)
+    quantized["activation_scale"] = BYTE_ACTIVATION_SCALE
     return quantized
 
 
@@ -201,6 +208,7 @@ inline constexpr int kClipMax = {int(contract['clip_max'])};
 inline constexpr int kInputScale = {int(weights['input_scale'])};
 inline constexpr int kHiddenScale = {int(weights['hidden_scale'])};
 inline constexpr int kOutputScale = {int(weights['output_scale'])};
+inline constexpr int kActivationScale = {int(weights['activation_scale'])};
 inline constexpr int kPerspectiveCount = {int(contract['perspectives'])};
 inline constexpr int kPiecePlaneCount = {int(contract['piece_planes'])};
 inline constexpr int kSquareCount = {int(contract['board_squares'])};
@@ -210,9 +218,9 @@ inline constexpr int kOutputSize = {output_size};
 struct TinyNnueData {{
     int16_t inputWeights[kPiecePlaneCount][kSquareCount][kHiddenSize];
     int16_t hiddenBias[kHiddenSize];
-    int16_t hidden2Weights[kHidden2Size][kAccumulatorOutputSize];
+    int8_t hidden2Weights[kHidden2Size][kAccumulatorOutputSize];
     int32_t hidden2Bias[kHidden2Size];
-    int16_t outputWeights[kOutputSize];
+    int8_t outputWeights[kOutputSize];
     int32_t outputBias;
 }};
 
@@ -251,6 +259,7 @@ def write_bin(path: Path, contract: Dict[str, object], weights: Dict[str, np.nda
         int(weights["input_scale"]),
         int(weights["hidden_scale"]),
         int(weights["output_scale"]),
+        int(weights["activation_scale"]),
         int(contract["perspectives"]),
         int(contract["piece_planes"]),
         int(contract["board_squares"]),
@@ -262,9 +271,9 @@ def write_bin(path: Path, contract: Dict[str, object], weights: Dict[str, np.nda
         handle.write(header)
         handle.write(np.asarray(weights["input_weights"], dtype="<i2").tobytes(order="C"))
         handle.write(np.asarray(weights["hidden_bias"], dtype="<i2").tobytes(order="C"))
-        handle.write(np.asarray(weights["hidden2_weights"], dtype="<i2").tobytes(order="C"))
+        handle.write(np.asarray(weights["hidden2_weights"], dtype="<i1").tobytes(order="C"))
         handle.write(np.asarray(weights["hidden2_bias"], dtype="<i4").tobytes(order="C"))
-        handle.write(np.asarray(weights["output_weights"], dtype="<i2").tobytes(order="C"))
+        handle.write(np.asarray(weights["output_weights"], dtype="<i1").tobytes(order="C"))
         handle.write(np.asarray([weights["output_bias"]], dtype="<i4").tobytes(order="C"))
 
 
@@ -310,7 +319,7 @@ def main() -> int:
         hidden2_size = int(checkpoint_meta["hidden2_size"])
         clip_max = int(checkpoint_meta["clip_max"])
 
-    quantized_weights = quantize_weights(float_weights, args.input_scale, args.hidden_scale, args.output_scale)
+    quantized_weights = quantize_weights(float_weights, args.input_scale, args.hidden_scale, args.output_scale, clip_max)
     validation = {"validation_samples": 0, "validation_split": "none", "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
     if args.dataset_dir:
         validation = validate_dataset(
@@ -332,7 +341,7 @@ def main() -> int:
         output_bin.parent.mkdir(parents=True, exist_ok=True)
         write_bin(output_bin, contract, quantized_weights, clip_max)
     manifest = {
-        "format": "chilo.nnue_export.v6",
+        "format": "chilo.nnue_export.v7",
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
         "architecture": contract["architecture"],
@@ -341,10 +350,11 @@ def main() -> int:
         "output_size": output_size_from_weights(quantized_weights),
         "clip_max": clip_max,
         "source": source,
-        "quantization": "scaled_int16_int32_bias",
+        "quantization": "byte_dense_v1",
         "input_scale": int(args.input_scale),
         "hidden_scale": int(args.hidden_scale),
         "output_scale": int(args.output_scale),
+        "activation_scale": int(quantized_weights["activation_scale"]),
         "output_bin": str(output_bin.resolve()) if output_bin else None,
         "validation": validation,
     }

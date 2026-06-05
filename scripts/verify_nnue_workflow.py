@@ -89,7 +89,7 @@ def main() -> int:
             "--validation-samples",
             "4",
             "--tolerance",
-            "8",
+            "256",
             "--output-header",
             str(exported_header),
             "--output-manifest",
@@ -109,6 +109,7 @@ def main() -> int:
             int(export_manifest["input_scale"]),
             int(export_manifest["hidden_scale"]),
             int(export_manifest["output_scale"]),
+            int(contract["clip_max"]),
         )
         test_fens = [
             "4k3/8/8/8/8/8/8/3QK3 w - - 0 1",

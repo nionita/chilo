@@ -16,6 +16,7 @@ DATASET_MANIFEST_NAME = "manifest.json"
 SHARD_DIR_NAME = "shards"
 DEFAULT_HIDDEN_SIZE = 64
 DEFAULT_HIDDEN2_SIZE = 32
+BYTE_ACTIVATION_SCALE = 127
 CONTRACT_HASH_EXCLUDED_KEYS = {
     "hidden_size",
     "hidden2_size",
@@ -367,6 +368,18 @@ def round_divide(value: int, divisor: int) -> int:
     return -(((-value) + divisor // 2) // divisor)
 
 
+def round_divide_positive(value: np.ndarray | int, divisor: int):
+    if divisor <= 0:
+        raise ValueError("divisor must be positive")
+    return (value + divisor // 2) // divisor
+
+
+def byte_activation(values: np.ndarray, scaled_clip_max: int, activation_scale: int) -> np.ndarray:
+    clipped = np.clip(values, 0, scaled_clip_max).astype(np.int64, copy=False)
+    activated = round_divide_positive(clipped * activation_scale, scaled_clip_max)
+    return np.clip(activated, 0, activation_scale).astype(np.uint8)
+
+
 def integer_model_eval(
     weights: Dict[str, np.ndarray | int],
     side_to_move: int,
@@ -383,9 +396,9 @@ def integer_model_eval(
     input_scale = int(weights.get("input_scale", 1))
     hidden_scale = int(weights.get("hidden_scale", 1))
     output_scale = int(weights.get("output_scale", 1))
+    activation_scale = int(weights.get("activation_scale", BYTE_ACTIVATION_SCALE))
     scaled_clip_max = clip_max * input_scale
-    scaled_hidden2_clip_max = clip_max * input_scale * hidden_scale
-    total_scale = input_scale * hidden_scale * output_scale
+    scaled_hidden2_clip_max = clip_max * hidden_scale
 
     accumulators: List[np.ndarray] = []
     for color in (0, 1):
@@ -393,12 +406,12 @@ def integer_model_eval(
         for piece, square in zip(pieces, squares):
             relative_piece_value, relative_square = relative_feature_for_color(color, piece, square)
             hidden += input_weights[relative_piece_value, relative_square].astype(np.int64)
-        accumulators.append(np.clip(hidden, 0, scaled_clip_max))
+        accumulators.append(byte_activation(hidden, scaled_clip_max, activation_scale).astype(np.int64))
 
     first = accumulators[side_to_move]
     second = accumulators[opposite_color(side_to_move)]
     dense_input = np.concatenate([first, second])
     hidden2 = hidden2_bias + hidden2_weights.dot(dense_input)
-    hidden2 = np.clip(hidden2, 0, scaled_hidden2_clip_max)
+    hidden2 = byte_activation(hidden2, scaled_hidden2_clip_max, activation_scale).astype(np.int64)
     score = output_bias + int((hidden2 * output_weights).sum())
-    return round_divide(score, total_scale)
+    return round_divide(score, output_scale)

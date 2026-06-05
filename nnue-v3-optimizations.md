@@ -32,6 +32,12 @@ the side-to-move accumulator is placed in the first half of the dense input and
 the opponent accumulator in the second half. The dense hidden layer therefore
 has independent parameters for active and passive treatment.
 
+Implementation status: version `0.7.2` implements Stage 2's byte-dense export
+and inference format. Sparse feature-transformer weights and accumulator bias
+remain `int16_t`, accumulator storage remains `int32_t`, dense/output weights
+are now `int8_t`, activations are requantized to `0..127`, runtime binaries use
+`CHNNUEB4`, and export manifests use `chilo.nnue_export.v7`.
+
 Relevant Chilo files:
 
 - `eval.cpp`: runtime network format and integer inference
@@ -63,11 +69,14 @@ active feature rows are added or removed. Larger feature sets mainly increase
 network size, cache pressure, training difficulty, and refresh cost when a
 feature dependency such as the king square changes.
 
-## Current Chilo Integer Pipeline
+## Previous Chilo Integer Pipeline
 
-The current exported pipeline uses:
+This was the pre-`0.7.2` pipeline kept here as background for why byte-dense
+inference was introduced.
 
-| Value | Current type |
+The old exported pipeline used:
+
+| Value | Old type |
 | --- | --- |
 | Feature-transformer weights | `int16_t` |
 | Feature-transformer bias | `int16_t` |
@@ -78,7 +87,7 @@ The current exported pipeline uses:
 | Output weights | `int16_t` |
 | Output bias and score | `int32_t` / `int64_t` |
 
-The generated fallback manifest currently uses three scales:
+The generated fallback manifest used three scales:
 
 ```text
 input_scale  = 64

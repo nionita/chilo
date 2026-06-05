@@ -169,18 +169,22 @@ class NnuePipelineTest(unittest.TestCase):
             self.assertIn("inline constexpr int kHiddenSize = 64;", header_text)
             self.assertIn("inline constexpr int kHidden2Size = 32;", header_text)
             self.assertIn("inline constexpr int kInputScale = 64;", header_text)
-            self.assertIn("inline constexpr int kHiddenScale = 32;", header_text)
-            self.assertIn("inline constexpr int kOutputScale = 32;", header_text)
+            self.assertIn("inline constexpr int kHiddenScale = 8;", header_text)
+            self.assertIn("inline constexpr int kOutputScale = 1;", header_text)
+            self.assertIn("inline constexpr int kActivationScale = 127;", header_text)
             self.assertIn("inline constexpr int kOutputSize = 32;", header_text)
+            self.assertIn("int8_t hidden2Weights", header_text)
+            self.assertIn("int8_t outputWeights", header_text)
             export_manifest = json.loads(export_manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(export_manifest["format"], "chilo.nnue_export.v6")
+            self.assertEqual(export_manifest["format"], "chilo.nnue_export.v7")
             self.assertEqual(export_manifest["hidden_size"], 64)
             self.assertEqual(export_manifest["hidden2_size"], 32)
             self.assertEqual(export_manifest["output_size"], 32)
-            self.assertEqual(export_manifest["quantization"], "scaled_int16_int32_bias")
+            self.assertEqual(export_manifest["quantization"], "byte_dense_v1")
             self.assertEqual(export_manifest["input_scale"], 64)
-            self.assertEqual(export_manifest["hidden_scale"], 32)
-            self.assertEqual(export_manifest["output_scale"], 32)
+            self.assertEqual(export_manifest["hidden_scale"], 8)
+            self.assertEqual(export_manifest["output_scale"], 1)
+            self.assertEqual(export_manifest["activation_scale"], 127)
             self.assertEqual(export_manifest["validation"]["max_abs_diff"], 0.0)
             self.assertTrue(export_bin_path.exists())
 
@@ -497,7 +501,7 @@ class NnuePipelineTest(unittest.TestCase):
                     "--validation-samples",
                     "3",
                     "--tolerance",
-                    "8",
+                    "256",
                 ],
                 check=True,
             )

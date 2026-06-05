@@ -13,8 +13,9 @@ inline constexpr int kHiddenSize = 64;
 inline constexpr int kHidden2Size = 32;
 inline constexpr int kClipMax = 255;
 inline constexpr int kInputScale = 64;
-inline constexpr int kHiddenScale = 32;
-inline constexpr int kOutputScale = 32;
+inline constexpr int kHiddenScale = 8;
+inline constexpr int kOutputScale = 1;
+inline constexpr int kActivationScale = 127;
 inline constexpr int kPerspectiveCount = 2;
 inline constexpr int kPiecePlaneCount = 13;
 inline constexpr int kSquareCount = 64;
@@ -24,9 +25,9 @@ inline constexpr int kOutputSize = 32;
 struct TinyNnueData {
     int16_t inputWeights[kPiecePlaneCount][kSquareCount][kHiddenSize];
     int16_t hiddenBias[kHiddenSize];
-    int16_t hidden2Weights[kHidden2Size][kAccumulatorOutputSize];
+    int8_t hidden2Weights[kHidden2Size][kAccumulatorOutputSize];
     int32_t hidden2Bias[kHidden2Size];
-    int16_t outputWeights[kOutputSize];
+    int8_t outputWeights[kOutputSize];
     int32_t outputBias;
 };
 
