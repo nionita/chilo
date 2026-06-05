@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -16,6 +17,8 @@ const char* CHILO_VERSION = "0.7.1"
     " avx2"
 #endif
 ;
+
+std::mutex g_uciOutputMutex;
 
 struct GoCommandOptions {
     int depth = 0;
@@ -82,6 +85,7 @@ void printUCIScore(int score) {
 
 void printSearchInfo(const SearchResult& result, void*) {
     uint64_t nps = result.elapsedMs > 0 ? (result.nodes * 1000) / result.elapsedMs : 0;
+    std::lock_guard<std::mutex> lock(g_uciOutputMutex);
     std::cout << "info depth " << result.depth
               << " score ";
     printUCIScore(result.score);
@@ -261,6 +265,12 @@ SearchLimits parseGoCommand(const std::vector<std::string>& tokens, const Positi
 
 int main(int argc, char** argv) {
     std::string explicitWeightsPath;
+    bool syncSearch =
+#if defined(_WIN32)
+        true;
+#else
+        false;
+#endif
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--version" || arg == "-v") {
@@ -273,6 +283,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
             explicitWeightsPath = argv[++i];
+        } else if (arg == "--sync-search") {
+            syncSearch = true;
+        } else if (arg == "--async-search") {
+            syncSearch = false;
         }
     }
 
@@ -293,6 +307,12 @@ int main(int argc, char** argv) {
         searchRunning.store(false);
     };
 
+    auto joinCompletedSearch = [&]() {
+        if (!searchRunning.load() && searchThread.joinable()) {
+            searchThread.join();
+        }
+    };
+
     std::string line;
     while (std::getline(std::cin, line)) {
         std::vector<std::string> tokens = tokenize(line);
@@ -300,11 +320,15 @@ int main(int argc, char** argv) {
 
         const std::string& command = tokens[0];
         if (command == "uci") {
+            joinCompletedSearch();
+            std::lock_guard<std::mutex> lock(g_uciOutputMutex);
             std::cout << "id name Chilo " << CHILO_VERSION << "\n";
             std::cout << "id author Nicu Ionita, Codex & Kilo\n";
             std::cout << "uciok\n";
             std::cout.flush();
         } else if (command == "isready") {
+            joinCompletedSearch();
+            std::lock_guard<std::mutex> lock(g_uciOutputMutex);
             std::cout << "readyok\n";
             std::cout.flush();
         } else if (command == "ucinewgame") {
@@ -321,12 +345,20 @@ int main(int argc, char** argv) {
             stopAndJoinSearch();
             SearchLimits limits = parseGoCommand(tokens, currentPos);
             Position searchPos = currentPos;
+            if (syncSearch) {
+                SearchResult result = searchBestMove(searchPos, limits);
+                std::lock_guard<std::mutex> lock(g_uciOutputMutex);
+                std::cout << "bestmove " << bestMoveString(result) << "\n";
+                std::cout.flush();
+                continue;
+            }
             searchRunning.store(true);
             searchThread = std::thread([searchPos, limits, &searchRunning]() mutable {
                 SearchResult result = searchBestMove(searchPos, limits);
+                searchRunning.store(false);
+                std::lock_guard<std::mutex> lock(g_uciOutputMutex);
                 std::cout << "bestmove " << bestMoveString(result) << "\n";
                 std::cout.flush();
-                searchRunning.store(false);
             });
         } else if (command == "stop") {
             stopAndJoinSearch();

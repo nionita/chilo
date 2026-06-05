@@ -38,6 +38,36 @@ The engine always has built-in fallback weights from `generated/generated_nnue_w
 
 Integer export is scaled `int16` for input weights, hidden bias, and output weights, with `int32` output bias. The input/output scales are export parameters and are recorded in manifests and binary headers.
 
+## UCI Search Threading Note
+
+The normal UCI frontend uses asynchronous search: the input thread stays
+available for `stop`, `quit`, and `isready`, while a search worker computes the
+current `go` command. This is the correct long-term shape, especially before
+adding true multi-threaded search.
+
+On Windows MinGW builds, the per-search worker-thread lifecycle has exposed a
+timing-dependent failure with the faster small NNUE v3 runtime net
+(`g3hl2c`, 16 -> 8). Fastchess and at least one GUI can receive `bestmove`,
+send `isready` immediately, and then the engine stalls or terminates while the
+frontend is joining the just-finished search thread. The older/larger
+64 -> 32 test net was slower and did not reliably expose this race. Linux
+generic and AVX2 builds did not reproduce the failure.
+
+Current workaround:
+
+- Windows builds default to synchronous search, avoiding per-move worker-thread
+  creation and join.
+- `--sync-search` forces the same path on any platform.
+- `--async-search` forces the asynchronous path and is mainly useful for
+  debugging the Windows issue.
+
+The cost of synchronous search is reduced UCI responsiveness: `stop` and `quit`
+are only processed after the current search returns. This is acceptable for
+short fixed-depth tests and normal clock-limited games, but it is not a final
+UCI design. The intended durable fix is a persistent search worker/search
+manager that is started once, receives search jobs, supports `stop`, and is not
+created and joined for every move.
+
 ## Training/Data Pipeline
 
 Raw self-play collection writes `eval_fen,score,result`, where both score and result are from the evaluated position side-to-move perspective. `selfplay_collect` records evaluated leaves, skips terminal/in-check leaves, reports progress/ETA, refuses to overwrite existing output files, and uses a generated time/process-derived RNG seed unless `--seed` is supplied.
