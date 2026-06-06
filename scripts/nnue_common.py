@@ -374,9 +374,37 @@ def round_divide_positive(value: np.ndarray | int, divisor: int):
     return (value + divisor // 2) // divisor
 
 
-def byte_activation(values: np.ndarray, scaled_clip_max: int, activation_scale: int) -> np.ndarray:
-    clipped = np.clip(values, 0, scaled_clip_max).astype(np.int64, copy=False)
-    activated = round_divide_positive(clipped * activation_scale, scaled_clip_max)
+def is_power_of_two(value: int) -> bool:
+    return value > 0 and (value & (value - 1)) == 0
+
+
+def log2_power_of_two(value: int) -> int:
+    if not is_power_of_two(value):
+        raise ValueError("value must be a power of two")
+    return value.bit_length() - 1
+
+
+def round_shift_nonnegative(values: np.ndarray | int, shift: int):
+    if shift < 0:
+        raise ValueError("shift must be non-negative")
+    if shift == 0:
+        return values
+    return (values + (1 << (shift - 1))) >> shift
+
+
+def round_shift_signed(value: int, shift: int) -> int:
+    if shift < 0:
+        raise ValueError("shift must be non-negative")
+    if shift == 0:
+        return int(value)
+    if value >= 0:
+        return int((value + (1 << (shift - 1))) >> shift)
+    return -int(((-value) + (1 << (shift - 1))) >> shift)
+
+
+def byte_activation(values: np.ndarray, shift: int, activation_scale: int) -> np.ndarray:
+    clipped = np.maximum(values, 0).astype(np.int64, copy=False)
+    activated = round_shift_nonnegative(clipped, shift)
     return np.clip(activated, 0, activation_scale).astype(np.uint8)
 
 
@@ -397,8 +425,9 @@ def integer_model_eval(
     hidden_scale = int(weights.get("hidden_scale", 1))
     output_scale = int(weights.get("output_scale", 1))
     activation_scale = int(weights.get("activation_scale", BYTE_ACTIVATION_SCALE))
-    scaled_clip_max = clip_max * input_scale
-    scaled_hidden2_clip_max = clip_max * hidden_scale
+    input_activation_shift = log2_power_of_two(input_scale) + 1
+    hidden2_activation_shift = log2_power_of_two(hidden_scale) + 1
+    output_shift = log2_power_of_two(output_scale)
 
     accumulators: List[np.ndarray] = []
     for color in (0, 1):
@@ -406,12 +435,12 @@ def integer_model_eval(
         for piece, square in zip(pieces, squares):
             relative_piece_value, relative_square = relative_feature_for_color(color, piece, square)
             hidden += input_weights[relative_piece_value, relative_square].astype(np.int64)
-        accumulators.append(byte_activation(hidden, scaled_clip_max, activation_scale).astype(np.int64))
+        accumulators.append(byte_activation(hidden, input_activation_shift, activation_scale).astype(np.int64))
 
     first = accumulators[side_to_move]
     second = accumulators[opposite_color(side_to_move)]
     dense_input = np.concatenate([first, second])
     hidden2 = hidden2_bias + hidden2_weights.dot(dense_input)
-    hidden2 = byte_activation(hidden2, scaled_hidden2_clip_max, activation_scale).astype(np.int64)
+    hidden2 = byte_activation(hidden2, hidden2_activation_shift, activation_scale).astype(np.int64)
     score = output_bias + int((hidden2 * output_weights).sum())
-    return round_divide(score, output_scale)
+    return round_shift_signed(score, output_shift)

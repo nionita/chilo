@@ -145,7 +145,7 @@ bool writeSyntheticNnueWeights(const std::string& path) {
     std::ofstream output(path, std::ios::binary);
     if (!output) return false;
 
-    const char magic[8] = {'C', 'H', 'N', 'N', 'U', 'E', 'B', '4'};
+    const char magic[8] = {'C', 'H', 'N', 'N', 'U', 'E', 'B', '5'};
     output.write(magic, sizeof(magic));
     writeBinaryValue(output, static_cast<uint32_t>(hiddenSize));
     writeBinaryValue(output, static_cast<uint32_t>(hidden2Size));

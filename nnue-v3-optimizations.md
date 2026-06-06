@@ -32,11 +32,13 @@ the side-to-move accumulator is placed in the first half of the dense input and
 the opponent accumulator in the second half. The dense hidden layer therefore
 has independent parameters for active and passive treatment.
 
-Implementation status: version `0.7.2` implements Stage 2's byte-dense export
+Implementation status: version `0.7.3` implements Stage 2's byte-dense export
 and inference format. Sparse feature-transformer weights and accumulator bias
 remain `int16_t`, accumulator storage remains `int32_t`, dense/output weights
-are now `int8_t`, activations are requantized to `0..127`, runtime binaries use
-`CHNNUEB4`, and export manifests use `chilo.nnue_export.v7`.
+are now `int8_t`, activations are requantized to `0..127` using rounded shifts,
+runtime binaries use `CHNNUEB5`, and export manifests use
+`chilo.nnue_export.v8`. Version `0.7.2` was the first byte-dense implementation
+and still used real divisions for activation requantization.
 
 Relevant Chilo files:
 

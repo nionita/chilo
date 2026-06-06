@@ -27,8 +27,12 @@ DEFAULT_INPUT_SCALE = 64
 DEFAULT_HIDDEN_SCALE = 8
 DEFAULT_OUTPUT_SCALE = 1
 BYTE_ACTIVATION_SCALE = 127
-WEIGHTS_BIN_MAGIC = b"CHNNUEB4"
+WEIGHTS_BIN_MAGIC = b"CHNNUEB5"
 WEIGHTS_BIN_HEADER_STRUCT = struct.Struct("<8sIIIIIIIIII64s64s")
+
+
+def is_power_of_two(value: int) -> bool:
+    return value > 0 and (value & (value - 1)) == 0
 
 
 def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.ndarray | int]]:
@@ -72,6 +76,8 @@ def quantize_weights(
 ) -> Dict[str, np.ndarray | int]:
     if input_scale <= 0 or hidden_scale <= 0 or output_scale <= 0:
         raise SystemExit("input_scale, hidden_scale, and output_scale must be positive integers.")
+    if not (is_power_of_two(input_scale) and is_power_of_two(hidden_scale) and is_power_of_two(output_scale)):
+        raise SystemExit("input_scale, hidden_scale, and output_scale must be powers of two for byte-shift export.")
     if clip_max <= 0:
         raise SystemExit("clip_max must be positive.")
     quantized = {}
@@ -81,7 +87,7 @@ def quantize_weights(
             raise SystemExit(f"{name} does not fit in int16 after rounding; export refused.")
         quantized[name] = rounded.astype(np.int16)
 
-    dense_weight_scale = hidden_scale * float(clip_max) / BYTE_ACTIVATION_SCALE
+    dense_weight_scale = hidden_scale * 2.0
     rounded_hidden2_weights = np.rint(np.asarray(weights["hidden2_weights"], dtype=np.float64) * dense_weight_scale)
     if np.any(rounded_hidden2_weights < -BYTE_ACTIVATION_SCALE) or np.any(rounded_hidden2_weights > BYTE_ACTIVATION_SCALE):
         raise SystemExit("hidden2_weights do not fit in int8 byte-dense range; reduce --hidden-scale.")
@@ -92,7 +98,7 @@ def quantize_weights(
         raise SystemExit("hidden2_bias does not fit in int32 after scaled rounding; export refused.")
     quantized["hidden2_bias"] = rounded_hidden2_bias.astype(np.int32)
 
-    output_weight_scale = output_scale * float(clip_max) / BYTE_ACTIVATION_SCALE
+    output_weight_scale = output_scale * 2.0
     rounded_output_weights = np.rint(np.asarray(weights["output_weights"], dtype=np.float64) * output_weight_scale)
     if np.any(rounded_output_weights < -BYTE_ACTIVATION_SCALE) or np.any(rounded_output_weights > BYTE_ACTIVATION_SCALE):
         raise SystemExit("output_weights do not fit in int8 byte-dense range; reduce --output-scale.")
@@ -341,7 +347,7 @@ def main() -> int:
         output_bin.parent.mkdir(parents=True, exist_ok=True)
         write_bin(output_bin, contract, quantized_weights, clip_max)
     manifest = {
-        "format": "chilo.nnue_export.v7",
+        "format": "chilo.nnue_export.v8",
         "contract_id": contract["contract_id"],
         "contract_sha256": contract["contract_sha256"],
         "architecture": contract["architecture"],
@@ -350,7 +356,7 @@ def main() -> int:
         "output_size": output_size_from_weights(quantized_weights),
         "clip_max": clip_max,
         "source": source,
-        "quantization": "byte_dense_v1",
+        "quantization": "byte_dense_shift_v1",
         "input_scale": int(args.input_scale),
         "hidden_scale": int(args.hidden_scale),
         "output_scale": int(args.output_scale),

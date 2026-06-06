@@ -21,7 +21,7 @@ namespace {
 
 using chilo::nnue_generated::TinyNnueData;
 
-constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB4";
+constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB5";
 constexpr std::size_t WEIGHTS_BIN_TEXT_FIELD_SIZE = 64;
 constexpr int BYTE_ACTIVATION_SCALE = 127;
 
@@ -112,6 +112,20 @@ std::size_t checkedProduct(std::initializer_list<int> values, std::string& error
     return result;
 }
 
+bool isPowerOfTwo(int value) {
+    return value > 0 && (value & (value - 1)) == 0;
+}
+
+int log2PowerOfTwo(int value) {
+    assert(isPowerOfTwo(value));
+    int shift = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++shift;
+    }
+    return shift;
+}
+
 RuntimeNnue builtInNnue() {
     const TinyNnueData& builtIn = chilo::nnue_generated::kTinyNnue;
     RuntimeNnue runtime;
@@ -174,6 +188,10 @@ bool validateRuntimeNnue(const RuntimeNnue& net, std::string& error) {
     if (net.hiddenSize <= 0 || net.hidden2Size <= 0 || net.inputScale <= 0 || net.hiddenScale <= 0 ||
         net.outputScale <= 0 || net.activationScale <= 0 || net.activationScale > BYTE_ACTIVATION_SCALE) {
         error = "NNUE metadata contains non-positive hidden size or scales";
+        return false;
+    }
+    if (!isPowerOfTwo(net.inputScale) || !isPowerOfTwo(net.hiddenScale) || !isPowerOfTwo(net.outputScale)) {
+        error = "NNUE byte-shift scales must be powers of two";
         return false;
     }
     std::string productError;
@@ -275,16 +293,17 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
     return true;
 }
 
-int roundDividePositive(int64_t value, int64_t divisor) {
+int64_t roundShiftNonnegative(int64_t value, int shift) {
     assert(value >= 0);
-    assert(divisor > 0);
-    return static_cast<int>((value + divisor / 2) / divisor);
+    assert(shift >= 0);
+    if (shift == 0) return value;
+    return (value + (int64_t{1} << (shift - 1))) >> shift;
 }
 
-uint8_t byteActivationFromScaledValue(int64_t value, int64_t scaledClipMax, int activationScale) {
-    int64_t clipped = std::clamp<int64_t>(value, 0, scaledClipMax);
-    int activated = roundDividePositive(clipped * activationScale, scaledClipMax);
-    return static_cast<uint8_t>(std::clamp(activated, 0, activationScale));
+uint8_t byteActivationFromScaledValue(int64_t value, int shift, int activationScale) {
+    int64_t positive = std::max<int64_t>(value, 0);
+    int64_t activated = roundShiftNonnegative(positive, shift);
+    return static_cast<uint8_t>(std::clamp<int64_t>(activated, 0, activationScale));
 }
 
 Color oppositeColor(Color color) {
@@ -322,10 +341,11 @@ bool accumulatorMatchesCurrentNet(const NnueAccumulator& acc, const RuntimeNnue&
            acc.values.size() == accumulatorValueCount(net);
 }
 
-int roundDivide(int64_t value, int64_t divisor) {
-    assert(divisor > 0);
-    if (value >= 0) return static_cast<int>((value + divisor / 2) / divisor);
-    return -static_cast<int>(((-value) + divisor / 2) / divisor);
+int roundShiftSigned(int64_t value, int shift) {
+    assert(shift >= 0);
+    if (shift == 0) return static_cast<int>(value);
+    if (value >= 0) return static_cast<int>((value + (int64_t{1} << (shift - 1))) >> shift);
+    return -static_cast<int>(((-value) + (int64_t{1} << (shift - 1))) >> shift);
 }
 
 void addWeightsToLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
@@ -361,10 +381,10 @@ void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 }
 
 void buildDenseInput(const int32_t* first, const int32_t* second, uint8_t* denseInput, int hiddenSize,
-                     int scaledClipMax, int activationScale) {
+                     int activationShift, int activationScale) {
     for (int i = 0; i < hiddenSize; ++i) {
-        denseInput[i] = byteActivationFromScaledValue(first[i], scaledClipMax, activationScale);
-        denseInput[hiddenSize + i] = byteActivationFromScaledValue(second[i], scaledClipMax, activationScale);
+        denseInput[i] = byteActivationFromScaledValue(first[i], activationShift, activationScale);
+        denseInput[hiddenSize + i] = byteActivationFromScaledValue(second[i], activationShift, activationScale);
     }
 }
 
@@ -472,13 +492,13 @@ NnueMoveDelta buildMoveDelta(const Position& pos, const Move& move) {
 int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
     const RuntimeNnue& net = currentNnue();
 
-    const int scaledClipMax = net.clipMax * net.inputScale;
-    const int64_t scaledHidden2ClipMax = static_cast<int64_t>(net.clipMax) * net.hiddenScale;
+    const int inputActivationShift = log2PowerOfTwo(net.inputScale) + 1;
+    const int hidden2ActivationShift = log2PowerOfTwo(net.hiddenScale) + 1;
     int64_t score = net.outputBias;
     const int denseInputSize = 2 * net.hiddenSize;
     thread_local std::vector<uint8_t> denseInput;
     denseInput.resize(static_cast<std::size_t>(denseInputSize));
-    buildDenseInput(first, second, denseInput.data(), net.hiddenSize, scaledClipMax, net.activationScale);
+    buildDenseInput(first, second, denseInput.data(), net.hiddenSize, inputActivationShift, net.activationScale);
 
     for (int h = 0; h < net.hidden2Size; ++h) {
         const int8_t* weights =
@@ -486,7 +506,7 @@ int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
         int64_t hidden2Value = net.hidden2Bias[static_cast<std::size_t>(h)];
         hidden2Value += dotByteDenseInput(denseInput.data(), weights, denseInputSize);
         const uint8_t hidden2Activation =
-            byteActivationFromScaledValue(hidden2Value, scaledHidden2ClipMax, net.activationScale);
+            byteActivationFromScaledValue(hidden2Value, hidden2ActivationShift, net.activationScale);
         score += static_cast<int32_t>(hidden2Activation) * net.outputWeights[static_cast<std::size_t>(h)];
     }
     return score;
@@ -578,7 +598,7 @@ int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc) {
     const int32_t* activeHidden = acc.values.data() + accumulatorOffset(net, pos.sideToMove);
     const int32_t* passiveHidden = acc.values.data() + accumulatorOffset(net, passiveSide);
     int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    return roundDivide(score, net.outputScale);
+    return roundShiftSigned(score, log2PowerOfTwo(net.outputScale));
 }
 
 int evaluate(const Position& pos) {
@@ -590,5 +610,5 @@ int evaluate(const Position& pos) {
     const int32_t* activeHidden = pos.sideToMove == WHITE ? whiteHidden.data() : blackHidden.data();
     const int32_t* passiveHidden = pos.sideToMove == WHITE ? blackHidden.data() : whiteHidden.data();
     int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    return roundDivide(score, net.outputScale);
+    return roundShiftSigned(score, log2PowerOfTwo(net.outputScale));
 }
