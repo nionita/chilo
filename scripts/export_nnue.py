@@ -63,6 +63,10 @@ def load_torch_checkpoint(path: Path) -> Tuple[Dict[str, object], Dict[str, np.n
         "hidden2_size": hidden2_size,
         "clip_max": int(model_meta.get("clip_max", contract.get("clip_max", 255))),
         "architecture": model_meta.get("architecture", contract.get("architecture", "TinyNnue")),
+        "quantization_mode": model_meta.get("quantization_mode", "float"),
+        "input_scale": int(model_meta.get("input_scale", DEFAULT_INPUT_SCALE)),
+        "hidden_scale": int(model_meta.get("hidden_scale", DEFAULT_HIDDEN_SCALE)),
+        "output_scale": int(model_meta.get("output_scale", DEFAULT_OUTPUT_SCALE)),
     }
     return metadata, weights
 
@@ -291,9 +295,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", default=None, help="Optional sharded dataset root or manifest used to validate quantization drift.")
     parser.add_argument("--validation-samples", type=int, default=256, help="Maximum number of validation positions to sample from the dataset.")
     parser.add_argument("--tolerance", type=float, default=0.0, help="Maximum allowed max absolute drift during quantization validation.")
-    parser.add_argument("--input-scale", type=int, default=DEFAULT_INPUT_SCALE, help="Scale factor applied to input weights and hidden bias before integer export.")
-    parser.add_argument("--hidden-scale", type=int, default=DEFAULT_HIDDEN_SCALE, help="Scale factor applied to second-layer weights before integer export.")
-    parser.add_argument("--output-scale", type=int, default=DEFAULT_OUTPUT_SCALE, help="Scale factor applied to output weights before integer export.")
+    parser.add_argument("--input-scale", type=int, default=None, help="Scale factor applied to input weights and hidden bias before integer export.")
+    parser.add_argument("--hidden-scale", type=int, default=None, help="Scale factor applied to second-layer weights before integer export.")
+    parser.add_argument("--output-scale", type=int, default=None, help="Scale factor applied to output weights before integer export.")
     parser.add_argument("--output-header", default=None, help="Optional path to write the generated_nnue_weights.h file.")
     parser.add_argument("--output-manifest", default=None, help="Optional path to write the export manifest JSON.")
     parser.add_argument("--output-bin", default=None, help="Optional path to write the runtime-loadable NNUE binary artifact.")
@@ -313,6 +317,9 @@ def main() -> int:
     hidden_size = contract_hidden_size(contract)
     hidden2_size = contract_hidden2_size(contract)
     clip_max = int(contract["clip_max"])
+    input_scale = DEFAULT_INPUT_SCALE
+    hidden_scale = DEFAULT_HIDDEN_SCALE
+    output_scale = DEFAULT_OUTPUT_SCALE
     if args.seeded:
         float_weights = build_seeded_weights(contract, hidden_size, hidden2_size)
     else:
@@ -324,8 +331,19 @@ def main() -> int:
         hidden_size = int(checkpoint_meta["hidden_size"])
         hidden2_size = int(checkpoint_meta["hidden2_size"])
         clip_max = int(checkpoint_meta["clip_max"])
+        if checkpoint_meta.get("quantization_mode") == "fake-byte-shift":
+            input_scale = int(checkpoint_meta["input_scale"])
+            hidden_scale = int(checkpoint_meta["hidden_scale"])
+            output_scale = int(checkpoint_meta["output_scale"])
 
-    quantized_weights = quantize_weights(float_weights, args.input_scale, args.hidden_scale, args.output_scale, clip_max)
+    if args.input_scale is not None:
+        input_scale = args.input_scale
+    if args.hidden_scale is not None:
+        hidden_scale = args.hidden_scale
+    if args.output_scale is not None:
+        output_scale = args.output_scale
+
+    quantized_weights = quantize_weights(float_weights, input_scale, hidden_scale, output_scale, clip_max)
     validation = {"validation_samples": 0, "validation_split": "none", "max_abs_diff": 0.0, "mean_abs_diff": 0.0}
     if args.dataset_dir:
         validation = validate_dataset(
@@ -357,9 +375,9 @@ def main() -> int:
         "clip_max": clip_max,
         "source": source,
         "quantization": "byte_dense_shift_v1",
-        "input_scale": int(args.input_scale),
-        "hidden_scale": int(args.hidden_scale),
-        "output_scale": int(args.output_scale),
+        "input_scale": int(input_scale),
+        "hidden_scale": int(hidden_scale),
+        "output_scale": int(output_scale),
         "activation_scale": int(quantized_weights["activation_scale"]),
         "output_bin": str(output_bin.resolve()) if output_bin else None,
         "validation": validation,

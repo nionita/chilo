@@ -19,6 +19,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from nnue_common import (
     assign_shard_splits,
+    byte_activation,
     build_seeded_weights,
     encode_sample,
     integer_model_eval,
@@ -26,7 +27,16 @@ from nnue_common import (
     load_contract,
     load_dataset_manifest,
 )
-from nnue_torch import make_tiny_nnue_model
+from export_nnue import quantize_weights
+from nnue_torch import (
+    DEFAULT_QAT_HIDDEN_SCALE,
+    DEFAULT_QAT_INPUT_SCALE,
+    DEFAULT_QAT_OUTPUT_SCALE,
+    fake_byte_activation_from_scaled,
+    fake_quantize_to_int,
+    fake_round_shift_signed,
+    make_tiny_nnue_model,
+)
 from train_nnue import learning_rate_for_epoch
 
 TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
@@ -186,6 +196,190 @@ class NnuePipelineTest(unittest.TestCase):
             self.assertEqual(export_manifest["output_scale"], 1)
             self.assertEqual(export_manifest["activation_scale"], 127)
             self.assertEqual(export_manifest["validation"]["max_abs_diff"], 0.0)
+            self.assertTrue(export_bin_path.exists())
+
+    @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
+    def test_fake_byte_shift_helpers_match_integer_rounding_and_keep_gradients(self):
+        import torch
+
+        values = torch.tensor([-9.0, -1.0, 0.0, 3.0, 4.0, 5.0, 1024.0], requires_grad=True)
+        activated = fake_byte_activation_from_scaled(values, DEFAULT_QAT_HIDDEN_SCALE)
+        expected = byte_activation(
+            values.detach().cpu().numpy().astype(np.int64),
+            DEFAULT_QAT_HIDDEN_SCALE.bit_length(),
+            127,
+        )
+        self.assertTrue(np.array_equal(activated.detach().cpu().numpy().astype(np.uint8), expected))
+        activated.sum().backward()
+        self.assertGreater(float(values.grad.abs().sum().item()), 0.0)
+
+        signed = torch.tensor([-13.0, -5.0, 0.0, 5.0, 13.0], requires_grad=True)
+        shifted = fake_round_shift_signed(signed, 4)
+        self.assertTrue(np.array_equal(shifted.detach().cpu().numpy(), np.array([-3.0, -1.0, 0.0, 1.0, 3.0])))
+        shifted.sum().backward()
+        self.assertGreater(float(signed.grad.abs().sum().item()), 0.0)
+
+        weights = torch.tensor([-100.0, -1.25, 0.0, 1.25, 100.0], requires_grad=True)
+        quantized = fake_quantize_to_int(weights, 4, -127, 127)
+        self.assertLessEqual(float(quantized.max().item()), 127.0)
+        self.assertGreaterEqual(float(quantized.min().item()), -127.0)
+        quantized.sum().backward()
+        self.assertGreater(float(weights.grad.abs().sum().item()), 0.0)
+
+    @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
+    def test_fake_byte_shift_forward_matches_integer_eval(self):
+        import torch
+
+        contract = load_contract()
+        TinyNnueModel = make_tiny_nnue_model(torch, torch.nn)
+        torch.manual_seed(17)
+        model = TinyNnueModel(
+            contract,
+            16,
+            8,
+            "random",
+            quantization_mode="fake-byte-shift",
+            input_scale=DEFAULT_QAT_INPUT_SCALE,
+            hidden_scale=DEFAULT_QAT_HIDDEN_SCALE,
+            output_scale=DEFAULT_QAT_OUTPUT_SCALE,
+        )
+        model.clamp_quantization_ranges()
+        record = encode_sample("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", 31, 0)
+        pieces = record["pieces"][: int(record["piece_count"])].tolist()
+        squares = record["squares"][: int(record["piece_count"])].tolist()
+
+        with torch.no_grad():
+            torch_score = model(
+                torch.from_numpy(record["pieces"].astype(np.int64)).unsqueeze(0),
+                torch.from_numpy(record["squares"].astype(np.int64)).unsqueeze(0),
+                torch.tensor([int(record["piece_count"])], dtype=torch.int64),
+                torch.tensor([int(record["side_to_move"])], dtype=torch.int64),
+            )
+        float_weights = {
+            "input_weights": model.input_weights.detach().cpu().numpy(),
+            "hidden_bias": model.hidden_bias.detach().cpu().numpy(),
+            "hidden2_weights": model.hidden2_weights.detach().cpu().numpy(),
+            "hidden2_bias": model.hidden2_bias.detach().cpu().numpy(),
+            "output_weights": model.output_weights.detach().cpu().numpy(),
+            "output_bias": float(model.output_bias.detach().cpu().numpy().reshape(-1)[0]),
+        }
+        quantized = quantize_weights(
+            float_weights,
+            DEFAULT_QAT_INPUT_SCALE,
+            DEFAULT_QAT_HIDDEN_SCALE,
+            DEFAULT_QAT_OUTPUT_SCALE,
+            int(contract["clip_max"]),
+        )
+        integer_score = integer_model_eval(
+            quantized,
+            int(record["side_to_move"]),
+            pieces,
+            squares,
+            int(contract["clip_max"]),
+        )
+        self.assertAlmostEqual(float(torch_score.item()), float(integer_score), places=5)
+
+    @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch not installed in this environment")
+    def test_qat_training_exports_with_matching_scales(self):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            csv_path = temp_dir / "samples.csv"
+            with csv_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["eval_fen", "score", "result"])
+                writer.writerow(["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"])
+                writer.writerow(["4k3/8/8/8/8/8/8/4K3 w - - 0 1", "0", "0"])
+                writer.writerow(["4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", "31", "0"])
+                writer.writerow(["4k3/8/8/8/8/3n4/8/4K3 b - - 0 1", "-31", "0"])
+
+            dataset_dir = temp_dir / "dataset"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "prepare_nnue_dataset.py"),
+                    "--input",
+                    str(csv_path),
+                    "--output-dir",
+                    str(dataset_dir),
+                    "--samples-per-shard",
+                    "2",
+                    "--validation-fraction",
+                    "0.5",
+                    "--seed",
+                    "7",
+                    "--overwrite",
+                ],
+                check=True,
+            )
+
+            training_dir = temp_dir / "training"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "train_nnue.py"),
+                    "--dataset",
+                    str(dataset_dir),
+                    "--output-dir",
+                    str(training_dir),
+                    "--epochs",
+                    "1",
+                    "--hidden-size",
+                    "16",
+                    "--hidden2-size",
+                    "8",
+                    "--batch-size",
+                    "2",
+                    "--shuffle-buffer-size",
+                    "4",
+                    "--report-batches",
+                    "1",
+                    "--seed",
+                    "11",
+                    "--quantization-mode",
+                    "fake-byte-shift",
+                    "--input-scale",
+                    str(DEFAULT_QAT_INPUT_SCALE),
+                    "--hidden-scale",
+                    str(DEFAULT_QAT_HIDDEN_SCALE),
+                    "--output-scale",
+                    str(DEFAULT_QAT_OUTPUT_SCALE),
+                ],
+                check=True,
+            )
+
+            training_manifest = json.loads((training_dir / "training_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(training_manifest["quantization_mode"], "fake-byte-shift")
+            self.assertEqual(training_manifest["input_scale"], DEFAULT_QAT_INPUT_SCALE)
+            self.assertEqual(training_manifest["hidden_scale"], DEFAULT_QAT_HIDDEN_SCALE)
+            self.assertEqual(training_manifest["output_scale"], DEFAULT_QAT_OUTPUT_SCALE)
+
+            export_manifest_path = temp_dir / "export.json"
+            export_bin_path = temp_dir / "weights.bin"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "export_nnue.py"),
+                    "--checkpoint",
+                    str(training_dir / "best.pt"),
+                    "--dataset-dir",
+                    str(dataset_dir),
+                    "--validation-samples",
+                    "4",
+                    "--tolerance",
+                    "1000",
+                    "--output-manifest",
+                    str(export_manifest_path),
+                    "--output-bin",
+                    str(export_bin_path),
+                ],
+                check=True,
+            )
+            export_manifest = json.loads(export_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(export_manifest["input_scale"], DEFAULT_QAT_INPUT_SCALE)
+            self.assertEqual(export_manifest["hidden_scale"], DEFAULT_QAT_HIDDEN_SCALE)
+            self.assertEqual(export_manifest["output_scale"], DEFAULT_QAT_OUTPUT_SCALE)
+            self.assertGreater(export_manifest["validation"]["validation_samples"], 0)
+            self.assertTrue(np.isfinite(export_manifest["validation"]["mean_abs_diff"]))
             self.assertTrue(export_bin_path.exists())
 
     def test_prepare_headerless_input(self):

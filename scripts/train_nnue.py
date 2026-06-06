@@ -29,7 +29,15 @@ from nnue_common import (
     shard_metas_for_split,
     shard_path_from_meta,
 )
-from nnue_torch import INIT_CHOICES, load_torch, make_tiny_nnue_model
+from nnue_torch import (
+    DEFAULT_QAT_HIDDEN_SCALE,
+    DEFAULT_QAT_INPUT_SCALE,
+    DEFAULT_QAT_OUTPUT_SCALE,
+    INIT_CHOICES,
+    QUANTIZATION_MODE_CHOICES,
+    load_torch,
+    make_tiny_nnue_model,
+)
 
 DEFAULT_BATCH_SIZE = 4096
 DEFAULT_LEARNING_RATE = 1e-3
@@ -210,6 +218,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None, help="Training RNG seed. Defaults to a time/process-derived seed.")
     parser.add_argument("-D", "--device", default="auto", help="Training device: auto, cpu, cuda, or another torch device string.")
     parser.add_argument("-i", "--init", choices=INIT_CHOICES, default="random")
+    parser.add_argument("--quantization-mode", choices=QUANTIZATION_MODE_CHOICES, default="float",
+                        help="Training forward path: float or fake byte-shift quantization-aware training.")
+    parser.add_argument("--input-scale", type=int, default=DEFAULT_QAT_INPUT_SCALE,
+                        help="Power-of-two input scale used by fake-byte-shift QAT and matching export.")
+    parser.add_argument("--hidden-scale", type=int, default=DEFAULT_QAT_HIDDEN_SCALE,
+                        help="Power-of-two hidden scale used by fake-byte-shift QAT and matching export.")
+    parser.add_argument("--output-scale", type=int, default=DEFAULT_QAT_OUTPUT_SCALE,
+                        help="Power-of-two output scale used by fake-byte-shift QAT and matching export.")
     parser.add_argument("-H", "--hidden-size", type=int, default=0,
                         help="Accumulator hidden layer size. Defaults to the contract value, or the checkpoint size when resuming.")
     parser.add_argument("--hidden2-size", type=int, default=0,
@@ -399,7 +415,7 @@ def main() -> int:
         hidden2 = ActivationAccumulator()
         accumulator.update(intermediates["accumulator_pre"], model.clip_max)
         hidden2.update(intermediates["hidden2_pre"], model.clip_max)
-        return {
+        diag = {
             "activations": {
                 "accumulator": accumulator.summary(),
                 "hidden2": hidden2.summary(),
@@ -408,6 +424,42 @@ def main() -> int:
                 "accumulator": intermediates["accumulator_pre"].detach().cpu(),
                 "hidden2": intermediates["hidden2_pre"].detach().cpu(),
             },
+        }
+        if "accumulator_byte" in intermediates and "hidden2_byte" in intermediates:
+            diag["qat"] = {
+                "accumulator_byte": byte_activation_stats(intermediates["accumulator_byte"], model.activation_scale),
+                "hidden2_byte": byte_activation_stats(intermediates["hidden2_byte"], model.activation_scale),
+                "hidden2_weight_clip_frac": signed_byte_clip_frac(intermediates["hidden2_weights_q"], model.activation_scale),
+                "output_weight_clip_frac": signed_byte_clip_frac(intermediates["output_weights_q"], model.activation_scale),
+            }
+            diag["activation_tensors"]["accumulator_byte"] = intermediates["accumulator_byte"].detach().cpu()
+            diag["activation_tensors"]["hidden2_byte"] = intermediates["hidden2_byte"].detach().cpu()
+        return diag
+
+    def byte_activation_stats(values, activation_scale: int) -> Dict[str, float]:
+        detached = values.detach()
+        total = max(detached.numel(), 1)
+        return {
+            "zero_frac": float((detached <= 0.0).sum().item() / total),
+            "max_frac": float((detached >= float(activation_scale)).sum().item() / total),
+        }
+
+    def signed_byte_clip_frac(values, activation_scale: int) -> float:
+        detached = values.detach()
+        total = max(detached.numel(), 1)
+        return float((detached.abs() >= float(activation_scale)).sum().item() / total)
+
+    def qat_weight_stats() -> Dict[str, float]:
+        if model.quantization_mode != "fake-byte-shift":
+            return {}
+        hidden2_q = torch.round(model.hidden2_weights.detach().float() * float(model.hidden_scale * 2))
+        output_q = torch.round(model.output_weights.detach().float() * float(model.output_scale * 2))
+        return {
+            "hidden2_weight_clip_frac": signed_byte_clip_frac(hidden2_q, model.activation_scale),
+            "output_weight_clip_frac": signed_byte_clip_frac(output_q, model.activation_scale),
+            "input_scale": float(model.input_scale),
+            "hidden_scale": float(model.hidden_scale),
+            "output_scale": float(model.output_scale),
         }
 
     def weight_stats():
@@ -455,9 +507,19 @@ def main() -> int:
 
         for key, value in weight_stats().items():
             writer.add_scalar(f"weights/{key}", value, epoch)
+        for key, value in qat_weight_stats().items():
+            writer.add_scalar(f"qat/{key}", value, epoch)
         if train_diag is not None:
             for key, value in train_diag["grads"].items():
                 writer.add_scalar(f"grads/{key}", value, epoch)
+        for prefix, diag in (("train", train_diag), ("val", val_diag)):
+            if diag is None or "qat" not in diag:
+                continue
+            for layer in ("accumulator_byte", "hidden2_byte"):
+                for key, value in diag["qat"][layer].items():
+                    writer.add_scalar(f"qat/{layer}_{prefix}_{key}", value, epoch)
+            writer.add_scalar(f"qat/hidden2_weight_clip_frac_{prefix}", diag["qat"]["hidden2_weight_clip_frac"], epoch)
+            writer.add_scalar(f"qat/output_weight_clip_frac_{prefix}", diag["qat"]["output_weight_clip_frac"], epoch)
 
         if args.tensorboard_histograms:
             if train_diag is not None:
@@ -476,6 +538,11 @@ def main() -> int:
             if val_diag is not None:
                 writer.add_histogram("hist/pred_cp_val", val_diag["pred_tensor"], epoch)
                 writer.add_histogram("hist/hidden_pre_activation_val", val_diag["activation_tensors"]["accumulator"], epoch)
+            for prefix, diag in (("train", train_diag), ("val", val_diag)):
+                if diag is None or "qat" not in diag:
+                    continue
+                writer.add_histogram(f"hist/accumulator_byte_{prefix}", diag["activation_tensors"]["accumulator_byte"], epoch)
+                writer.add_histogram(f"hist/hidden2_byte_{prefix}", diag["activation_tensors"]["hidden2_byte"], epoch)
             for prefix, diag in (("train", train_diag), ("val", val_diag)):
                 if diag is None:
                     continue
@@ -503,12 +570,22 @@ def main() -> int:
 
     device = torch.device(resolved_device)
     TinyNnueModel = make_tiny_nnue_model(torch, nn)
-    model = TinyNnueModel(contract, hidden_size, hidden2_size, args.init).to(device)
+    model = TinyNnueModel(
+        contract,
+        hidden_size,
+        hidden2_size,
+        args.init,
+        quantization_mode=args.quantization_mode,
+        input_scale=args.input_scale,
+        hidden_scale=args.hidden_scale,
+        output_scale=args.output_scale,
+    ).to(device)
     if resume_checkpoint is not None:
         state_dict = resume_checkpoint.get("state_dict")
         if not isinstance(state_dict, dict):
             raise SystemExit(f"Checkpoint {args.resume_checkpoint} does not contain a valid state_dict.")
         model.load_state_dict(state_dict)
+    model.clamp_quantization_ranges()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
     output_dir = Path(args.output_dir)
@@ -573,6 +650,7 @@ def main() -> int:
                     })
 
                 optimizer.step()
+                model.clamp_quantization_ranges()
 
                 batch_items = int(pieces.shape[0])
                 train_loss_sum += float(loss.item()) * batch_items
@@ -618,6 +696,31 @@ def main() -> int:
                                     "hidden2": intermediates["hidden2_pre"].detach().cpu(),
                                 },
                             }
+                            if "accumulator_byte" in intermediates and "hidden2_byte" in intermediates:
+                                val_first_batch["qat"] = {
+                                    "accumulator_byte": byte_activation_stats(
+                                        intermediates["accumulator_byte"],
+                                        model.activation_scale,
+                                    ),
+                                    "hidden2_byte": byte_activation_stats(
+                                        intermediates["hidden2_byte"],
+                                        model.activation_scale,
+                                    ),
+                                    "hidden2_weight_clip_frac": signed_byte_clip_frac(
+                                        intermediates["hidden2_weights_q"],
+                                        model.activation_scale,
+                                    ),
+                                    "output_weight_clip_frac": signed_byte_clip_frac(
+                                        intermediates["output_weights_q"],
+                                        model.activation_scale,
+                                    ),
+                                }
+                                val_first_batch["activation_tensors"]["accumulator_byte"] = (
+                                    intermediates["accumulator_byte"].detach().cpu()
+                                )
+                                val_first_batch["activation_tensors"]["hidden2_byte"] = (
+                                    intermediates["hidden2_byte"].detach().cpu()
+                                )
                         batch_items = int(pieces.shape[0])
                         val_loss_sum += float(loss.item()) * batch_items
                         val_items += batch_items
@@ -662,6 +765,10 @@ def main() -> int:
                     "hidden_size": hidden_size,
                     "hidden2_size": hidden2_size,
                     "clip_max": int(contract["clip_max"]),
+                    "quantization_mode": args.quantization_mode,
+                    "input_scale": args.input_scale,
+                    "hidden_scale": args.hidden_scale,
+                    "output_scale": args.output_scale,
                 },
                 "dataset": {
                     "manifest_path": str(manifest_path.resolve()),
@@ -686,6 +793,10 @@ def main() -> int:
                     "requested_device": requested_device,
                     "resolved_device": resolved_device,
                     "init": args.init,
+                    "quantization_mode": args.quantization_mode,
+                    "input_scale": args.input_scale,
+                    "hidden_scale": args.hidden_scale,
+                    "output_scale": args.output_scale,
                     "num_workers": resolved_num_workers,
                     "shuffle": args.shuffle,
                     "shuffle_buffer_size": args.shuffle_buffer_size,
@@ -729,6 +840,10 @@ def main() -> int:
         "requested_device": requested_device,
         "resolved_device": resolved_device,
         "init": args.init,
+        "quantization_mode": args.quantization_mode,
+        "input_scale": args.input_scale,
+        "hidden_scale": args.hidden_scale,
+        "output_scale": args.output_scale,
         "num_workers": resolved_num_workers,
         "shuffle": args.shuffle,
         "shuffle_buffer_size": args.shuffle_buffer_size,
