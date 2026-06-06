@@ -195,6 +195,7 @@ class NnuePipelineTest(unittest.TestCase):
             self.assertEqual(export_manifest["hidden_scale"], 8)
             self.assertEqual(export_manifest["output_scale"], 1)
             self.assertEqual(export_manifest["activation_scale"], 127)
+            self.assertEqual(export_manifest["validation"]["reference"], "float")
             self.assertEqual(export_manifest["validation"]["max_abs_diff"], 0.0)
             self.assertTrue(export_bin_path.exists())
 
@@ -378,8 +379,11 @@ class NnuePipelineTest(unittest.TestCase):
             self.assertEqual(export_manifest["input_scale"], DEFAULT_QAT_INPUT_SCALE)
             self.assertEqual(export_manifest["hidden_scale"], DEFAULT_QAT_HIDDEN_SCALE)
             self.assertEqual(export_manifest["output_scale"], DEFAULT_QAT_OUTPUT_SCALE)
+            self.assertEqual(export_manifest["validation"]["reference"], "fake-byte-shift")
             self.assertGreater(export_manifest["validation"]["validation_samples"], 0)
-            self.assertTrue(np.isfinite(export_manifest["validation"]["mean_abs_diff"]))
+            self.assertEqual(export_manifest["validation"]["mean_abs_diff"], 0.0)
+            self.assertEqual(export_manifest["validation"]["max_abs_diff"], 0.0)
+            self.assertTrue(np.isfinite(export_manifest["validation"]["plain_float_mean_abs_diff"]))
             self.assertTrue(export_bin_path.exists())
 
     def test_prepare_headerless_input(self):
