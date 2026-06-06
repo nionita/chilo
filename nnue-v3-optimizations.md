@@ -32,6 +32,43 @@ the side-to-move accumulator is placed in the first half of the dense input and
 the opponent accumulator in the second half. The dense hidden layer therefore
 has independent parameters for active and passive treatment.
 
+## Dimension Selection Notes
+
+Layer dimensions affect more than raw multiply-add count. For the current AVX2
+byte-dense kernels, prefer dimensions that fit vector and cache-line boundaries:
+
+- accumulator hidden sizes should generally be multiples of `16` or `32`
+- dense hidden sizes should generally be multiples of `8` or `16`
+- avoid odd or non-SIMD-friendly dimensions unless a strength experiment gives
+  a clear reason
+
+Useful properties of clean powers of two:
+
+- `hidden=16` gives one `32`-byte byte-dense input chunk after active/passive
+  concatenation
+- `hidden=32` gives two chunks, and one feature-transformer row is `64` bytes
+  as `int16_t`
+- `hidden=64` gives four chunks, and one feature-transformer row is `128` bytes
+- `hidden2=8/16/32` should map better to future output-parallel AVX2 kernels
+  than irregular sizes
+
+Quantization also interacts with dimensions. Larger layers can absorb byte
+activation and int8 weight noise better, but they may create more saturation
+opportunities and training instability. With QAT, expect the runtime-aligned
+loss to improve, but still measure export drift and playing strength per
+dimension.
+
+Recommended experiment ladder:
+
+```text
+16 -> 8    fast QAT/debug comparison net
+32 -> 16   first serious small QAT net
+64 -> 32   stronger SIMD-friendly baseline
+```
+
+Do not compare irregular sizes until the packed AVX2 layout and QAT behavior
+are understood for these clean baselines.
+
 Implementation status: version `0.7.3` implements Stage 2's byte-dense export
 and inference format. Sparse feature-transformer weights and accumulator bias
 remain `int16_t`, accumulator storage remains `int32_t`, dense/output weights
