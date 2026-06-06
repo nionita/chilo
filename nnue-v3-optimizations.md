@@ -356,6 +356,36 @@ the packed representation can be derived once.
 The generic implementation can continue using canonical row-major weights. The
 AVX2 runtime structure may hold an additional packed copy.
 
+### Stage 3a: Align and pad hot NNUE buffers
+
+The current AVX2 kernels intentionally use unaligned loads and stores
+(`_mm_loadu_*` / `_mm256_loadu_*`). This is correct for both Linux and Windows
+with the current `std::vector` storage, but it means we do not guarantee that
+runtime weights, accumulator lanes, or temporary dense-input buffers start on a
+32-byte boundary. Misalignment should not explain correctness problems, but it
+can cost speed, especially when hot loads cross cache-line boundaries.
+
+Add this as a separate measured step before switching hot kernels to aligned
+loads:
+
+1. Introduce a small cross-platform aligned allocator or aligned buffer helper
+   for C++17. It must work with both GCC/Linux and the MinGW Windows build.
+2. Store runtime NNUE weights, accumulator frames, and dense temporary buffers
+   in 32-byte-aligned storage. Prefer 64-byte alignment if it does not
+   complicate the implementation, because it also matches common cache-line
+   size.
+3. Pad dense input and hidden dimensions to AVX2 block widths where practical,
+   with zero-filled padding weights. Keep the logical dimensions in the network
+   metadata so generic and Python parity remain simple.
+4. Add debug or validate-mode assertions for hot-path pointers before using
+   aligned load/store intrinsics.
+5. Measure Linux and Windows `nnue_eval_bench` results before and after this
+   change. Only switch from unaligned to aligned intrinsics in paths where the
+   assertion proves the contract.
+
+This stage should preserve exact integer output. If it changes results, the
+bug is in padding, indexing, or load bounds rather than in quantization.
+
 ### Stage 4: Convert accumulators to `int16_t`
 
 After dense inference is efficient, accumulator update and frame-copy cost may
