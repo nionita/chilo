@@ -320,6 +320,61 @@ uint8_t byteActivationFromScaledValue(int64_t value, int shift, int activationSc
     return static_cast<uint8_t>(std::clamp<int64_t>(activated, 0, activationScale));
 }
 
+template <std::size_t Alignment, typename T>
+bool isAligned(const T* ptr) {
+    return (reinterpret_cast<std::uintptr_t>(ptr) & (Alignment - 1)) == 0;
+}
+
+#if defined(CHILO_AVX2)
+void buildDenseLaneAvx2(const int32_t* input, uint8_t* output, int hiddenSize, int activationShift,
+                        int activationScale) {
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i maxActivation = _mm256_set1_epi32(activationScale);
+    const __m128i shift = _mm_cvtsi32_si128(activationShift);
+    const __m256i roundingOffset =
+        activationShift > 0 ? _mm256_set1_epi32(1 << (activationShift - 1)) : _mm256_setzero_si256();
+    int i = 0;
+
+    if (isAligned<32>(input)) {
+        for (; i + 8 <= hiddenSize; i += 8) {
+            __m256i values = _mm256_load_si256(reinterpret_cast<const __m256i*>(input + i));
+            values = _mm256_max_epi32(values, zero);
+            if (activationShift > 0) {
+                values = _mm256_add_epi32(values, roundingOffset);
+                values = _mm256_sra_epi32(values, shift);
+            }
+            values = _mm256_min_epi32(values, maxActivation);
+
+            const __m128i low = _mm256_castsi256_si128(values);
+            const __m128i high = _mm256_extracti128_si256(values, 1);
+            const __m128i packed16 = _mm_packs_epi32(low, high);
+            const __m128i packed8 = _mm_packus_epi16(packed16, _mm_setzero_si128());
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(output + i), packed8);
+        }
+    } else {
+        for (; i + 8 <= hiddenSize; i += 8) {
+            __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(input + i));
+            values = _mm256_max_epi32(values, zero);
+            if (activationShift > 0) {
+                values = _mm256_add_epi32(values, roundingOffset);
+                values = _mm256_sra_epi32(values, shift);
+            }
+            values = _mm256_min_epi32(values, maxActivation);
+
+            const __m128i low = _mm256_castsi256_si128(values);
+            const __m128i high = _mm256_extracti128_si256(values, 1);
+            const __m128i packed16 = _mm_packs_epi32(low, high);
+            const __m128i packed8 = _mm_packus_epi16(packed16, _mm_setzero_si128());
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(output + i), packed8);
+        }
+    }
+
+    for (; i < hiddenSize; ++i) {
+        output[i] = byteActivationFromScaledValue(input[i], activationShift, activationScale);
+    }
+}
+#endif
+
 Color oppositeColor(Color color) {
     return color == WHITE ? BLACK : WHITE;
 }
@@ -360,11 +415,6 @@ int roundShiftSigned(int64_t value, int shift) {
     if (shift == 0) return static_cast<int>(value);
     if (value >= 0) return static_cast<int>((value + (int64_t{1} << (shift - 1))) >> shift);
     return -static_cast<int>(((-value) + (int64_t{1} << (shift - 1))) >> shift);
-}
-
-template <std::size_t Alignment, typename T>
-bool isAligned(const T* ptr) {
-    return (reinterpret_cast<std::uintptr_t>(ptr) & (Alignment - 1)) == 0;
 }
 
 void addWeightsToLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
@@ -421,10 +471,15 @@ void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 
 void buildDenseInput(const int32_t* first, const int32_t* second, uint8_t* denseInput, int hiddenSize,
                      int activationShift, int activationScale) {
+#if defined(CHILO_AVX2)
+    buildDenseLaneAvx2(first, denseInput, hiddenSize, activationShift, activationScale);
+    buildDenseLaneAvx2(second, denseInput + hiddenSize, hiddenSize, activationShift, activationScale);
+#else
     for (int i = 0; i < hiddenSize; ++i) {
         denseInput[i] = byteActivationFromScaledValue(first[i], activationShift, activationScale);
         denseInput[hiddenSize + i] = byteActivationFromScaledValue(second[i], activationShift, activationScale);
     }
+#endif
 }
 
 int32_t dotByteDenseInput(const uint8_t* input, const int8_t* weights, int inputSize) {
