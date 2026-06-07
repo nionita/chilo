@@ -25,7 +25,13 @@ The active evaluator is `TinyNnue` with white/black perspective accumulators:
 - square normalization mirrors black perspectives
 - the clipped accumulator pair feeds a second ClippedReLU hidden layer before the scalar output
 
-Search evaluates through lazy NNUE accumulators: move deltas are pushed before `doMove`, but hidden sums are only updated when a node actually needs static eval. `evaluate(pos)` remains the full-rebuild reference path for tools, parity tests, and fallback cases.
+Search uses per-ply NNUE accumulator frames. Each searched child frame is copied
+from the parent frame with capacity-preserving storage reuse, then the move
+delta is applied once before entering the child. Returning from the child does
+not require NNUE undo work. Low-piece children at or below
+`NNUE_REBUILD_PIECE_THRESHOLD` skip child-frame preparation and use rebuilt
+evaluation throughout that subtree. `evaluate(pos)` remains the full-rebuild
+reference path for tools, parity tests, and fallback cases.
 
 The feature/model contract is `scripts/nnue_contract.json`. Keep it consistent with `eval.cpp`, `scripts/nnue_common.py`, `scripts/train_nnue.py`, `scripts/export_nnue.py`, and the checked-in generated files under `generated/`.
 
@@ -42,6 +48,11 @@ requantized to `0..127`, dense/output weights are `int8`, and dense/output
 biases are `int32`. Activation requantization is shift-only, so export scales
 must be powers of two. Runtime `.bin` files use the `CHNNUEB5` magic and export
 manifests use `chilo.nnue_export.v8`.
+
+Runtime NNUE tensors, accumulator frames, and dense scratch buffers use
+32-byte-aligned storage. AVX2 builds use aligned accumulator updates,
+byte-dense dot products, and vectorized accumulator-to-byte activation when
+alignment permits; generic builds keep scalar fallbacks and exact parity.
 
 ## UCI Search Threading Note
 

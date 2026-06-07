@@ -17,13 +17,19 @@ sparse relative piece-square features
     -> output
 ```
 
-The default dimensions at the time of writing are:
+The checked-in default net at the time of writing is the QAT-trained
+`g3hl2q2` net:
 
 ```text
-13 * 64 sparse inputs -> 64 accumulator neurons per perspective
-2 * 64 dense inputs   -> 32 hidden neurons
-32 dense inputs       -> 1 output
+13 * 64 sparse inputs -> 32 accumulator neurons per perspective
+2 * 32 dense inputs   -> 8 hidden2 neurons
+8 dense inputs        -> 1 output
 ```
+
+The training contract defaults remain `64 -> 32`; prepared datasets are feature
+caches and are not tied to these dimensions. Runtime `.bin` exports may use
+other hidden sizes as long as the feature contract and quantization metadata
+match.
 
 The input feature-transformer parameters are already shared between the white
 and black perspectives. The perspective-specific difference comes from
@@ -62,20 +68,29 @@ Recommended experiment ladder:
 
 ```text
 16 -> 8    fast QAT/debug comparison net
-32 -> 16   first serious small QAT net
+32 -> 8    current strong small default net
+32 -> 16   wider second-layer comparison net
+48 -> 8    fallback if 64 -> 8 is too slow
+64 -> 8    likely next capacity experiment
 64 -> 32   stronger SIMD-friendly baseline
 ```
 
 Do not compare irregular sizes until the packed AVX2 layout and QAT behavior
 are understood for these clean baselines.
 
-Implementation status: version `0.7.3` implements Stage 2's byte-dense export
-and inference format. Sparse feature-transformer weights and accumulator bias
-remain `int16_t`, accumulator storage remains `int32_t`, dense/output weights
-are now `int8_t`, activations are requantized to `0..127` using rounded shifts,
-runtime binaries use `CHNNUEB5`, and export manifests use
-`chilo.nnue_export.v8`. Version `0.7.2` was the first byte-dense implementation
-and still used real divisions for activation requantization.
+Implementation status: version `0.7.4` includes the byte-dense export and
+inference format plus the first low-cost runtime speedups. Sparse
+feature-transformer weights and accumulator bias remain `int16_t`,
+accumulator storage remains `int32_t`, dense/output weights are `int8_t`,
+activations are requantized to `0..127` using rounded shifts, runtime binaries
+use `CHNNUEB5`, and export manifests use `chilo.nnue_export.v8`. Runtime NNUE
+tensors, accumulator frames, and dense scratch buffers use 32-byte-aligned
+storage. AVX2 builds use aligned accumulator updates, byte-dense dot products,
+and vectorized accumulator-to-byte activation when alignment permits.
+Version `0.7.2` was the first byte-dense implementation and still used real
+divisions for activation requantization; version `0.7.3` introduced the
+shift-only byte-dense path. The alignment, AVX2 activation, and frame-copy
+work landed in the `0.7.4` sequence.
 
 Relevant Chilo files:
 
@@ -393,35 +408,82 @@ the packed representation can be derived once.
 The generic implementation can continue using canonical row-major weights. The
 AVX2 runtime structure may hold an additional packed copy.
 
-### Stage 3a: Align and pad hot NNUE buffers
+### Stage 3a: Align hot NNUE buffers
 
-The current AVX2 kernels intentionally use unaligned loads and stores
-(`_mm_loadu_*` / `_mm256_loadu_*`). This is correct for both Linux and Windows
-with the current `std::vector` storage, but it means we do not guarantee that
-runtime weights, accumulator lanes, or temporary dense-input buffers start on a
-32-byte boundary. Misalignment should not explain correctness problems, but it
-can cost speed, especially when hot loads cross cache-line boundaries.
+Implemented on branch `nnue-v3-aligned-nnue` and later merged into `nnue-v3`.
+The change introduced 32-byte-aligned storage for runtime NNUE tensors,
+accumulator values, and dense scratch buffers. Generated built-in NNUE data is
+also declared with 32-byte alignment. AVX2 kernels use aligned loads/stores
+when pointer alignment proves it is safe, and retain unaligned/scalar tails for
+generic runtime dimensions.
 
-Add this as a separate measured step before switching hot kernels to aligned
-loads:
+This stage deliberately did not pad logical dimensions or change the `.bin`
+format. It preserves exact integer output.
 
-1. Introduce a small cross-platform aligned allocator or aligned buffer helper
-   for C++17. It must work with both GCC/Linux and the MinGW Windows build.
-2. Store runtime NNUE weights, accumulator frames, and dense temporary buffers
-   in 32-byte-aligned storage. Prefer 64-byte alignment if it does not
-   complicate the implementation, because it also matches common cache-line
-   size.
-3. Pad dense input and hidden dimensions to AVX2 block widths where practical,
-   with zero-filled padding weights. Keep the logical dimensions in the network
-   metadata so generic and Python parity remain simple.
-4. Add debug or validate-mode assertions for hot-path pointers before using
-   aligned load/store intrinsics.
-5. Measure Linux and Windows `nnue_eval_bench` results before and after this
-   change. Only switch from unaligned to aligned intrinsics in paths where the
-   assertion proves the contract.
+Large-FEN `nnue_eval_bench` result on `/home/nicu/Tune/open-moves/open-moves.fen`
+with 25,783 positions and 200 passes:
 
-This stage should preserve exact integer output. If it changes results, the
-bug is in padding, indexing, or load bounds rather than in quantization.
+| Mode | Baseline `0.7.3` | Aligned branch | Change |
+| --- | ---: | ---: | ---: |
+| rebuilt | 707,884 eval/s | 1,792,533 eval/s | +153% |
+| incremental | 7,759,775 eval/s | 8,147,737 eval/s | +5% |
+
+The rebuilt gain came mainly from reusing the AVX lane-add helper in full
+accumulator rebuilds. Checksums matched exactly.
+
+### Stage 3b: Vectorize byte activation
+
+Implemented on branch `nnue-v3-avx2-activation` and later merged into
+`nnue-v3`. The AVX2 build now converts accumulator lanes to byte activations
+eight `int32_t` values at a time:
+
+1. Load accumulator values.
+2. Clamp negatives to zero.
+3. Add the rounded-shift offset.
+4. Shift down to the byte activation domain.
+5. Clamp to `0..activationScale`.
+6. Pack to `uint8_t`.
+
+Scalar fallback and scalar tails remain, so this is not specialized to the
+current `32 -> 8` default net.
+
+Large-FEN result against the aligned branch, same corpus and 200 passes:
+
+| Mode | Aligned branch | AVX2 activation | Change |
+| --- | ---: | ---: | ---: |
+| rebuilt | 1,803,097 eval/s | 1,941,855 eval/s | +7.7% |
+| incremental | 8,054,957 eval/s | 10,573,792 eval/s | +31.3% |
+
+Generic Linux versus AVX2 on the same `0.7.4` code:
+
+| Build | rebuilt | incremental |
+| --- | ---: | ---: |
+| generic | 1,441,310 eval/s | 5,344,773 eval/s |
+| AVX2 | 1,936,358 eval/s | 10,643,353 eval/s |
+
+AVX2 therefore gives about `+34%` rebuilt throughput and about `2x`
+incremental throughput on this net and corpus.
+
+### Stage 3c: Reduce search-frame copy overhead
+
+Implemented on branch `nnue-v3-nnue-frame-copy` and later merged into
+`nnue-v3`. `prepareChildSearchNnue()` now copies accumulator metadata and
+payload into an existing child frame, resizing only when the logical size
+changes. This avoids repeated vector assignment overhead while preserving the
+per-ply frame design and exact search behavior.
+
+Fixed-depth AVX2 benchmark against `nnue-v3-avx2-activation` on the first 1000
+positions from `/home/nicu/Tune/open-moves/open-moves.fen`, depth 6, one
+measured run:
+
+| Metric | Baseline | Frame-copy branch | Change |
+| --- | ---: | ---: | ---: |
+| total nodes | 40,031,172 | 40,031,172 | 0.0% |
+| total engine time | 40,808 ms | 40,291 ms | -1.27% |
+| weighted NPS | 980,963 | 993,551 | +1.28% |
+
+This is a small but clean search-side improvement. It should become more
+important if accumulator width increases.
 
 ### Stage 4: Convert accumulators to `int16_t`
 
@@ -453,9 +515,12 @@ range, so the clipped maximum alone is not proof of safety.
 
 ### Stage 5: Consider lazy accumulator updates
 
-Chilo currently copies the parent accumulator frame and applies the move delta
-before entering a searched child. Some children may return through TT or other
-early exits before evaluation, so that work can be wasted.
+Chilo currently uses per-ply accumulator frames. The frame-copy overhead has
+been reduced by reusing child-frame storage, but child preparation still copies
+the parent accumulator and applies the move delta before entering searched
+children that stay above the low-piece rebuild threshold. Some children may
+return through TT or other early exits before evaluation, so that work can
+still be wasted.
 
 A lazy accumulator stack would store pending move deltas and materialize the
 accumulator only when evaluation needs it. This is a larger search/evaluator
@@ -501,21 +566,35 @@ For quantization changes, exact compatibility with old networks is not
 required, but the exporter must report quantization drift on a validation
 dataset and reject unsafe weights or out-of-range values.
 
-## Recommended Implementation Order
+## Implementation Status And Next Steps
 
-The practical sequence is:
+Completed through `0.7.4`:
 
-1. Add the evaluation microbenchmark.
-2. Remove repeated clipping and scalar AVX2 product reductions without changing
-   the format.
-3. Measure and profile.
-4. Design the normalized byte-activation quantization contract in Python.
-5. Add `uint8_t` activations, `int8_t` dense weights, and exact generic parity.
-6. Add the packed AVX2 dense kernel and load-time matrix repacking.
-7. Measure strength and speed before changing accumulator storage.
-8. Add `int16_t` accumulators with strict range validation.
-9. Re-profile before deciding whether lazy accumulators are worth the larger
-   implementation effort.
+1. `nnue_eval_bench` provides rebuilt and incremental evaluator throughput
+   measurements.
+2. The dense path clamps active/passive accumulators once and evaluates dense
+   layers through a contiguous activation buffer.
+3. The byte-dense format uses `uint8_t` activations, `int8_t` dense/output
+   weights, shift-only requantization, and exact generic/AVX2 parity.
+4. Runtime tensors, generated tensors, accumulator frames, and dense scratch
+   buffers use 32-byte-aligned storage.
+5. AVX2 builds vectorize feature-transformer updates, byte-dense dot products,
+   and accumulator-to-byte activation.
+6. Search-side accumulator frame copying reuses existing child storage instead
+   of assigning fresh vectors on every child.
+
+Near-term useful work:
+
+1. Train and test the `64 -> 8` QAT net to learn whether the extra accumulator
+   capacity pays for its speed cost.
+2. Re-run Linux and Windows `nnue_eval_bench` for every candidate default net,
+   because runtime dimensions change the relative value of each kernel.
+3. Add output-layer SIMD once dimensions and quantization scales have stabilized
+   enough to justify another inference kernel.
+4. Gather accumulator range statistics before considering `int16_t`
+   accumulators.
+5. Re-profile search with larger accumulator nets before deciding whether lazy
+   accumulator materialization is worth the larger search/evaluator change.
 
 ## Stage 1 Results
 

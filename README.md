@@ -245,7 +245,7 @@ Current engine behavior:
 - Tiny NNUE evaluation with generated fallback weights from `generated/`
 - optional runtime NNUE `.bin` loading with the same feature contract and arbitrary hidden size
 - generated NNUE exports use configurable scaled integer quantization; the chosen scales and hidden size are recorded in `generated/generated_nnue_manifest.json`
-- NNUE perspectives are active/passive (side to move / opponent), not fixed white/black
+- NNUE accumulator lanes are fixed white/black perspectives; inference feeds them to the dense layers as active/passive (side to move / opponent)
 - iterative-deepening negamax alpha-beta
 - transposition table with hash-based cutoffs and TT-move ordering
 - TT probe before the quiescence handoff so deeper stored entries can skip frontier QS
