@@ -251,7 +251,7 @@ inline constexpr int kSquareCount = {int(contract['board_squares'])};
 inline constexpr int kAccumulatorOutputSize = 2 * kHiddenSize;
 inline constexpr int kOutputSize = {output_size};
 
-struct TinyNnueData {{
+struct alignas(32) TinyNnueData {{
     int16_t inputWeights[kPiecePlaneCount][kSquareCount][kHiddenSize];
     int16_t hiddenBias[kHiddenSize];
     int8_t hidden2Weights[kHidden2Size][kAccumulatorOutputSize];
@@ -260,7 +260,7 @@ struct TinyNnueData {{
     int32_t outputBias;
 }};
 
-inline constexpr TinyNnueData kTinyNnue = {{
+alignas(32) inline constexpr TinyNnueData kTinyNnue = {{
     {format_nested_initializer(np.asarray(weights['input_weights']), 4)},
     {format_nested_initializer(np.asarray(weights['hidden_bias']), 4)},
     {format_nested_initializer(np.asarray(weights['hidden2_weights']), 4)},

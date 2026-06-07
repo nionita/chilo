@@ -22,7 +22,7 @@ inline constexpr int kSquareCount = 64;
 inline constexpr int kAccumulatorOutputSize = 2 * kHiddenSize;
 inline constexpr int kOutputSize = 8;
 
-struct TinyNnueData {
+struct alignas(32) TinyNnueData {
     int16_t inputWeights[kPiecePlaneCount][kSquareCount][kHiddenSize];
     int16_t hiddenBias[kHiddenSize];
     int8_t hidden2Weights[kHidden2Size][kAccumulatorOutputSize];
@@ -31,7 +31,7 @@ struct TinyNnueData {
     int32_t outputBias;
 };
 
-inline constexpr TinyNnueData kTinyNnue = {
+alignas(32) inline constexpr TinyNnueData kTinyNnue = {
     {
         {
             { -11, -14, 2, -24, -10, -3, 3, -16, -14, -11, 0, -15, -3, 20, -2, 5, -2, 7, -1, 5, 9, 12, -3, 4, 15, 14, 2, 4, 1, 2, -8, 10 },

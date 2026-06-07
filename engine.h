@@ -1,7 +1,10 @@
 #ifndef ENGINE_H
 #define ENGINE_H
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -57,11 +60,45 @@ bool isDrawByRepetition(const Position& pos);
 
 int evaluate(const Position& pos);
 
+template <typename T, std::size_t Alignment>
+struct AlignedAllocator {
+    using value_type = T;
+
+    AlignedAllocator() noexcept = default;
+
+    template <typename U>
+    AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+
+    [[nodiscard]] T* allocate(std::size_t count) {
+        if (count > std::numeric_limits<std::size_t>::max() / sizeof(T)) throw std::bad_array_new_length();
+        return static_cast<T*>(::operator new(count * sizeof(T), std::align_val_t(Alignment)));
+    }
+
+    void deallocate(T* ptr, std::size_t) noexcept {
+        ::operator delete(ptr, std::align_val_t(Alignment));
+    }
+
+    template <typename U>
+    struct rebind {
+        using other = AlignedAllocator<U, Alignment>;
+    };
+};
+
+template <typename T, typename U, std::size_t Alignment>
+bool operator==(const AlignedAllocator<T, Alignment>&, const AlignedAllocator<U, Alignment>&) noexcept {
+    return true;
+}
+
+template <typename T, typename U, std::size_t Alignment>
+bool operator!=(const AlignedAllocator<T, Alignment>&, const AlignedAllocator<U, Alignment>&) noexcept {
+    return false;
+}
+
 struct NnueAccumulator {
     uint64_t generation = 0;
     int hiddenSize = 0;
     bool valid = false;
-    std::vector<int32_t> values;
+    std::vector<int32_t, AlignedAllocator<int32_t, 32>> values;
 };
 
 struct NnueFeatureDelta {

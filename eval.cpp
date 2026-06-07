@@ -25,6 +25,9 @@ constexpr char WEIGHTS_BIN_MAGIC[] = "CHNNUEB5";
 constexpr std::size_t WEIGHTS_BIN_TEXT_FIELD_SIZE = 64;
 constexpr int BYTE_ACTIVATION_SCALE = 127;
 
+template <typename T>
+using AlignedVector = std::vector<T, AlignedAllocator<T, 32>>;
+
 struct RuntimeNnue {
     std::string contractId;
     std::string contractSha256;
@@ -39,11 +42,14 @@ struct RuntimeNnue {
     int perspectiveCount = 0;
     int piecePlaneCount = 0;
     int squareCount = 0;
-    std::vector<int16_t> inputWeights;
-    std::vector<int16_t> hiddenBias;
-    std::vector<int8_t> hidden2Weights;
-    std::vector<int32_t> hidden2Bias;
-    std::vector<int8_t> outputWeights;
+    int inputActivationShift = 0;
+    int hidden2ActivationShift = 0;
+    int outputShift = 0;
+    AlignedVector<int16_t> inputWeights;
+    AlignedVector<int16_t> hiddenBias;
+    AlignedVector<int8_t> hidden2Weights;
+    AlignedVector<int32_t> hidden2Bias;
+    AlignedVector<int8_t> outputWeights;
     int32_t outputBias = 0;
 };
 
@@ -126,6 +132,12 @@ int log2PowerOfTwo(int value) {
     return shift;
 }
 
+void refreshDerivedNnueFields(RuntimeNnue& net) {
+    net.inputActivationShift = log2PowerOfTwo(net.inputScale) + 1;
+    net.hidden2ActivationShift = log2PowerOfTwo(net.hiddenScale) + 1;
+    net.outputShift = log2PowerOfTwo(net.outputScale);
+}
+
 RuntimeNnue builtInNnue() {
     const TinyNnueData& builtIn = chilo::nnue_generated::kTinyNnue;
     RuntimeNnue runtime;
@@ -153,6 +165,7 @@ RuntimeNnue builtInNnue() {
     runtime.outputWeights.assign(&builtIn.outputWeights[0],
                                  &builtIn.outputWeights[0] + chilo::nnue_generated::kOutputSize);
     runtime.outputBias = builtIn.outputBias;
+    refreshDerivedNnueFields(runtime);
     return runtime;
 }
 
@@ -289,6 +302,7 @@ bool loadRuntimeNnueFromFile(const std::string& path, RuntimeNnue& outNet, std::
     }
 
     if (!validateRuntimeNnue(net, error)) return false;
+    refreshDerivedNnueFields(net);
     outNet = std::move(net);
     return true;
 }
@@ -348,15 +362,30 @@ int roundShiftSigned(int64_t value, int shift) {
     return -static_cast<int>(((-value) + (int64_t{1} << (shift - 1))) >> shift);
 }
 
+template <std::size_t Alignment, typename T>
+bool isAligned(const T* ptr) {
+    return (reinterpret_cast<std::uintptr_t>(ptr) & (Alignment - 1)) == 0;
+}
+
 void addWeightsToLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 #if defined(CHILO_AVX2)
     int i = 0;
-    for (; i + 8 <= hiddenSize; i += 8) {
-        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
-        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
-        __m256i laneValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
-        laneValues = _mm256_add_epi32(laneValues, expandedWeights);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+    if (isAligned<32>(lane) && isAligned<16>(weights)) {
+        for (; i + 8 <= hiddenSize; i += 8) {
+            const __m128i packedWeights = _mm_load_si128(reinterpret_cast<const __m128i*>(weights + i));
+            const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+            __m256i laneValues = _mm256_load_si256(reinterpret_cast<const __m256i*>(lane + i));
+            laneValues = _mm256_add_epi32(laneValues, expandedWeights);
+            _mm256_store_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+        }
+    } else {
+        for (; i + 8 <= hiddenSize; i += 8) {
+            const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
+            const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+            __m256i laneValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
+            laneValues = _mm256_add_epi32(laneValues, expandedWeights);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+        }
     }
     for (; i < hiddenSize; ++i) lane[i] += weights[i];
 #else
@@ -367,12 +396,22 @@ void addWeightsToLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 void subWeightsFromLane(int32_t* lane, const int16_t* weights, int hiddenSize) {
 #if defined(CHILO_AVX2)
     int i = 0;
-    for (; i + 8 <= hiddenSize; i += 8) {
-        const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
-        const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
-        __m256i laneValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
-        laneValues = _mm256_sub_epi32(laneValues, expandedWeights);
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+    if (isAligned<32>(lane) && isAligned<16>(weights)) {
+        for (; i + 8 <= hiddenSize; i += 8) {
+            const __m128i packedWeights = _mm_load_si128(reinterpret_cast<const __m128i*>(weights + i));
+            const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+            __m256i laneValues = _mm256_load_si256(reinterpret_cast<const __m256i*>(lane + i));
+            laneValues = _mm256_sub_epi32(laneValues, expandedWeights);
+            _mm256_store_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+        }
+    } else {
+        for (; i + 8 <= hiddenSize; i += 8) {
+            const __m128i packedWeights = _mm_loadu_si128(reinterpret_cast<const __m128i*>(weights + i));
+            const __m256i expandedWeights = _mm256_cvtepi16_epi32(packedWeights);
+            __m256i laneValues = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lane + i));
+            laneValues = _mm256_sub_epi32(laneValues, expandedWeights);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(lane + i), laneValues);
+        }
     }
     for (; i < hiddenSize; ++i) lane[i] -= weights[i];
 #else
@@ -394,12 +433,22 @@ int32_t dotByteDenseInput(const uint8_t* input, const int8_t* weights, int input
     int i = 0;
     const __m256i ones = _mm256_set1_epi16(1);
     __m256i acc = _mm256_setzero_si256();
-    for (; i + 32 <= inputSize; i += 32) {
-        const __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(input + i));
-        const __m256i packedWeights = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(weights + i));
-        const __m256i product16 = _mm256_maddubs_epi16(values, packedWeights);
-        const __m256i product32 = _mm256_madd_epi16(product16, ones);
-        acc = _mm256_add_epi32(acc, product32);
+    if (isAligned<32>(input) && isAligned<32>(weights)) {
+        for (; i + 32 <= inputSize; i += 32) {
+            const __m256i values = _mm256_load_si256(reinterpret_cast<const __m256i*>(input + i));
+            const __m256i packedWeights = _mm256_load_si256(reinterpret_cast<const __m256i*>(weights + i));
+            const __m256i product16 = _mm256_maddubs_epi16(values, packedWeights);
+            const __m256i product32 = _mm256_madd_epi16(product16, ones);
+            acc = _mm256_add_epi32(acc, product32);
+        }
+    } else {
+        for (; i + 32 <= inputSize; i += 32) {
+            const __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(input + i));
+            const __m256i packedWeights = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(weights + i));
+            const __m256i product16 = _mm256_maddubs_epi16(values, packedWeights);
+            const __m256i product32 = _mm256_madd_epi16(product16, ones);
+            acc = _mm256_add_epi32(acc, product32);
+        }
     }
     const __m128i sum128 = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
     const __m128i sum64 = _mm_add_epi32(sum128, _mm_shuffle_epi32(sum128, _MM_SHUFFLE(1, 0, 3, 2)));
@@ -489,16 +538,14 @@ NnueMoveDelta buildMoveDelta(const Position& pos, const Move& move) {
     return delta;
 }
 
-int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
-    const RuntimeNnue& net = currentNnue();
-
-    const int inputActivationShift = log2PowerOfTwo(net.inputScale) + 1;
-    const int hidden2ActivationShift = log2PowerOfTwo(net.hiddenScale) + 1;
+int64_t scoreFromLanes(const RuntimeNnue& net, const int32_t* first, const int32_t* second) {
     int64_t score = net.outputBias;
     const int denseInputSize = 2 * net.hiddenSize;
-    thread_local std::vector<uint8_t> denseInput;
-    denseInput.resize(static_cast<std::size_t>(denseInputSize));
-    buildDenseInput(first, second, denseInput.data(), net.hiddenSize, inputActivationShift, net.activationScale);
+    thread_local AlignedVector<uint8_t> denseInput;
+    if (denseInput.size() < static_cast<std::size_t>(denseInputSize)) {
+        denseInput.resize(static_cast<std::size_t>(denseInputSize));
+    }
+    buildDenseInput(first, second, denseInput.data(), net.hiddenSize, net.inputActivationShift, net.activationScale);
 
     for (int h = 0; h < net.hidden2Size; ++h) {
         const int8_t* weights =
@@ -506,13 +553,13 @@ int64_t scoreFromLanes(const int32_t* first, const int32_t* second) {
         int64_t hidden2Value = net.hidden2Bias[static_cast<std::size_t>(h)];
         hidden2Value += dotByteDenseInput(denseInput.data(), weights, denseInputSize);
         const uint8_t hidden2Activation =
-            byteActivationFromScaledValue(hidden2Value, hidden2ActivationShift, net.activationScale);
+            byteActivationFromScaledValue(hidden2Value, net.hidden2ActivationShift, net.activationScale);
         score += static_cast<int32_t>(hidden2Activation) * net.outputWeights[static_cast<std::size_t>(h)];
     }
     return score;
 }
 
-void buildAccumulatorLane(const Position& pos, Color color, std::vector<int32_t>& hidden) {
+void buildAccumulatorLane(const Position& pos, Color color, AlignedVector<int32_t>& hidden) {
     const RuntimeNnue& net = currentNnue();
     hidden.assign(net.hiddenBias.begin(), net.hiddenBias.end());
 
@@ -521,7 +568,7 @@ void buildAccumulatorLane(const Position& pos, Color color, std::vector<int32_t>
         int sq = popLsb(occupied);
         Piece piece = pieceAt(pos, sq);
         const int16_t* weights = net.inputWeights.data() + inputWeightOffset(net, color, piece, sq);
-        for (int i = 0; i < net.hiddenSize; ++i) hidden[static_cast<std::size_t>(i)] += weights[i];
+        addWeightsToLane(hidden.data(), weights, net.hiddenSize);
     }
 }
 
@@ -597,18 +644,18 @@ int evaluateWithAccumulator(const Position& pos, const NnueAccumulator& acc) {
     const Color passiveSide = oppositeColor(pos.sideToMove);
     const int32_t* activeHidden = acc.values.data() + accumulatorOffset(net, pos.sideToMove);
     const int32_t* passiveHidden = acc.values.data() + accumulatorOffset(net, passiveSide);
-    int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    return roundShiftSigned(score, log2PowerOfTwo(net.outputScale));
+    int64_t score = scoreFromLanes(net, activeHidden, passiveHidden);
+    return roundShiftSigned(score, net.outputShift);
 }
 
 int evaluate(const Position& pos) {
     const RuntimeNnue& net = currentNnue();
-    thread_local std::vector<int32_t> whiteHidden;
-    thread_local std::vector<int32_t> blackHidden;
+    thread_local AlignedVector<int32_t> whiteHidden;
+    thread_local AlignedVector<int32_t> blackHidden;
     buildAccumulatorLane(pos, WHITE, whiteHidden);
     buildAccumulatorLane(pos, BLACK, blackHidden);
     const int32_t* activeHidden = pos.sideToMove == WHITE ? whiteHidden.data() : blackHidden.data();
     const int32_t* passiveHidden = pos.sideToMove == WHITE ? blackHidden.data() : whiteHidden.data();
-    int64_t score = scoreFromLanes(activeHidden, passiveHidden);
-    return roundShiftSigned(score, log2PowerOfTwo(net.outputScale));
+    int64_t score = scoreFromLanes(net, activeHidden, passiveHidden);
+    return roundShiftSigned(score, net.outputShift);
 }
