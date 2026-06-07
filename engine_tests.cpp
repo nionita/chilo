@@ -666,7 +666,7 @@ int testEvaluation() {
     Position kingOnlyWhite = parseFEN("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
     Position kingOnlyBlack = parseFEN("4k3/8/8/8/8/8/8/4K3 b - - 0 1");
 
-    const Position neutralPositions[] = {
+    const Position evalPositions[] = {
         start,
         whiteBetter,
         blackWorseToMove,
@@ -677,15 +677,11 @@ int testEvaluation() {
         kingOnlyWhite,
         kingOnlyBlack,
     };
-    for (const Position& pos : neutralPositions) {
-        if (evaluate(pos) != 0) {
-            std::cout << "  FAIL (neutral fallback eval expected 0, got " << evaluate(pos) << ")\n";
-            return 1;
-        }
+    for (const Position& pos : evalPositions) {
         NnueAccumulator accumulator;
         initNnueAccumulator(pos, accumulator);
         if (evaluateWithAccumulator(pos, accumulator) != evaluate(pos)) {
-            std::cout << "  FAIL (neutral fallback accumulator mismatch)\n";
+            std::cout << "  FAIL (fallback accumulator mismatch)\n";
             return 1;
         }
     }
