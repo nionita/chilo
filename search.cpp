@@ -575,6 +575,16 @@ const NnueAccumulator& searchNnueFrame(const SearchNnueState& state, int nnuePly
     return state.frames[static_cast<std::size_t>(nnuePly)];
 }
 
+void copySearchNnueFrame(const NnueAccumulator& source, NnueAccumulator& target) {
+    target.generation = source.generation;
+    target.hiddenSize = source.hiddenSize;
+    target.valid = source.valid;
+    if (target.values.size() != source.values.size()) {
+        target.values.resize(source.values.size());
+    }
+    std::copy(source.values.begin(), source.values.end(), target.values.begin());
+}
+
 int childPieceCountAfterMove(const Position& pos, const Move& move) {
     int pieceCount = __builtin_popcountll(pos.occupancyAll);
     return capturedPieceForMove(pos, move) == EMPTY ? pieceCount : pieceCount - 1;
@@ -583,8 +593,9 @@ int childPieceCountAfterMove(const Position& pos, const Move& move) {
 void prepareChildSearchNnue(SearchNnueState& state, int parentNnuePly, const NnueMoveDelta& delta) {
     assert(parentNnuePly >= 0);
     ensureSearchNnueFrame(state, parentNnuePly + 1);
-    state.frames[static_cast<std::size_t>(parentNnuePly + 1)] = searchNnueFrame(state, parentNnuePly);
-    applyNnueDelta(state.frames[static_cast<std::size_t>(parentNnuePly + 1)], delta);
+    NnueAccumulator& child = state.frames[static_cast<std::size_t>(parentNnuePly + 1)];
+    copySearchNnueFrame(searchNnueFrame(state, parentNnuePly), child);
+    applyNnueDelta(child, delta);
 }
 
 int evaluateSearchPosition(const Position& pos, const SearchNnueState& state, int nnuePly) {
