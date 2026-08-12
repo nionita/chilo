@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, List
@@ -26,7 +28,12 @@ EXPECTED_COLUMNS = ("eval_fen", "score", "result")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a sharded NNUE dataset cache from self-play CSV files.")
-    parser.add_argument("--input", nargs="+", required=True, help="One or more CSV files with eval_fen,score,result columns.")
+    parser.add_argument(
+        "--input",
+        nargs="+",
+        required=True,
+        help="One or more CSV files or glob patterns with eval_fen,score,result columns.",
+    )
     parser.add_argument("--output-dir", required=True, help="Dataset root directory for manifest.json and shards/.")
     parser.add_argument("--contract", default=None, help="Optional path to nnue_contract.json.")
     parser.add_argument("--limit", type=int, default=0, help="Optional maximum number of rows to ingest.")
@@ -36,6 +43,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report-every", type=int, default=100000, help="Print a progress line every N processed rows.")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output directory if it already contains data.")
     return parser.parse_args()
+
+
+def has_glob_pattern(path_text: str) -> bool:
+    return any(char in path_text for char in "*?[")
+
+
+def expand_input_paths(input_args: List[str]) -> List[Path]:
+    input_paths: List[Path] = []
+    for input_arg in input_args:
+        expanded_arg = os.path.expandvars(os.path.expanduser(input_arg))
+        if has_glob_pattern(expanded_arg):
+            matches = sorted(glob.glob(expanded_arg))
+            if not matches:
+                raise SystemExit(f"--input pattern matched no files: {input_arg}")
+            input_paths.extend(Path(match) for match in matches)
+        else:
+            input_paths.append(Path(expanded_arg))
+    return input_paths
 
 
 def ensure_output_dir(output_dir: Path, overwrite: bool) -> Path:
@@ -96,7 +121,7 @@ def main() -> int:
         raise SystemExit("--report-every must be positive.")
 
     contract = load_contract(Path(args.contract) if args.contract else None)
-    input_paths = [Path(path) for path in args.input]
+    input_paths = expand_input_paths(args.input)
     output_dir = Path(args.output_dir)
     shard_dir = ensure_output_dir(output_dir, args.overwrite)
 

@@ -114,7 +114,7 @@ class NnuePipelineTest(unittest.TestCase):
     def test_prepare_and_export_seeded(self):
         with tempfile.TemporaryDirectory() as temp_dir_name:
             temp_dir = Path(temp_dir_name)
-            csv_path = temp_dir / "samples.csv"
+            csv_path = temp_dir / "samples-a.csv"
             with csv_path.open("w", encoding="utf-8", newline="") as handle:
                 writer = csv.writer(handle)
                 writer.writerow(["eval_fen", "score", "result"])
@@ -128,7 +128,7 @@ class NnuePipelineTest(unittest.TestCase):
                     sys.executable,
                     str(SCRIPT_DIR / "prepare_nnue_dataset.py"),
                     "--input",
-                    str(csv_path),
+                    str(temp_dir / "samples-*.csv"),
                     "--output-dir",
                     str(dataset_dir),
                     "--samples-per-shard",
