@@ -121,6 +121,7 @@ class NnuePipelineTest(unittest.TestCase):
                 writer.writerow(["4k3/8/8/8/8/8/8/3QK3 w - - 0 1", "901", "1"])
                 writer.writerow(["4k3/8/8/8/8/8/8/4K3 w - - 0 1", "0", "0"])
                 writer.writerow(["4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", "31", "0"])
+                writer.writerow(["4k3/8/8/8/8/8/8/4K3 w - - 0 1"])
 
             dataset_dir = temp_dir / "dataset"
             subprocess.run(
@@ -137,6 +138,7 @@ class NnuePipelineTest(unittest.TestCase):
                     "0.5",
                     "--seed",
                     "7",
+                    "--skip-invalid-rows",
                     "--overwrite",
                 ],
                 check=True,
@@ -144,6 +146,7 @@ class NnuePipelineTest(unittest.TestCase):
 
             manifest_path, manifest = load_dataset_manifest(dataset_dir)
             self.assertEqual(manifest["total_samples"], 3)
+            self.assertEqual(manifest["skipped_rows"], 1)
             self.assertEqual(manifest["total_shards"], 2)
             self.assertEqual(manifest["split_counts"]["val_shards"], 1)
             records = list(iter_dataset_records(manifest_path, max_records=3))

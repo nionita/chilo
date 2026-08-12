@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import itertools
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Dict, List
 
@@ -41,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-fraction", type=float, default=0.05, help="Fraction of shards reserved for validation.")
     parser.add_argument("--seed", type=int, default=1, help="Seed used for deterministic shard split assignment.")
     parser.add_argument("--report-every", type=int, default=100000, help="Print a progress line every N processed rows.")
+    parser.add_argument(
+        "--skip-invalid-rows",
+        action="store_true",
+        help="Skip malformed rows instead of aborting; skipped rows are reported and recorded in the manifest.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output directory if it already contains data.")
     return parser.parse_args()
 
@@ -61,6 +68,13 @@ def expand_input_paths(input_args: List[str]) -> List[Path]:
         else:
             input_paths.append(Path(expanded_arg))
     return input_paths
+
+
+def report_skipped_row(path: Path, row_index: int, error: Exception | str, skipped_rows: int) -> None:
+    if skipped_rows <= 20:
+        print(f"skipping invalid row {path}:{row_index}: {error}", file=sys.stderr)
+    elif skipped_rows == 21:
+        print("suppressing further invalid-row messages", file=sys.stderr)
 
 
 def ensure_output_dir(output_dir: Path, overwrite: bool) -> Path:
@@ -132,43 +146,40 @@ def main() -> int:
     score_min = None
     score_max = None
     result_counts = {"-1": 0, "0": 0, "1": 0}
+    skipped_rows = 0
 
     for path in input_paths:
         with path.open("r", encoding="utf-8", newline="") as handle:
-            sample = handle.read(4096)
-            handle.seek(0)
-            sniffer = csv.Sniffer()
-            has_header = sniffer.has_header(sample) if sample else False
-
+            reader = csv.reader(handle)
+            first_row = next(reader, None)
+            if first_row is None:
+                continue
+            has_header = tuple(first_row[:3]) == EXPECTED_COLUMNS
             if has_header:
-                reader = csv.DictReader(handle)
-                if reader.fieldnames is None or tuple(reader.fieldnames[:3]) != EXPECTED_COLUMNS:
-                    raise ValueError(f"{path} does not contain the required columns {list(EXPECTED_COLUMNS)}")
-                row_iter = (
-                    (row_index, row["eval_fen"], row["score"], row["result"])
-                    for row_index, row in enumerate(reader, start=2)
-                )
+                if len(first_row) != len(EXPECTED_COLUMNS):
+                    raise ValueError(f"{path}:1: expected exactly columns {list(EXPECTED_COLUMNS)}")
+                row_iter = enumerate(reader, start=2)
             else:
-                reader = csv.reader(handle)
-                def iter_headerless_rows():
-                    for row_index, row in enumerate(reader, start=1):
-                        if not row:
-                            continue
-                        if len(row) != 3:
-                            raise ValueError(f"{path}:{row_index}: expected exactly 3 columns in headerless input")
-                        yield row_index, row[0], row[1], row[2]
-                row_iter = iter_headerless_rows()
+                row_iter = itertools.chain(((1, first_row),), enumerate(reader, start=2))
 
-            for row_index, eval_fen, score_text, result_text in row_iter:
+            for row_index, row in row_iter:
+                if not row:
+                    continue
                 try:
+                    if len(row) != len(EXPECTED_COLUMNS):
+                        raise ValueError("expected exactly 3 columns: eval_fen,score,result")
+                    eval_fen, score_text, result_text = row
                     score = int(score_text)
                     result = int(result_text)
+                    if result not in (-1, 0, 1):
+                        raise ValueError("result must be -1, 0 or 1")
                     encoded = encode_sample(eval_fen, score, result)
                 except Exception as exc:
+                    if args.skip_invalid_rows:
+                        skipped_rows += 1
+                        report_skipped_row(path, row_index, exc, skipped_rows)
+                        continue
                     raise ValueError(f"{path}:{row_index}: {exc}") from exc
-
-                if result not in (-1, 0, 1):
-                    raise ValueError(f"{path}:{row_index}: result must be -1, 0 or 1")
 
                 buffer.append(encoded)
                 total_samples += 1
@@ -216,6 +227,7 @@ def main() -> int:
         "score_min": int(score_min) if score_min is not None else 0,
         "score_max": int(score_max) if score_max is not None else 0,
         "result_counts": result_counts,
+        "skipped_rows": skipped_rows,
         "split_counts": {
             "train_shards": split_counts["train"],
             "val_shards": split_counts["val"],
