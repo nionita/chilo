@@ -31,6 +31,9 @@ caches and are not tied to these dimensions. Runtime `.bin` exports may use
 other hidden sizes as long as the feature contract and quantization metadata
 match.
 
+The running record for generation-4 architecture and QAT scale experiments is
+in `nnue-qat-scale-experiments.md`.
+
 ## Provisional Training Context
 
 The `g3hl2*` names combine two inconsistent generation counters: `g3` means the
