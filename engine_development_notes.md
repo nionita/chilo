@@ -1,6 +1,6 @@
 # Engine Development Notes
 
-This file is a compact current-state note, not a full chronological bug log. For day-to-day usage, start with `README.md`; for agent-specific project rules, use `AGENTS.md`.
+This file is a compact current-state note, not a full chronological bug log. For day-to-day usage, start with `README.md`; for agent-specific project rules, use `AGENTS.md`. See `engine-decisions.md` for the durable rationale behind non-obvious choices and rejected experiments.
 
 ## Current Engine Shape
 
@@ -109,6 +109,13 @@ Perft and full undo-state restoration remain the primary safety rails. Search/ev
 - reference perft coverage in `engine_tests`
 
 Use `make validate` when investigating state corruption. It is intentionally much slower than normal builds.
+
+## Search-Tuning Constraint
+
+Futility margins, reductions, and related selectivity are coupled to the
+active NNUE and its scale. Treat the current constants as the tested baseline,
+not universal values: measure candidate nets with the existing diagnostics and
+fixed-depth benchmarks, then require SPRT evidence before claiming strength.
 
 ## Useful Workflows
 

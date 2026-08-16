@@ -57,6 +57,33 @@ the side-to-move accumulator is placed in the first half of the dense input and
 the opponent accumulator in the second half. The dense hidden layer therefore
 has independent parameters for active and passive treatment.
 
+## Durable Architecture Rationale
+
+**CURRENT:** two white/black accumulator lanes replaced an earlier four-lane
+layout. They are sufficient because the feature transformer is shared; color
+perspective is expressed by friendly/enemy remapping and square normalization,
+while tempo is expressed by placing side-to-move first in the dense input.
+
+**CURRENT:** per-ply accumulator frames use copy-plus-apply rather than NNUE
+undo on child return. This was a net win in normal middlegame/tactical search,
+where delta maintenance was a major hotspot. Low-piece subtrees deliberately
+fall back to rebuild evaluation because frame-copy overhead is less favorable
+there.
+
+**CURRENT:** export, training QAT, Python integer parity, generated headers,
+and runtime `.bin` files form one exact integer contract. A change to scales,
+layout, or rounded-shift math is not an export-only change.
+
+## Historical Initialization Note
+
+**HISTORICAL-BUT-USEFUL:** older Gen2/Gen3 experiments found that seeded-noise
+initialization could play substantially stronger than plain random
+initialization, despite larger quantization drift. The seed supplied material,
+positional priors, and a meaningful centipawn-scale output; plain random began
+almost flat. This is useful context for initializer experiments, but it is not
+a current recommendation for Gen4 QAT. Record current-run outcomes only in
+`nnue-qat-scale-experiments.md`.
+
 ## Dimension Selection Notes
 
 Layer dimensions affect more than raw multiply-add count. For the current AVX2

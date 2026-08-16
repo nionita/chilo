@@ -2,6 +2,19 @@
 
 This file records measured speed findings and likely optimization directions. Keep it factual: update the numbers when the engine or workload changes.
 
+## Measurement Policy
+
+- Use fixed-depth wall time as the primary comparison for small search changes.
+  Record node counts and PVs with it; identical nodes make elapsed-time changes
+  easier to interpret.
+- Treat NPS as supporting information only. Tree shape, TT hits, and early
+  returns can change which work is counted as a node.
+- Use `scripts/benchmark_fixed_depth.py` for binary comparisons, the NNUE
+  evaluation benchmark for inference-only work, and SPRT before claiming a
+  playing-strength improvement.
+- Keep historical measurements labelled with their workload and engine state.
+  They explain a decision but are not current performance guarantees.
+
 ## 2026-04-22 Baseline Profile Run
 
 `perf` could not be used on this machine because `/proc/sys/kernel/perf_event_paranoid` is `4`. The fallback run used an optimized `gprof` binary:

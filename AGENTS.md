@@ -18,6 +18,9 @@
 - `chess_position.h` and `chess_tables.h` are relatively stable low-level layers.
 - Most engine work should happen in `.cpp` files behind `engine.h`.
 - Perft correctness and full-state restoration are still the main safety rails. Do not treat search strength as a reason to weaken those checks.
+- `engine-decisions.md` records non-obvious rationale, historical experiments,
+  and rejected approaches; current source and current-state notes still win on
+  any conflict.
 
 ## Current Layout
 
