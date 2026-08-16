@@ -12,7 +12,7 @@
 namespace {
 
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const char* CHILO_VERSION = "0.7.4"
+const char* CHILO_VERSION = "0.7.5"
 #if defined(CHILO_AVX2)
     " avx2"
 #endif
@@ -28,10 +28,12 @@ struct GoCommandOptions {
     int wincMs = 0;
     int bincMs = 0;
     int movesToGo = 0;
+    uint64_t nodes = 0;
     bool hasDepth = false;
     bool hasMovetime = false;
     bool hasWtime = false;
     bool hasBtime = false;
+    bool hasNodes = false;
 };
 
 std::vector<std::string> tokenize(const std::string& line) {
@@ -186,6 +188,17 @@ bool parseIntToken(const std::vector<std::string>& tokens, std::size_t index, in
     }
 }
 
+bool parseUint64Token(const std::vector<std::string>& tokens, std::size_t index, uint64_t& value) {
+    if (index >= tokens.size() || tokens[index].empty() || tokens[index][0] == '-') return false;
+    try {
+        std::size_t consumed = 0;
+        value = std::stoull(tokens[index], &consumed);
+        return consumed == tokens[index].size();
+    } catch (...) {
+        return false;
+    }
+}
+
 int computeClockBudgetMs(const Position& pos, const GoCommandOptions& options) {
     bool hasSideClock = pos.sideToMove == WHITE ? options.hasWtime : options.hasBtime;
     if (!hasSideClock) return 0;
@@ -242,21 +255,27 @@ SearchLimits parseGoCommand(const std::vector<std::string>& tokens, const Positi
         } else if (tokens[i] == "movestogo") {
             if (parseIntToken(tokens, i + 1, value) && value > 0) options.movesToGo = value;
             i++;
+        } else if (tokens[i] == "nodes") {
+            uint64_t nodeValue = 0;
+            if (parseUint64Token(tokens, i + 1, nodeValue)) {
+                options.nodes = nodeValue > 0 ? nodeValue : 1;
+                options.hasNodes = true;
+            }
+            i++;
         }
     }
+
+    if (options.hasDepth && options.depth > 0) limits.depth = options.depth;
+    if (options.hasNodes) limits.nodeLimit = options.nodes;
 
     if (options.hasMovetime) {
         limits.movetimeMs = options.movetimeMs > 0 ? options.movetimeMs : 1;
     } else {
         int budgetMs = computeClockBudgetMs(pos, options);
-        if (budgetMs > 0) {
-            limits.movetimeMs = budgetMs;
-        } else if (options.hasDepth && options.depth > 0) {
-            limits.depth = options.depth;
-        } else {
-            limits.depth = 4;
-        }
+        if (budgetMs > 0) limits.movetimeMs = budgetMs;
     }
+
+    if (limits.depth <= 0 && limits.movetimeMs <= 0 && limits.nodeLimit == 0) limits.depth = 4;
 
     return limits;
 }

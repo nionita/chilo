@@ -1,6 +1,7 @@
 #ifndef ENGINE_H
 #define ENGINE_H
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,6 +13,7 @@
 #include "chess_tables.h"
 
 constexpr int MAX_SEARCH_DEPTH = 64;
+constexpr int MAX_FUTILITY_DEPTH = 7;
 constexpr int MAX_DRAW_HISTORY = 600;
 constexpr int SEARCH_MATE_SCORE = 29000;
 constexpr int SEARCH_MATE_THRESHOLD = SEARCH_MATE_SCORE - MAX_SEARCH_DEPTH;
@@ -171,6 +173,11 @@ struct RootMoveResult {
     std::string evalFen;
 };
 
+struct SearchParameters {
+    int futilityMaxDepth = 3;
+    std::array<int, MAX_FUTILITY_DEPTH + 1> futilityMargins = {0, 120, 320, 550, 0, 0, 0, 0};
+};
+
 struct SearchLimits {
     int depth;
     int movetimeMs;
@@ -181,6 +188,9 @@ struct SearchLimits {
     int minSampleDepth = 0;
     SearchSampleCallback sampleCallback = nullptr;
     void* sampleUserData = nullptr;
+    uint64_t nodeLimit = 0;
+    SearchParameters parameters{};
+    bool isolateTranspositionTable = false;
 };
 
 struct SearchStats {
@@ -208,6 +218,8 @@ struct SearchStats {
     uint64_t nullMoveCutoffsD3 = 0;
     uint64_t nullMoveTriesD4p = 0;
     uint64_t nullMoveCutoffsD4p = 0;
+    std::array<uint64_t, MAX_FUTILITY_DEPTH + 1> futilityPrunes{};
+    std::array<uint64_t, MAX_FUTILITY_DEPTH + 1> futilityPrunesInCheck{};
 };
 
 struct SearchResult {
@@ -217,8 +229,10 @@ struct SearchResult {
     int score;
     int depth;
     uint64_t nodes;
+    uint64_t completedNodes;
     SearchStats stats;
     uint64_t elapsedMs;
+    uint64_t totalElapsedMs;
     bool completed;
     bool hasMove;
     int bestMoveEvalScore;

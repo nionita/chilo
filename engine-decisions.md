@@ -32,6 +32,10 @@ Status labels:
 - **CURRENT**: assess search changes with fixed-depth wall time, node counts,
   PVs, tactical regressions, and SPRT where strength is claimed. NPS alone is
   insufficient because early returns and changed tree shape affect its meaning.
+- **CURRENT**: futility-margin candidate generation is external to the engine.
+  The engine exposes bounded search and per-search margins; `futility_probe`
+  applies tuples to a corpus with equal node budgets and isolated TT state.
+  Proxy results can screen candidates, but only SPRT establishes strength.
 - **CURRENT**: SEE uses `P/N/B/R/Q = 100/330/330/500/900`. Equal knight and
   bishop values are required for exchange symmetry: unequal values classified
   bishop-for-knight exchanges as SEE-negative and incorrectly filtered them

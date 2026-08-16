@@ -17,7 +17,6 @@ constexpr int DEEP_NULL_MOVE_REDUCTION = 4;
 constexpr int LMR_LEVEL1_MOVE_INDEX = 2;
 constexpr int LMR_LEVEL2_MOVE_INDEX = 6;
 constexpr int LMR_LEVEL3_MOVE_INDEX = 12;
-constexpr int FUTILITY_MARGIN[4] = {0, 120, 320, 550};
 constexpr int NNUE_REBUILD_PIECE_THRESHOLD = 5;
 constexpr std::size_t TT_SIZE = 1u << 20;
 
@@ -42,7 +41,7 @@ struct TTEntry {
     int16_t score = 0;
     uint8_t depth = 0;
     uint8_t flag = TT_NONE;
-    uint8_t generation = 0;
+    uint32_t generation = 0;
 };
 
 struct NullMoveState {
@@ -88,8 +87,12 @@ struct SearchNnueState {
 std::atomic<bool> g_stopRequested{false};
 std::chrono::steady_clock::time_point g_deadline;
 bool g_useDeadline = false;
+uint64_t g_nodesSearched = 0;
+uint64_t g_nodeLimit = 0;
+SearchParameters g_searchParameters{};
+bool g_isolateTranspositionTable = false;
 std::vector<TTEntry> g_tt(TT_SIZE);
-uint8_t g_ttGeneration = 0;
+uint32_t g_ttGeneration = 0;
 Move g_killers[MAX_SEARCH_DEPTH][2];
 int g_history[2][64][64] = {};
 uint64_t g_drawHistory[MAX_DRAW_HISTORY] = {};
@@ -349,11 +352,20 @@ int captureOrderScore(const Position& pos, const Move& move) {
 
 bool shouldStop() {
     if (g_stopRequested.load(std::memory_order_relaxed)) return true;
+    if (g_nodeLimit > 0 && g_nodesSearched >= g_nodeLimit) {
+        g_stopRequested.store(true, std::memory_order_relaxed);
+        return true;
+    }
     if (g_useDeadline && std::chrono::steady_clock::now() >= g_deadline) {
         g_stopRequested.store(true, std::memory_order_relaxed);
         return true;
     }
     return false;
+}
+
+void countNode(uint64_t& iterationNodes) {
+    iterationNodes++;
+    if (g_nodeLimit > 0) g_nodesSearched++;
 }
 
 bool hasNonPawnMaterial(const Position& pos, Color side) {
@@ -432,6 +444,7 @@ TTEntry& ttEntry(uint64_t key) {
 bool probeTT(uint64_t key, int depth, int ply, int alpha, int beta, Move& bestMove, int& score) {
     const TTEntry& entry = ttEntry(key);
     if (entry.key != key) return false;
+    if (g_isolateTranspositionTable && entry.generation != g_ttGeneration) return false;
     if (isValidMove(entry.bestMove)) bestMove = entry.bestMove;
     if (entry.depth < depth) return false;
 
@@ -630,6 +643,10 @@ void addSearchStats(SearchStats& target, const SearchStats& source) {
     target.nullMoveCutoffsD3 += source.nullMoveCutoffsD3;
     target.nullMoveTriesD4p += source.nullMoveTriesD4p;
     target.nullMoveCutoffsD4p += source.nullMoveCutoffsD4p;
+    for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; depth++) {
+        target.futilityPrunes[depth] += source.futilityPrunes[depth];
+        target.futilityPrunesInCheck[depth] += source.futilityPrunesInCheck[depth];
+    }
 }
 
 void noteQSCutoff(SearchStats& stats, int moveIndex) {
@@ -706,7 +723,7 @@ int quiescence(Position& pos, SearchNnueState& nnueState, int ply, int nnuePly, 
         return 0;
     }
 
-    nodes++;
+    countNode(nodes);
     stats.qnodes++;
     bool inCheckNow = inCheck(pos, pos.sideToMove);
     if (inCheckNow) stats.qcheckNodes++;
@@ -822,7 +839,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
 
     if (depth <= 0) return quiescence(pos, nnueState, ply, nnuePly, alpha, beta, nodes, stats, leaf);
 
-    nodes++;
+    countNode(nodes);
     const int alphaOriginal = alpha;
     const bool inCheckNow = inCheck(pos, pos.sideToMove);
 
@@ -856,7 +873,7 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
     Move bestMove = moves[0];
     SearchLeaf bestLeaf{};
     int staticEval = 0;
-    bool allowFutility = !isPv && depth <= 3;
+    bool allowFutility = !isPv && depth <= g_searchParameters.futilityMaxDepth;
     if (allowFutility) staticEval = evaluateSearchPosition(pos, nnueState, nnuePly);
 
     for (int i = 0; i < moveCount; i++) {
@@ -878,7 +895,9 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
         bool givesCheck = inCheck(pos, pos.sideToMove);
 
         if (allowFutility && i > 0 && quiet && !givesCheck &&
-            staticEval + FUTILITY_MARGIN[depth] <= alpha) {
+            static_cast<int64_t>(staticEval) + g_searchParameters.futilityMargins[depth] <= alpha) {
+            stats.futilityPrunes[depth]++;
+            if (inCheckNow) stats.futilityPrunesInCheck[depth]++;
             popSearchHistory(savedLastValid, savedLastIrreversible);
             undo(pos, move, undoState);
             continue;
@@ -1017,6 +1036,14 @@ std::vector<MoveOrderingEntry> collectMoveOrderingDiagnostics(
 
 SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_stopRequested.store(false, std::memory_order_relaxed);
+    g_nodesSearched = 0;
+    g_nodeLimit = limits.nodeLimit;
+    g_searchParameters = limits.parameters;
+    g_isolateTranspositionTable = limits.isolateTranspositionTable;
+    if (g_searchParameters.futilityMaxDepth < 0) g_searchParameters.futilityMaxDepth = 0;
+    if (g_searchParameters.futilityMaxDepth > MAX_FUTILITY_DEPTH) {
+        g_searchParameters.futilityMaxDepth = MAX_FUTILITY_DEPTH;
+    }
     g_useDeadline = limits.movetimeMs > 0;
     if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
     auto startTime = std::chrono::steady_clock::now();
@@ -1036,7 +1063,9 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     result.score = 0;
     result.depth = 0;
     result.nodes = 0;
+    result.completedNodes = 0;
     result.elapsedMs = 0;
+    result.totalElapsedMs = 0;
     result.completed = true;
     result.hasMove = false;
     clearBestMoveEval(result);
@@ -1046,6 +1075,9 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     if (rootCount == 0) {
         result.pvLength = 0;
         result.score = terminalScore(pos, 0);
+        result.totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - startTime)
+                                    .count();
         return result;
     }
 
@@ -1166,6 +1198,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         result.pvLength = bestPvLength;
         result.score = bestScore;
         result.depth = depth;
+        result.completedNodes = result.nodes;
         result.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::steady_clock::now() - startTime)
                                .count();
@@ -1186,6 +1219,10 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         SearchSample sample{rootFen, result.bestMoveEvalFen, result.depth, result.bestMoveEvalScore};
         limits.sampleCallback(sample, limits.sampleUserData);
     }
+
+    result.totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - startTime)
+                                .count();
 
     return result;
 }

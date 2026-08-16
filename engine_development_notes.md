@@ -10,7 +10,7 @@ This file is a compact current-state note, not a full chronological bug log. For
 - `attack.cpp`, `movegen.cpp`, `make_unmake.cpp`, and `perft_lib.cpp` implement the move-generation/perft core.
 - `search.cpp` implements iterative-deepening negamax alpha-beta with TT, PVS, null move, LMR, futility, killer/history ordering, SEE capture handling, repetition/50-move draw handling, and QS.
 - `eval.cpp` is NNUE inference only. The old handcrafted tapered evaluator is no longer the active evaluator.
-- `chilo.cpp`, `selfplay_collect.cpp`, `eval_fen.cpp`, `perft.cpp`, and `perft_diag.cpp` are separate frontends over the shared engine objects.
+- `chilo.cpp`, `selfplay_collect.cpp`, `eval_fen.cpp`, `futility_probe.cpp`, `perft.cpp`, and `perft_diag.cpp` are separate frontends over the shared engine objects.
 
 Normal C++ build outputs live under `build/release`, `build/debug`, `build/validate`, and `build/win64`.
 Optional AVX2-specific release outputs live under `build/release-avx2` and `build/win64-avx2`; those binaries require AVX2-capable CPUs.
@@ -116,6 +116,20 @@ Futility margins, reductions, and related selectivity are coupled to the
 active NNUE and its scale. Treat the current constants as the tested baseline,
 not universal values: measure candidate nets with the existing diagnostics and
 fixed-depth benchmarks, then require SPRT evidence before claiming strength.
+
+`SearchLimits` supports a cumulative hard node limit and per-search futility
+parameters. Iterative deepening keeps the move, score, PV, depth, and
+`completedNodes` from the last complete iteration; `nodes` and search
+diagnostics include work performed in an interrupted iteration. This avoids
+treating a partially searched root move list as a completed result.
+
+Use `futility_probe`, not UCI options or tuning loops inside `search.cpp`, to
+compare margin tuples over a position corpus. The probe isolates TT state per
+position, accepts FEN or first-column CSV input, and emits JSON Lines suitable
+for the later external candidate-selection script. Its separate
+`futility_prunes_in_check` counters intentionally expose current behavior for
+analysis; changing whether in-check nodes may prune is a separate search
+experiment.
 
 ## Useful Workflows
 

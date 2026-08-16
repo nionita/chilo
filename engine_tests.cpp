@@ -1187,8 +1187,73 @@ int testSearchFindsMateInOneForBothSides() {
     return 0;
 }
 
+int testFixedNodeSearchLimits() {
+    std::cout << "Test 23: Fixed Node Search Limit Test\n";
+
+    const std::string startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    Position baselinePos = parseFEN(startFen);
+    resetDrawHistory(baselinePos);
+    SearchLimits baselineLimits{1, 0, nullptr, nullptr};
+    baselineLimits.isolateTranspositionTable = true;
+    SearchResult baseline = searchBestMove(baselinePos, baselineLimits);
+    if (!baseline.completed || baseline.depth != 1 || baseline.nodes == 0 ||
+        baseline.completedNodes != baseline.nodes) {
+        std::cout << "  FAIL (depth-one baseline did not complete cleanly)\n";
+        return 1;
+    }
+
+    Position cappedPos = parseFEN(startFen);
+    resetDrawHistory(cappedPos);
+    SearchLimits cappedLimits{4, 0, nullptr, nullptr};
+    cappedLimits.nodeLimit = baseline.nodes + 1;
+    cappedLimits.isolateTranspositionTable = true;
+    SearchResult capped = searchBestMove(cappedPos, cappedLimits);
+    if (capped.completed || capped.depth != 1 || capped.completedNodes != baseline.nodes ||
+        capped.nodes != cappedLimits.nodeLimit || capped.score != baseline.score ||
+        !capped.hasMove || !baseline.hasMove || moveToUCI(capped.bestMove) != moveToUCI(baseline.bestMove)) {
+        std::cout << "  FAIL (interrupted iteration replaced the last complete result)\n";
+        return 1;
+    }
+
+    Position tinyPos = parseFEN(startFen);
+    resetDrawHistory(tinyPos);
+    SearchLimits tinyLimits{4, 0, nullptr, nullptr};
+    tinyLimits.nodeLimit = 1;
+    tinyLimits.isolateTranspositionTable = true;
+    SearchResult tiny = searchBestMove(tinyPos, tinyLimits);
+    if (tiny.completed || tiny.depth != 0 || tiny.completedNodes != 0 || tiny.nodes != 1 ||
+        !tiny.hasMove || tiny.pvLength != 1) {
+        std::cout << "  FAIL (tiny node budget did not return the legal depth-zero fallback)\n";
+        return 1;
+    }
+
+    Position extendedFutilityPos = parseFEN(startFen);
+    resetDrawHistory(extendedFutilityPos);
+    SearchLimits extendedFutilityLimits{8, 0, nullptr, nullptr};
+    extendedFutilityLimits.nodeLimit = 10000;
+    extendedFutilityLimits.isolateTranspositionTable = true;
+    extendedFutilityLimits.parameters.futilityMaxDepth = MAX_FUTILITY_DEPTH;
+    extendedFutilityLimits.parameters.futilityMargins.fill(0);
+    SearchResult extendedFutility = searchBestMove(extendedFutilityPos, extendedFutilityLimits);
+    if (extendedFutility.nodes != extendedFutilityLimits.nodeLimit ||
+        extendedFutility.stats.futilityPrunes[4] == 0) {
+        std::cout << "  FAIL (custom futility depths were not applied)\n";
+        return 1;
+    }
+
+    SearchParameters defaults;
+    if (defaults.futilityMaxDepth != 3 || defaults.futilityMargins[1] != 120 ||
+        defaults.futilityMargins[2] != 320 || defaults.futilityMargins[3] != 550) {
+        std::cout << "  FAIL (default futility parameters changed)\n";
+        return 1;
+    }
+
+    std::cout << "  PASS\n";
+    return 0;
+}
+
 int testNnuePerspectiveSymmetryWithRuntimeWeights() {
-    std::cout << "Test 23: NNUE Perspective Symmetry With Runtime Weights Test\n";
+    std::cout << "Test 24: NNUE Perspective Symmetry With Runtime Weights Test\n";
 
     const std::string weightsPath = "/tmp/chilo-nnue-perspective-symmetry.bin";
     if (!writeSyntheticNnueWeights(weightsPath)) {
@@ -1277,6 +1342,7 @@ int main() {
     failures += testSearchPrefersQuietPromotion();
     failures += testMateScoreHelpers();
     failures += testSearchFindsMateInOneForBothSides();
+    failures += testFixedNodeSearchLimits();
     failures += testNnuePerspectiveSymmetryWithRuntimeWeights();
     
     std::cout << "\n=== Summary ===\n";

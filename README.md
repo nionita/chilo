@@ -20,6 +20,7 @@ Small chess engine project with:
 - `selfplay_collect.cpp`: self-play training-data collector
 - `eval_fen.cpp`: tiny CLI for evaluating one or more FENs with the compiled engine
 - `nnue_eval_bench.cpp`: rebuilt/incremental NNUE evaluation throughput benchmark
+- `futility_probe.cpp`: fixed-node futility-margin probe with JSON Lines output
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
@@ -233,6 +234,7 @@ Supported commands:
 - `position startpos moves ...`
 - `position fen <fen> moves ...`
 - `go depth N`
+- `go nodes N`
 - `go movetime N`
 - `go wtime WT btime BT [winc WI] [binc BI] [movestogo MTG]`
 - `stop`
@@ -250,7 +252,7 @@ Current engine behavior:
 - transposition table with hash-based cutoffs and TT-move ordering
 - TT probe before the quiescence handoff so deeper stored entries can skip frontier QS
 - killer/history quiet-move ordering plus SEE-based capture bucketing
-- PVS, null-move pruning, 3-tier LMR, and futility pruning through depth 3
+- PVS, null-move pruning, 3-tier LMR, and configurable futility pruning through depth 7 (the engine default remains depths 1-3 with margins `120,320,550`)
 - repetition-draw detection in main search and 50-move draw detection in main search + QS
 - quiescence search with SEE-filtered captures and MVV-LVA ordering
 - no UCI `setoption` options yet
@@ -351,6 +353,29 @@ python3 scripts/benchmark_fixed_depth.py \
 
 Use `--offset`, `--sample-rate`, and `--seed` to select different FEN subsets. Use
 `--baseline-weights` or `--candidate-weights` only when comparing different nets.
+
+### Futility Candidate Probing
+
+`futility_probe` searches every input position with the same hard cumulative
+node budget and writes one JSON Lines record per position plus a final summary.
+Inputs may be plain FEN files or CSV files whose first column is `fen`,
+`eval_fen`, or `root_fen`.
+
+```bash
+build/release-avx2/futility_probe \
+  --weights /path/to/net.bin \
+  --nodes 300000 \
+  --futility-margins 100,350,550,750,950,1150,1350 \
+  --output /tmp/futility-100-350-550-750-950-1150-1350.jsonl \
+  positions.csv
+```
+
+The margin list length selects the maximum futility depth, from 1 through 7.
+Each position starts with isolated TT and draw-history state. `nodes` includes
+work from the interrupted final iteration, while `completed_nodes`,
+`completed_depth`, score, best move, and PV describe the last fully completed
+iteration. A budget too small to finish depth 1 reports depth 0 and a legal
+fallback move. Use `--overwrite` explicitly to replace an existing output.
 
 ### Fastchess SPRT
 
