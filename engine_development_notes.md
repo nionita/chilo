@@ -126,7 +126,11 @@ treating a partially searched root move list as a completed result.
 Use `futility_probe`, not UCI options or tuning loops inside `search.cpp`, to
 compare margin tuples over a position corpus. The probe isolates TT state per
 position, accepts FEN or first-column CSV input, and emits JSON Lines suitable
-for the later external candidate-selection script. Its separate
+for `scripts/tune_futility.py`. The tuner runs a deeper current-margin
+reference, compares candidates at equal node budgets, and uses Pareto fronts
+over move agreement, non-mate score error, and completed depth to produce an
+SPRT shortlist. Its manifest fingerprints the probe, net, corpus, and config,
+so `--resume` cannot silently combine incompatible runs. The probe's separate
 `futility_prunes_in_check` counters intentionally expose current behavior for
 analysis; changing whether in-check nodes may prune is a separate search
 experiment.
@@ -142,6 +146,7 @@ experiment.
 - `make nnue-python-tests` runs Python pipeline unit tests.
 - `make nnue-verify` runs preprocess -> train -> export -> rebuild -> C++/Python parity verification.
 - `python3 scripts/benchmark_fixed_depth.py` compares two UCI binaries at fixed depth.
+- `python3 scripts/tune_futility.py --config ... --dry-run` validates and expands a futility sweep without starting searches.
 
 The TT replacement experiment is still available with:
 

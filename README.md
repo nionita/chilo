@@ -25,6 +25,7 @@ Small chess engine project with:
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
+- `scripts/tune_futility.py`: resumable fixed-node futility-margin proxy tuner
 - `scripts/dedup_training_csv.py`: exact-row CSV dedup for large collector outputs using external `sort`
 - `scripts/fastchess_sprt_config.example.json`: example config for SPRT runs
 - `scripts/nnue_contract.json`: feature/model contract shared by training, export, and C++ inference
@@ -376,6 +377,57 @@ work from the interrupted final iteration, while `completed_nodes`,
 `completed_depth`, score, best move, and PV describe the last fully completed
 iteration. A budget too small to finish depth 1 reports depth 0 and a legal
 fallback move. Use `--overwrite` explicitly to replace an existing output.
+
+Use `scripts/tune_futility.py` to expand margin families, run the probe for a
+deeper baseline reference and equal-budget candidates, and select a diverse
+Pareto shortlist. A minimal configuration is:
+
+```json
+{
+  "candidate_nodes": 300000,
+  "reference_nodes": 1200000,
+  "baseline_margins": [120, 320, 550],
+  "shortlist_size": 15,
+  "explicit_candidates": [[100, 350, 550, 750, 950]],
+  "families": [
+    {
+      "type": "linear",
+      "depths": [3, 5, 7],
+      "slopes": [100, 120, 140, 160, 180],
+      "intercepts": [-50, 0, 50, 100]
+    }
+  ]
+}
+```
+
+Power families use `"type": "power"` with `scales` and `exponents`.
+Explicit and generated tuples must have 1-7 nonnegative, nondecreasing
+margins. Inspect the expansion without running searches:
+
+```bash
+python3 scripts/tune_futility.py \
+  --config /path/to/futility-tuning.json \
+  --dry-run
+```
+
+Run the sweep with one or more FEN/CSV inputs:
+
+```bash
+python3 scripts/tune_futility.py \
+  --config /path/to/futility-tuning.json \
+  --probe build/release-avx2/futility_probe \
+  --input positions.fen \
+  --weights /path/to/net.bin \
+  --run-dir /tmp/chilo-futility/run-01 \
+  --jobs 4
+```
+
+The run directory retains a fingerprinted manifest, raw JSONL evidence, probe
+logs, `results.json`, `results.csv`, `shortlist.json`, and `report.md`. Resume
+an interrupted run with the same command plus `--resume`; any changed config,
+binary, net, or input is rejected. The proxy ranks reference move agreement,
+non-mate score MAE, and completed depth. It only screens candidates: use SPRT
+to establish playing strength.
 
 ### Fastchess SPRT
 
