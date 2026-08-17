@@ -443,12 +443,28 @@ orders strictly by mean regret, P90 regret, median regret, then the margin
 tuple. Move agreement, raw score error, depth, mate-claim diagnostics, elapsed
 time, and futility counts remain diagnostic only.
 
-The run directory retains a fingerprinted manifest containing only the resolved
-effective probe, input, and weight artifacts with hashes, plus raw JSONL
-evidence, probe logs, `results.json`, `results.csv`, `shortlist.json`, and
-`report.md`. Resume an interrupted run with the same effective artifacts plus
-`--resume`; any changed config, binary, net, or input is rejected. The proxy
-only screens candidates: use SPRT to establish playing strength.
+The script keeps the durable reference memory and candidate work in the same
+run directory. By default `--phase all` first runs the anchor and then the
+candidates. To split an expensive sweep, run:
+
+```bash
+python3 scripts/tune_futility.py --config /path/to/futility-tuning.json --run-dir /tmp/chilo-futility/run-01 --phase anchor
+python3 scripts/tune_futility.py --config /path/to/futility-tuning.json --run-dir /tmp/chilo-futility/run-01 --phase candidates --jobs 4
+```
+
+The anchor phase writes `probes/reference.jsonl`, the durable per-position
+memory of every root move and its reference score, and `probes/baseline.jsonl`.
+An anchor-only config needs only the budgets and baseline margins; candidate
+families can be added later for the candidate phase.
+`anchor_manifest.json` fingerprints only their shared basis: the resolved
+probe, inputs, weights, node budgets, and baseline margins. You may then change
+linear/power families or explicit candidates and rerun `--phase candidates`
+without repeating the anchor. A changed engine binary, net, input, budget, or
+baseline margins is rejected and requires a new run directory. The candidate
+phase records the exact anchor and JSONL hashes it consumed in
+`candidates_manifest.json` and updates `results.json`, `results.csv`,
+`shortlist.json`, and `report.md`. The proxy only screens candidates: use SPRT
+to establish playing strength.
 
 For SPRT candidates, use `scripts/build_futility_variants.py` with a
 `chilo.futility_variants.v1` manifest. It compiles each tuple in an isolated

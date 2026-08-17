@@ -87,6 +87,17 @@ def write_probe_output(
 
 
 class ConfigExpansionTest(unittest.TestCase):
+    def test_anchor_phase_can_expand_config_without_candidates(self) -> None:
+        config = {
+            "candidate_nodes": 100,
+            "reference_nodes": 200,
+            "baseline_margins": [120],
+        }
+        expanded = tune_futility.expand_config(config, require_candidates=False)
+        self.assertEqual(expanded["candidates"], [])
+        with self.assertRaisesRegex(tune_futility.TuningError, "produced no"):
+            tune_futility.expand_config(config)
+
     def test_expands_deduplicates_and_discards_invalid_formula_results(self) -> None:
         expanded = tune_futility.expand_config(
             {
@@ -340,26 +351,47 @@ class MetricsAndRankingTest(unittest.TestCase):
         self.assertEqual(sum(bool(item["selected"]) for item in candidates), 2)
 
 
-class ResumeTest(unittest.TestCase):
-    def test_explicit_resume_requires_identical_manifest(self) -> None:
-        manifest = {"schema": tune_futility.SCHEMA, "value": 1}
+class PhaseManifestTest(unittest.TestCase):
+    def test_anchor_manifest_is_stable_when_candidate_families_change(self) -> None:
+        anchor = {"schema": tune_futility.ANCHOR_SCHEMA, "probe": {"sha256": "one"}}
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory) / "run"
-            tune_futility.prepare_run_directory(run_dir, manifest, False)
-            tune_futility.prepare_run_directory(run_dir, manifest, True)
+            tune_futility.prepare_run_directory(run_dir)
+            tune_futility.ensure_anchor_manifest(run_dir, anchor)
+            tune_futility.require_anchor_manifest(run_dir, anchor)
+            tune_futility.ensure_anchor_manifest(run_dir, anchor)
             with self.assertRaisesRegex(tune_futility.TuningError, "does not match"):
-                tune_futility.prepare_run_directory(
-                    run_dir,
-                    {"schema": tune_futility.SCHEMA, "value": 2},
-                    True,
+                tune_futility.require_anchor_manifest(
+                    run_dir, {"schema": tune_futility.ANCHOR_SCHEMA, "probe": {"sha256": "two"}}
                 )
 
-    def test_new_run_rejects_nonempty_directory(self) -> None:
+    def test_candidates_manifest_records_reference_score_memory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
-            (run_dir / "existing").write_text("data", encoding="utf-8")
-            with self.assertRaisesRegex(tune_futility.TuningError, "not empty"):
-                tune_futility.prepare_run_directory(run_dir, {"schema": tune_futility.SCHEMA}, False)
+            tune_futility.prepare_run_directory(run_dir)
+            anchor_path = run_dir / "anchor_manifest.json"
+            reference_path = run_dir / "probes" / "reference.jsonl"
+            baseline_path = run_dir / "probes" / "baseline.jsonl"
+            anchor_path.write_text("{}", encoding="utf-8")
+            reference_path.write_text("reference root scores", encoding="utf-8")
+            baseline_path.write_text("baseline", encoding="utf-8")
+            expanded = {
+                "score_scale": 600.0,
+                "shortlist_size": 1,
+                "candidates": [{"id": "candidate", "margins": [100], "origins": ["test"]}],
+                "discarded": [],
+            }
+            manifest = tune_futility.build_candidates_manifest(run_dir, expanded)
+            self.assertEqual(manifest["schema"], tune_futility.CANDIDATES_SCHEMA)
+            self.assertEqual(manifest["reference_root_scores"]["path"], str(reference_path.resolve()))
+            self.assertIn("sha256", manifest["reference_root_scores"])
+
+    def test_legacy_single_manifest_layout_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(tune_futility.TuningError, "older single-manifest"):
+                tune_futility.prepare_run_directory(run_dir)
 
 
 if __name__ == "__main__":

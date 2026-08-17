@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-SCHEMA = "chilo.futility_tuning.v2"
-RESULTS_SCHEMA = "chilo.futility_tuning_results.v2"
+ANCHOR_SCHEMA = "chilo.futility_tuning_anchor.v1"
+CANDIDATES_SCHEMA = "chilo.futility_tuning_candidates.v1"
+RESULTS_SCHEMA = "chilo.futility_tuning_results.v3"
 MAX_FUTILITY_DEPTH = 7
 MATE_SCORE_FLOOR = 28936  # SEARCH_MATE_SCORE - MAX_SEARCH_DEPTH in engine.h
 
@@ -76,7 +77,7 @@ def candidate_key(margins: Sequence[int]) -> str:
     return f"d{len(margins)}-{digest}"
 
 
-def expand_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
+def expand_config(raw: Mapping[str, Any], require_candidates: bool = True) -> Dict[str, Any]:
     allowed = {
         "candidate_nodes",
         "reference_nodes",
@@ -196,7 +197,7 @@ def expand_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             add_candidate(validated, origin)
 
-    if not candidates:
+    if require_candidates and not candidates:
         raise TuningError("configuration produced no non-baseline candidates")
 
     expanded_candidates = []
@@ -225,7 +226,7 @@ def expand_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def load_and_expand_config(path: Path) -> Tuple[Dict[str, Any], str]:
+def load_and_expand_config(path: Path, require_candidates: bool = True) -> Tuple[Dict[str, Any], str]:
     try:
         raw_bytes = path.read_bytes()
     except OSError as exc:
@@ -236,7 +237,7 @@ def load_and_expand_config(path: Path) -> Tuple[Dict[str, Any], str]:
         raise TuningError(f"invalid JSON config {path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise TuningError("config root must be an object")
-    return expand_config(raw), hashlib.sha256(raw_bytes).hexdigest()
+    return expand_config(raw, require_candidates), hashlib.sha256(raw_bytes).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -265,25 +266,38 @@ def file_identity(path: Path) -> Dict[str, Any]:
     }
 
 
-def build_manifest(
-    config_path: Path,
-    config_sha256: str,
+def build_anchor_manifest(
     expanded: Mapping[str, Any],
     probe: Path,
     inputs: Sequence[Path],
     weights: Optional[Path],
 ) -> Dict[str, Any]:
-    # Paths in the config are execution defaults, not immutable run artifacts.
-    # The manifest records only the resolved artifacts actually used.
-    manifest_expanded = {key: value for key, value in expanded.items() if key not in {"probe", "inputs", "weights"}}
     return {
-        "schema": SCHEMA,
-        "config": file_identity(config_path),
-        "config_sha256": config_sha256,
-        "expanded_config": manifest_expanded,
+        "schema": ANCHOR_SCHEMA,
         "probe": file_identity(probe),
         "weights": file_identity(weights) if weights is not None else None,
         "inputs": [file_identity(path) for path in inputs],
+        "reference_nodes": expanded["reference_nodes"],
+        "candidate_nodes": expanded["candidate_nodes"],
+        "baseline_margins": expanded["baseline_margins"],
+    }
+
+
+def build_candidates_manifest(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, Any]:
+    anchor_manifest = run_dir / "anchor_manifest.json"
+    reference = run_dir / "probes" / "reference.jsonl"
+    baseline = run_dir / "probes" / "baseline.jsonl"
+    return {
+        "schema": CANDIDATES_SCHEMA,
+        "anchor_manifest": file_identity(anchor_manifest),
+        "reference_root_scores": file_identity(reference),
+        "baseline": file_identity(baseline),
+        "candidate_config": {
+            "score_scale": expanded["score_scale"],
+            "shortlist_size": expanded["shortlist_size"],
+            "candidates": expanded["candidates"],
+            "discarded": expanded["discarded"],
+        },
     }
 
 
@@ -328,24 +342,48 @@ def atomic_write_json(path: Path, value: Any) -> None:
     atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
-def prepare_run_directory(run_dir: Path, manifest: Mapping[str, Any], resume: bool) -> None:
-    manifest_path = run_dir / "manifest.json"
-    if resume:
-        if not manifest_path.is_file():
-            raise TuningError(f"cannot resume: missing {manifest_path}")
-        try:
-            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise TuningError(f"cannot resume: invalid manifest: {exc}") from exc
-        if existing != manifest:
-            raise TuningError("cannot resume: run manifest does not match current inputs or configuration")
-    else:
-        if run_dir.exists() and any(run_dir.iterdir()):
-            raise TuningError(f"run directory is not empty: {run_dir}")
-        run_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(manifest_path, manifest)
+def read_manifest(path: Path, description: str) -> Dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TuningError(f"invalid {description} {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise TuningError(f"invalid {description} {path}: root must be an object")
+    return value
+
+
+def prepare_run_directory(run_dir: Path) -> None:
+    legacy_manifest = run_dir / "manifest.json"
+    if legacy_manifest.exists():
+        raise TuningError(
+            f"{run_dir} uses the older single-manifest layout; create a new run directory for phased tuning"
+        )
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "probes").mkdir(exist_ok=True)
     (run_dir / "logs").mkdir(exist_ok=True)
+
+
+def ensure_anchor_manifest(run_dir: Path, expected: Mapping[str, Any]) -> None:
+    path = run_dir / "anchor_manifest.json"
+    if path.exists():
+        if read_manifest(path, "anchor manifest") != expected:
+            raise TuningError(
+                "anchor manifest does not match the current probe, inputs, weights, budgets, or baseline margins; "
+                "use a new run directory"
+            )
+        return
+    atomic_write_json(path, expected)
+
+
+def require_anchor_manifest(run_dir: Path, expected: Mapping[str, Any]) -> None:
+    path = run_dir / "anchor_manifest.json"
+    if not path.is_file():
+        raise TuningError(f"missing {path}; run --phase anchor first")
+    if read_manifest(path, "anchor manifest") != expected:
+        raise TuningError(
+            "anchor manifest does not match the current probe, inputs, weights, budgets, or baseline margins; "
+            "run --phase anchor in a new run directory"
+        )
 
 
 def margins_text(margins: Sequence[int]) -> str:
@@ -934,6 +972,72 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
     return results
 
 
+def run_anchor_phase(
+    run_dir: Path,
+    expanded: Mapping[str, Any],
+    probe: Path,
+    inputs: Sequence[Path],
+    weights: Optional[Path],
+) -> None:
+    anchor_jobs = [
+        {
+            "id": "reference",
+            "nodes": expanded["reference_nodes"],
+            "margins": expanded["baseline_margins"],
+            "all_root_scores": True,
+        },
+        {
+            "id": "baseline",
+            "nodes": expanded["candidate_nodes"],
+            "margins": expanded["baseline_margins"],
+        },
+    ]
+    # These are durable anchor artifacts. Valid existing JSONL is always reused;
+    # a missing or invalid one is regenerated without touching the other anchor.
+    run_jobs(
+        anchor_jobs,
+        probe,
+        inputs,
+        weights,
+        expanded["probe_report_every"],
+        run_dir,
+        True,
+        1,
+    )
+
+
+def run_candidates_phase(
+    run_dir: Path,
+    expanded: Mapping[str, Any],
+    probe: Path,
+    inputs: Sequence[Path],
+    weights: Optional[Path],
+    workers: int,
+) -> Dict[str, Any]:
+    candidate_jobs = [
+        {
+            "id": candidate["id"],
+            "nodes": expanded["candidate_nodes"],
+            "margins": candidate["margins"],
+        }
+        for candidate in expanded["candidates"]
+    ]
+    run_jobs(
+        candidate_jobs,
+        probe,
+        inputs,
+        weights,
+        expanded["probe_report_every"],
+        run_dir,
+        True,
+        workers,
+    )
+    # Candidate specifications are intentionally replaceable: the phase may be
+    # rerun with a different family while consuming the immutable anchor.
+    atomic_write_json(run_dir / "candidates_manifest.json", build_candidates_manifest(run_dir, expanded))
+    return aggregate_results(run_dir, expanded)
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Screen futility-margin tuples with fixed-node searches and a deeper baseline reference."
@@ -943,9 +1047,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--input", action="append", default=[], help="FEN/CSV input; may be repeated")
     parser.add_argument("--weights", help="Optional runtime NNUE weights passed to every probe")
     parser.add_argument("--no-weights", action="store_true", help="Use built-in weights even if config sets weights")
-    parser.add_argument("--run-dir", help="Directory for manifest, probe outputs, and reports")
+    parser.add_argument("--run-dir", help="Directory for anchor memory, candidate probes, and reports")
+    parser.add_argument(
+        "--phase",
+        choices=("all", "anchor", "candidates"),
+        default="all",
+        help="Run both phases, durable reference/baseline anchor only, or candidates only (default: all)",
+    )
     parser.add_argument("--jobs", type=int, default=1, help="Concurrent candidate probe processes (default: 1)")
-    parser.add_argument("--resume", action="store_true", help="Resume an exactly matching existing run")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Accepted for compatibility; valid phase artifacts are reused automatically",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print expanded candidates without running probes")
     args = parser.parse_args(argv)
     if args.jobs <= 0:
@@ -953,9 +1067,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     if args.no_weights and args.weights:
         parser.error("--no-weights cannot be combined with --weights")
     if not args.dry_run and not args.run_dir:
-            parser.error("--run-dir is required unless --dry-run is used")
-    if args.resume and args.dry_run:
-        parser.error("--resume cannot be combined with --dry-run")
+        parser.error("--run-dir is required unless --dry-run is used")
     return args
 
 
@@ -963,67 +1075,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     try:
         config_path = Path(args.config).resolve()
-        expanded, config_sha256 = load_and_expand_config(config_path)
+        expanded, _ = load_and_expand_config(config_path, require_candidates=args.phase != "anchor")
         if args.dry_run:
             print(json.dumps(expanded, indent=2, sort_keys=True))
             return 0
 
         probe, inputs, weights = resolve_effective_artifacts(config_path, expanded, args)
         run_dir = Path(args.run_dir).resolve()
-        manifest = build_manifest(
-            config_path,
-            config_sha256,
-            expanded,
-            probe,
-            inputs,
-            weights,
-        )
-        prepare_run_directory(run_dir, manifest, args.resume)
-
-        reference_job = {
-            "id": "reference",
-            "nodes": expanded["reference_nodes"],
-            "margins": expanded["baseline_margins"],
-            "all_root_scores": True,
-        }
-        run_jobs(
-            [reference_job],
-            probe,
-            inputs,
-            weights,
-            expanded["probe_report_every"],
-            run_dir,
-            args.resume,
-            1,
-        )
-
-        candidate_jobs = [
-            {
-                "id": "baseline",
-                "nodes": expanded["candidate_nodes"],
-                "margins": expanded["baseline_margins"],
-            }
-        ]
-        candidate_jobs.extend(
-            {
-                "id": candidate["id"],
-                "nodes": expanded["candidate_nodes"],
-                "margins": candidate["margins"],
-            }
-            for candidate in expanded["candidates"]
-        )
-        run_jobs(
-            candidate_jobs,
-            probe,
-            inputs,
-            weights,
-            expanded["probe_report_every"],
-            run_dir,
-            args.resume,
-            args.jobs,
-        )
-        results = aggregate_results(run_dir, expanded)
-        print(build_report(results))
+        prepare_run_directory(run_dir)
+        anchor_manifest = build_anchor_manifest(expanded, probe, inputs, weights)
+        if args.phase in ("all", "anchor"):
+            ensure_anchor_manifest(run_dir, anchor_manifest)
+            run_anchor_phase(run_dir, expanded, probe, inputs, weights)
+        if args.phase in ("all", "candidates"):
+            require_anchor_manifest(run_dir, anchor_manifest)
+            results = run_candidates_phase(run_dir, expanded, probe, inputs, weights, args.jobs)
+            print(build_report(results))
         return 0
     except TuningError as exc:
         print(f"fatal: {exc}", file=sys.stderr)
