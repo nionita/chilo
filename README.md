@@ -25,6 +25,7 @@ Small chess engine project with:
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
 - `scripts/benchmark_fixed_depth.py`: fixed-depth UCI benchmark helper for comparing two binaries
+- `scripts/build_futility_variants.py`: builds named AVX2 UCI binaries for fixed futility-margin tuples
 - `scripts/tune_futility.py`: resumable fixed-node futility-margin proxy tuner
 - `scripts/dedup_training_csv.py`: exact-row CSV dedup for large collector outputs using external `sort`
 - `scripts/fastchess_sprt_config.example.json`: example config for SPRT runs
@@ -428,6 +429,23 @@ an interrupted run with the same command plus `--resume`; any changed config,
 binary, net, or input is rejected. The proxy ranks reference move agreement,
 non-mate score MAE, and completed depth. It only screens candidates: use SPRT
 to establish playing strength.
+
+For SPRT candidates, use `scripts/build_futility_variants.py` with a
+`chilo.futility_variants.v1` manifest. It compiles each tuple in an isolated
+build directory and copies a short-code binary such as
+`chilo-0.7.5-f01-avx2` to the configured engine directory. The manifest is
+the authoritative mapping from code to margins; NNUE weights remain a
+fastchess `--weights` argument.
+
+```bash
+python3 scripts/build_futility_variants.py \
+  --manifest ~/Tune/futility/futility-sprt-g4t1-64x8-d3-d5-first.json
+```
+
+The builder refuses to replace existing binaries unless `--overwrite` is
+supplied and writes a build receipt beside the manifest with source revision,
+build commands, and output hashes. Use `--dry-run` to validate a manifest and
+inspect its planned commands without compiling.
 
 ### Fastchess SPRT
 

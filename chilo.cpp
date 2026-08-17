@@ -12,7 +12,15 @@
 namespace {
 
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const char* CHILO_VERSION = "0.7.5"
+
+#ifndef CHILO_VERSION_OVERRIDE
+#define CHILO_VERSION_OVERRIDE 0.7.5
+#endif
+
+#define CHILO_STRINGIFY_INNER(value) #value
+#define CHILO_STRINGIFY(value) CHILO_STRINGIFY_INNER(value)
+
+const char* CHILO_VERSION = CHILO_STRINGIFY(CHILO_VERSION_OVERRIDE)
 #if defined(CHILO_AVX2)
     " avx2"
 #endif

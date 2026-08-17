@@ -55,6 +55,7 @@
 │   └── win64-avx2/
 ├── scripts/
 │   ├── benchmark_fixed_depth.py
+│   ├── build_futility_variants.py
 │   ├── dedup_training_csv.py
 │   ├── fastchess_sprt_config.example.json
 │   ├── nnue_contract.json
@@ -62,6 +63,7 @@
 │   ├── prepare_nnue_dataset.py
 │   ├── run_fastchess_sprt.py
 │   ├── run_nnue_workflow.py
+│   ├── test_build_futility_variants.py
 │   ├── test_nnue_pipeline.py
 │   ├── test_tune_futility.py
 │   ├── tune_futility.py
@@ -83,6 +85,7 @@
 - `eval_fen.cpp` exists mainly for Python-to-C++ NNUE parity checks.
 - Fixed-node search preserves the last fully completed iterative-deepening result. `SearchResult.nodes` and diagnostics include interrupted-iteration work; `completedNodes`, depth, score, best move, and PV do not. `futility_probe.cpp` uses this contract with isolated TT state to emit per-position JSON Lines for external margin-tuple analysis.
 - `scripts/tune_futility.py` expands explicit, linear, and power margin candidates, fingerprints long-running probe sweeps for explicit resume, and produces a Pareto shortlist. Its move-agreement/loss/depth metrics are screening proxies; only SPRT establishes strength.
+- `scripts/build_futility_variants.py` materializes selected futility tuples as isolated, short-code AVX2 UCI binaries from a `chilo.futility_variants.v1` manifest. It uses compile-time defaults only for those binaries, keeps the normal source defaults unchanged, and does not copy NNUE nets; pass shared test weights through the fastchess wrapper.
 - `selfplay_collect.cpp` is the training-data collector. It records evaluated leaf positions, skips noisy leaves that are terminal or in check, prints progress/ETA during long runs, and only requests exact all-root scores during the opening stochastic sampling window; later plies use normal root PVS plus best-move leaf retention.
 - `selfplay_collect.cpp` refuses to overwrite existing output/debug-output files. If `--seed` is not provided, it derives a seed from time and process id and prints it so runs can be reproduced later.
 - The dataset pipeline is sharded now. Do not assume one CSV in and one `samples.npy` out.

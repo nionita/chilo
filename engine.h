@@ -173,9 +173,20 @@ struct RootMoveResult {
     std::string evalFen;
 };
 
+#ifndef CHILO_FUTILITY_MAX_DEPTH
+#define CHILO_FUTILITY_MAX_DEPTH 3
+#endif
+
+#ifndef CHILO_FUTILITY_MARGINS
+#define CHILO_FUTILITY_MARGINS 0, 120, 320, 550, 0, 0, 0, 0
+#endif
+
+static_assert(CHILO_FUTILITY_MAX_DEPTH >= 0 && CHILO_FUTILITY_MAX_DEPTH <= MAX_FUTILITY_DEPTH,
+              "CHILO_FUTILITY_MAX_DEPTH must be between 0 and MAX_FUTILITY_DEPTH");
+
 struct SearchParameters {
-    int futilityMaxDepth = 3;
-    std::array<int, MAX_FUTILITY_DEPTH + 1> futilityMargins = {0, 120, 320, 550, 0, 0, 0, 0};
+    int futilityMaxDepth = CHILO_FUTILITY_MAX_DEPTH;
+    std::array<int, MAX_FUTILITY_DEPTH + 1> futilityMargins = {CHILO_FUTILITY_MARGINS};
 };
 
 struct SearchLimits {
