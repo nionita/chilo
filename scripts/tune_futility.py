@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-SCHEMA = "chilo.futility_tuning.v1"
-RESULTS_SCHEMA = "chilo.futility_tuning_results.v1"
+SCHEMA = "chilo.futility_tuning.v2"
+RESULTS_SCHEMA = "chilo.futility_tuning_results.v2"
 MAX_FUTILITY_DEPTH = 7
 MATE_SCORE_FLOOR = 28936  # SEARCH_MATE_SCORE - MAX_SEARCH_DEPTH in engine.h
 
@@ -40,6 +40,18 @@ def require_number_list(value: Any, name: str) -> List[float]:
             raise TuningError(f"{name}[{index}] must be a finite number")
         result.append(float(item))
     return result
+
+
+def require_path(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise TuningError(f"{name} must be a non-empty path string")
+    return value
+
+
+def require_path_list(value: Any, name: str) -> List[str]:
+    if not isinstance(value, list) or not value:
+        raise TuningError(f"{name} must be a non-empty list of path strings")
+    return [require_path(item, f"{name}[{index}]") for index, item in enumerate(value)]
 
 
 def validate_margins(value: Any, name: str) -> Tuple[int, ...]:
@@ -71,6 +83,10 @@ def expand_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "baseline_margins",
         "shortlist_size",
         "probe_report_every",
+        "score_scale",
+        "probe",
+        "inputs",
+        "weights",
         "explicit_candidates",
         "families",
     }
@@ -85,6 +101,15 @@ def expand_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     baseline = validate_margins(raw.get("baseline_margins"), "baseline_margins")
     shortlist_size = require_int(raw.get("shortlist_size", 15), "shortlist_size", 1)
     report_every = require_int(raw.get("probe_report_every", 100), "probe_report_every")
+    score_scale_raw = raw.get("score_scale", 600)
+    if isinstance(score_scale_raw, bool) or not isinstance(score_scale_raw, (int, float)) or score_scale_raw <= 0:
+        raise TuningError("score_scale must be a finite number > 0")
+    score_scale = float(score_scale_raw)
+    if not math.isfinite(score_scale):
+        raise TuningError("score_scale must be a finite number > 0")
+    probe_default = require_path(raw["probe"], "probe") if "probe" in raw else None
+    input_defaults = require_path_list(raw["inputs"], "inputs") if "inputs" in raw else []
+    weights_default = require_path(raw["weights"], "weights") if "weights" in raw else None
 
     candidates: Dict[Tuple[int, ...], Dict[str, Any]] = {}
     discarded: List[Dict[str, Any]] = []
@@ -191,6 +216,10 @@ def expand_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
         "baseline_margins": list(baseline),
         "shortlist_size": shortlist_size,
         "probe_report_every": report_every,
+        "score_scale": score_scale,
+        "probe": probe_default,
+        "inputs": input_defaults,
+        "weights": weights_default,
         "candidates": expanded_candidates,
         "discarded": discarded,
     }
@@ -244,15 +273,49 @@ def build_manifest(
     inputs: Sequence[Path],
     weights: Optional[Path],
 ) -> Dict[str, Any]:
+    # Paths in the config are execution defaults, not immutable run artifacts.
+    # The manifest records only the resolved artifacts actually used.
+    manifest_expanded = {key: value for key, value in expanded.items() if key not in {"probe", "inputs", "weights"}}
     return {
         "schema": SCHEMA,
         "config": file_identity(config_path),
         "config_sha256": config_sha256,
-        "expanded_config": expanded,
+        "expanded_config": manifest_expanded,
         "probe": file_identity(probe),
         "weights": file_identity(weights) if weights is not None else None,
         "inputs": [file_identity(path) for path in inputs],
     }
+
+
+def resolve_config_path(config_path: Path, path_text: str) -> Path:
+    path = Path(path_text)
+    return (config_path.parent / path).resolve() if not path.is_absolute() else path.resolve()
+
+
+def resolve_effective_artifacts(
+    config_path: Path, expanded: Mapping[str, Any], args: argparse.Namespace
+) -> Tuple[Path, List[Path], Optional[Path]]:
+    probe_text = args.probe if args.probe else expanded.get("probe")
+    input_texts = args.input if args.input else expanded.get("inputs", [])
+    if not probe_text:
+        raise TuningError("--probe is required unless config.probe is set")
+    if not input_texts:
+        raise TuningError("at least one --input is required unless config.inputs is set")
+    probe = Path(probe_text).resolve() if args.probe else resolve_config_path(config_path, probe_text)
+    inputs = (
+        [Path(path).resolve() for path in input_texts]
+        if args.input
+        else [resolve_config_path(config_path, path) for path in input_texts]
+    )
+    if args.no_weights:
+        weights = None
+    elif args.weights:
+        weights = Path(args.weights).resolve()
+    elif expanded.get("weights"):
+        weights = resolve_config_path(config_path, expanded["weights"])
+    else:
+        weights = None
+    return probe, inputs, weights
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -297,6 +360,7 @@ def build_probe_command(
     margins: Sequence[int],
     output_path: Path,
     report_every: int,
+    all_root_scores: bool = False,
 ) -> List[str]:
     command = [
         str(probe.resolve()),
@@ -312,6 +376,8 @@ def build_probe_command(
     ]
     if weights is not None:
         command.extend(["--weights", str(weights.resolve())])
+    if all_root_scores:
+        command.append("--all-root-scores")
     command.extend(str(path.resolve()) for path in inputs)
     return command
 
@@ -334,7 +400,34 @@ def record_key(record: Mapping[str, Any]) -> Tuple[str, int, str]:
     return source, line, fen
 
 
-def validate_position_record(record: Mapping[str, Any], path: Path, line_number: int) -> None:
+def validate_root_scores(record: Mapping[str, Any], path: Path, line_number: int) -> None:
+    scores = record.get("root_scores")
+    if not isinstance(scores, dict) or not scores:
+        raise TuningError(f"{path}:{line_number}: reference root_scores must be a non-empty object")
+    for move, score in scores.items():
+        valid_move = (
+            isinstance(move, str)
+            and len(move) in (4, 5)
+            and move[0] in "abcdefgh"
+            and move[1] in "12345678"
+            and move[2] in "abcdefgh"
+            and move[3] in "12345678"
+            and (len(move) == 4 or move[4] in "qrbn")
+        )
+        if not valid_move or not isinstance(score, int) or isinstance(score, bool):
+            raise TuningError(f"{path}:{line_number}: root_scores must map UCI move strings to integer scores")
+    bestmove = record["bestmove"]
+    if bestmove not in scores:
+        raise TuningError(f"{path}:{line_number}: root_scores does not contain bestmove")
+    if scores[bestmove] != record["score"]:
+        raise TuningError(f"{path}:{line_number}: root_scores bestmove score does not match score")
+    if record["score"] != max(scores.values()):
+        raise TuningError(f"{path}:{line_number}: root_scores bestmove is not a highest-scoring root move")
+
+
+def validate_position_record(
+    record: Mapping[str, Any], path: Path, line_number: int, all_root_scores: bool
+) -> None:
     integer_fields = ("node_limit", "nodes", "completed_nodes", "completed_depth", "elapsed_ms", "score")
     boolean_fields = ("iteration_interrupted", "terminal", "has_move")
     for field in integer_fields:
@@ -349,6 +442,13 @@ def validate_position_record(record: Mapping[str, Any], path: Path, line_number:
             raise TuningError(f"{path}:{line_number}: position field {field} must be a boolean")
     if not isinstance(record.get("bestmove"), str):
         raise TuningError(f"{path}:{line_number}: position field bestmove must be a string")
+    if record.get("all_root_scores") is not all_root_scores:
+        raise TuningError(f"{path}:{line_number}: position all_root_scores does not match expected mode")
+    if all_root_scores:
+        if not record["terminal"] and record["has_move"] and record["completed_depth"] > 0:
+            validate_root_scores(record, path, line_number)
+    elif "root_scores" in record:
+        raise TuningError(f"{path}:{line_number}: candidate output must not contain root_scores")
     for field in ("futility_prunes", "futility_prunes_in_check"):
         counts = record.get(field)
         if (
@@ -361,7 +461,9 @@ def validate_position_record(record: Mapping[str, Any], path: Path, line_number:
             )
 
 
-def parse_probe_output(path: Path, nodes: int, margins: Sequence[int]) -> Dict[str, Any]:
+def parse_probe_output(
+    path: Path, nodes: int, margins: Sequence[int], all_root_scores: bool = False
+) -> Dict[str, Any]:
     positions: Dict[Tuple[str, int, str], Dict[str, Any]] = {}
     summary = None
     try:
@@ -379,7 +481,7 @@ def parse_probe_output(path: Path, nodes: int, margins: Sequence[int]) -> Dict[s
                 if record_type == "position":
                     if summary is not None:
                         raise TuningError(f"{path}:{line_number}: position follows summary")
-                    validate_position_record(record, path, line_number)
+                    validate_position_record(record, path, line_number, all_root_scores)
                     if record.get("node_limit") != nodes or record.get("futility_margins") != list(margins):
                         raise TuningError(
                             f"{path}:{line_number}: position does not match expected nodes or margins"
@@ -403,16 +505,20 @@ def parse_probe_output(path: Path, nodes: int, margins: Sequence[int]) -> Dict[s
         raise TuningError(f"{path}: summary positions must be an integer")
     if summary.get("node_limit") != nodes or summary.get("futility_margins") != list(margins):
         raise TuningError(f"{path}: summary does not match expected nodes or margins")
+    if summary.get("all_root_scores") is not all_root_scores:
+        raise TuningError(f"{path}: summary all_root_scores does not match expected mode")
     if summary.get("positions") != len(positions):
         raise TuningError(f"{path}: summary position count does not match records")
     return {"positions": positions, "summary": summary}
 
 
-def probe_output_complete(path: Path, nodes: int, margins: Sequence[int]) -> bool:
+def probe_output_complete(
+    path: Path, nodes: int, margins: Sequence[int], all_root_scores: bool = False
+) -> bool:
     if not path.is_file():
         return False
     try:
-        parse_probe_output(path, nodes, margins)
+        parse_probe_output(path, nodes, margins, all_root_scores)
     except TuningError:
         return False
     return True
@@ -429,7 +535,8 @@ def run_probe_job(
 ) -> Dict[str, Any]:
     output_path = run_dir / "probes" / f"{job['id']}.jsonl"
     log_path = run_dir / "logs" / f"{job['id']}.log"
-    if resume and probe_output_complete(output_path, job["nodes"], job["margins"]):
+    all_root_scores = bool(job.get("all_root_scores", False))
+    if resume and probe_output_complete(output_path, job["nodes"], job["margins"], all_root_scores):
         return {"id": job["id"], "status": "reused", "output": str(output_path)}
 
     command = build_probe_command(
@@ -440,6 +547,7 @@ def run_probe_job(
         job["margins"],
         output_path,
         report_every,
+        all_root_scores,
     )
     with log_path.open("w", encoding="utf-8") as log:
         log.write("command=" + json.dumps(command) + "\n")
@@ -448,7 +556,7 @@ def run_probe_job(
         log.write(f"exit_code={completed.returncode}\n")
     if completed.returncode != 0:
         raise TuningError(f"probe job {job['id']} failed; see {log_path}")
-    parse_probe_output(output_path, job["nodes"], job["margins"])
+    parse_probe_output(output_path, job["nodes"], job["margins"], all_root_scores)
     return {"id": job["id"], "status": "completed", "output": str(output_path)}
 
 
@@ -519,6 +627,13 @@ def mate_class(score: int) -> int:
     return 0
 
 
+def normalized_score(score: int, score_scale: float) -> float:
+    mate = mate_class(score)
+    if mate:
+        return float(mate)
+    return math.tanh(score / score_scale)
+
+
 def ensure_position_sets(reference: Mapping[str, Any], other: Mapping[str, Any], name: str) -> None:
     reference_keys = set(reference["positions"])
     other_keys = set(other["positions"])
@@ -533,6 +648,7 @@ def compute_metrics(
     baseline: Mapping[str, Any],
     candidate: Mapping[str, Any],
     candidate_nodes: int,
+    score_scale: float = 600.0,
 ) -> Dict[str, Any]:
     ensure_position_sets(reference, baseline, "baseline")
     ensure_position_sets(reference, candidate, "candidate")
@@ -541,12 +657,22 @@ def compute_metrics(
     baseline_agreement_values: List[float] = []
     score_errors: List[float] = []
     mate_agreements: List[float] = []
+    regrets: List[float] = []
     depths: List[float] = []
     depth_deltas: List[float] = []
     cap_hits = 0
     elapsed_ms = 0
     futility_prunes = [0] * MAX_FUTILITY_DEPTH
     futility_prunes_in_check = [0] * MAX_FUTILITY_DEPTH
+    reference_winning_mates = 0
+    missed_reference_winning_mates = 0
+    mate_claim_categories = {
+        "non_mate": 0,
+        "winning_confirmed": 0,
+        "winning_unconfirmed": 0,
+        "losing_confirmed": 0,
+        "losing_unconfirmed": 0,
+    }
 
     for key, reference_record in reference["positions"].items():
         baseline_record = baseline["positions"][key]
@@ -570,11 +696,34 @@ def compute_metrics(
         agreement_values.append(float(candidate_move == reference_move))
         baseline_agreement_values.append(float(candidate_move == baseline_move))
 
+        root_scores = reference_record.get("root_scores")
+        if not isinstance(root_scores, dict) or candidate_move not in root_scores:
+            raise TuningError(f"candidate move {candidate_move!r} is absent from reference root_scores")
+        transformed_scores = [normalized_score(score, score_scale) for score in root_scores.values()]
+        selected_reference_score = int(root_scores[candidate_move])
+        regret = max(transformed_scores) - normalized_score(selected_reference_score, score_scale)
+        regrets.append(regret)
+        if any(mate_class(int(score)) == 1 for score in root_scores.values()):
+            reference_winning_mates += 1
+            if mate_class(selected_reference_score) != 1:
+                missed_reference_winning_mates += 1
+
         candidate_score = int(candidate_record["score"])
         reference_score = int(reference_record["score"])
         candidate_mate = mate_class(candidate_score)
         reference_mate = mate_class(reference_score)
         mate_agreements.append(float(candidate_mate == reference_mate))
+        selected_reference_mate = mate_class(selected_reference_score)
+        if candidate_mate == 0:
+            mate_claim_categories["non_mate"] += 1
+        elif candidate_mate == 1:
+            mate_claim_categories[
+                "winning_confirmed" if selected_reference_mate == 1 else "winning_unconfirmed"
+            ] += 1
+        else:
+            mate_claim_categories[
+                "losing_confirmed" if selected_reference_mate == -1 else "losing_unconfirmed"
+            ] += 1
         if candidate_mate == 0 and reference_mate == 0:
             score_errors.append(float(abs(candidate_score - reference_score)))
 
@@ -602,6 +751,15 @@ def compute_metrics(
         "score_median_error": statistics.median(score_errors) if score_errors else None,
         "score_p90_error": percentile(score_errors, 0.90),
         "mate_class_agreement_rate": statistics.mean(mate_agreements),
+        "mean_normalized_regret": statistics.mean(regrets),
+        "normalized_regret_se": standard_error(regrets),
+        "median_normalized_regret": statistics.median(regrets),
+        "p90_normalized_regret": percentile(regrets, 0.90),
+        "missed_reference_winning_mate_rate": (
+            missed_reference_winning_mates / reference_winning_mates if reference_winning_mates else None
+        ),
+        "reference_winning_mate_positions": reference_winning_mates,
+        "candidate_mate_claim_categories": mate_claim_categories,
         "mean_completed_depth": statistics.mean(depths),
         "median_completed_depth": statistics.median(depths),
         "mean_completed_depth_se": standard_error(depths),
@@ -613,108 +771,20 @@ def compute_metrics(
     }
 
 
-def dominates(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
-    left_values = (
-        left["move_agreement_rate"],
-        -left["score_mae"],
-        left["mean_completed_depth"],
-    )
-    right_values = (
-        right["move_agreement_rate"],
-        -right["score_mae"],
-        right["mean_completed_depth"],
-    )
-    return all(a >= b for a, b in zip(left_values, right_values)) and any(
-        a > b for a, b in zip(left_values, right_values)
-    )
-
-
-def nondominated_fronts(candidates: Sequence[Mapping[str, Any]]) -> List[List[int]]:
-    dominates_indices = [set() for _ in candidates]
-    dominated_count = [0 for _ in candidates]
-    first_front = []
-    for left_index, left in enumerate(candidates):
-        for right_index, right in enumerate(candidates):
-            if left_index == right_index:
-                continue
-            if dominates(left["metrics"], right["metrics"]):
-                dominates_indices[left_index].add(right_index)
-            elif dominates(right["metrics"], left["metrics"]):
-                dominated_count[left_index] += 1
-        if dominated_count[left_index] == 0:
-            first_front.append(left_index)
-
-    fronts = [first_front]
-    while fronts[-1]:
-        next_front = []
-        for left_index in fronts[-1]:
-            for right_index in dominates_indices[left_index]:
-                dominated_count[right_index] -= 1
-                if dominated_count[right_index] == 0:
-                    next_front.append(right_index)
-        if next_front:
-            fronts.append(sorted(next_front))
-        else:
-            break
-    return fronts
-
-
-def crowding_distances(front: Sequence[int], candidates: Sequence[Mapping[str, Any]]) -> Dict[int, float]:
-    distances = {index: 0.0 for index in front}
-    if len(front) <= 2:
-        return {index: math.inf for index in front}
-    objectives = (
-        lambda candidate: candidate["metrics"]["move_agreement_rate"],
-        lambda candidate: -candidate["metrics"]["score_mae"],
-        lambda candidate: candidate["metrics"]["mean_completed_depth"],
-    )
-    for objective in objectives:
-        ordered = sorted(front, key=lambda index: (objective(candidates[index]), candidates[index]["margins"]))
-        low = objective(candidates[ordered[0]])
-        high = objective(candidates[ordered[-1]])
-        distances[ordered[0]] = math.inf
-        distances[ordered[-1]] = math.inf
-        if high == low:
-            continue
-        for position in range(1, len(ordered) - 1):
-            index = ordered[position]
-            if math.isinf(distances[index]):
-                continue
-            previous_value = objective(candidates[ordered[position - 1]])
-            next_value = objective(candidates[ordered[position + 1]])
-            distances[index] += (next_value - previous_value) / (high - low)
-    return distances
-
-
 def rank_and_select(candidates: List[Dict[str, Any]], shortlist_size: int) -> List[Dict[str, Any]]:
-    if any(candidate["metrics"]["score_mae"] is None for candidate in candidates):
-        raise TuningError("cannot rank candidates without non-mate score comparisons")
-    selected_ids = set()
-    remaining = min(shortlist_size, len(candidates))
-    for rank, front in enumerate(nondominated_fronts(candidates), start=1):
-        distances = crowding_distances(front, candidates)
-        for index in front:
-            candidates[index]["pareto_rank"] = rank
-            candidates[index]["crowding_boundary"] = math.isinf(distances[index])
-            candidates[index]["crowding_distance"] = (
-                None if math.isinf(distances[index]) else distances[index]
-            )
-        ordered = sorted(
-            front,
-            key=lambda index: (
-                not math.isinf(distances[index]),
-                -distances[index] if not math.isinf(distances[index]) else 0.0,
-                tuple(candidates[index]["margins"]),
-            ),
-        )
-        if remaining > 0:
-            for index in ordered[:remaining]:
-                selected_ids.add(candidates[index]["id"])
-            remaining -= min(remaining, len(ordered))
-
-    for candidate in candidates:
-        candidate["selected"] = candidate["id"] in selected_ids
-    return [candidate for candidate in candidates if candidate["selected"]]
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            candidate["metrics"]["mean_normalized_regret"],
+            candidate["metrics"]["p90_normalized_regret"],
+            candidate["metrics"]["median_normalized_regret"],
+            tuple(candidate["margins"]),
+        ),
+    )
+    for rank, candidate in enumerate(ordered, start=1):
+        candidate["regret_rank"] = rank
+        candidate["selected"] = rank <= shortlist_size
+    return [candidate for candidate in ordered if candidate["selected"]]
 
 
 def flatten_result(candidate: Mapping[str, Any]) -> Dict[str, Any]:
@@ -724,9 +794,14 @@ def flatten_result(candidate: Mapping[str, Any]) -> Dict[str, Any]:
         "margins": margins_text(candidate["margins"]),
         "origins": ";".join(candidate["origins"]),
         "selected": candidate["selected"],
-        "pareto_rank": candidate["pareto_rank"],
-        "crowding_boundary": candidate["crowding_boundary"],
-        "crowding_distance": candidate["crowding_distance"],
+        "regret_rank": candidate["regret_rank"],
+        "mean_normalized_regret": metrics["mean_normalized_regret"],
+        "normalized_regret_se": metrics["normalized_regret_se"],
+        "median_normalized_regret": metrics["median_normalized_regret"],
+        "p90_normalized_regret": metrics["p90_normalized_regret"],
+        "missed_reference_winning_mate_rate": metrics["missed_reference_winning_mate_rate"],
+        "reference_winning_mate_positions": metrics["reference_winning_mate_positions"],
+        "candidate_mate_claim_categories": json.dumps(metrics["candidate_mate_claim_categories"], sort_keys=True),
         "move_agreement_rate": metrics["move_agreement_rate"],
         "move_agreement_se": metrics["move_agreement_se"],
         "score_mae": metrics["score_mae"],
@@ -762,6 +837,10 @@ def format_percent(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value * 100.0:.3f}%"
 
 
+def format_number(value: Optional[float], precision: int = 3) -> str:
+    return "n/a" if value is None else f"{value:.{precision}f}"
+
+
 def build_report(results: Mapping[str, Any]) -> str:
     baseline = results["baseline"]["metrics"]
     lines = [
@@ -769,6 +848,7 @@ def build_report(results: Mapping[str, Any]) -> str:
         "",
         f"Candidate budget: `{results['candidate_nodes']}` nodes per position  ",
         f"Reference budget: `{results['reference_nodes']}` nodes per position  ",
+        f"Score scale: `{results['score_scale']:g}`  ",
         f"Baseline margins: `{margins_text(results['baseline']['margins'])}`  ",
         f"Positions: `{baseline['position_count']}` total, `{baseline['evaluated_positions']}` evaluated",
         "",
@@ -776,21 +856,22 @@ def build_report(results: Mapping[str, Any]) -> str:
         "",
         "## Baseline Anchor",
         "",
+        f"- Mean normalized score regret: `{baseline['mean_normalized_regret']:.6f}`",
         f"- Reference move agreement: `{format_percent(baseline['move_agreement_rate'])}`",
-        f"- Non-mate score MAE: `{baseline['score_mae']:.3f}` cp",
+        f"- Non-mate score MAE: `{format_number(baseline['score_mae'])}` cp",
         f"- Mean completed depth: `{baseline['mean_completed_depth']:.3f}`",
         "",
         "## Shortlist",
         "",
-        "| Margins | Pareto rank | Move agreement | Score MAE | Mean depth | Depth delta |",
+        "| Margins | Regret rank | Mean regret | P90 regret | Median regret | Move agreement |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for candidate in results["shortlist"]:
         metrics = candidate["metrics"]
         lines.append(
-            f"| `{margins_text(candidate['margins'])}` | {candidate['pareto_rank']} | "
-            f"{format_percent(metrics['move_agreement_rate'])} | {metrics['score_mae']:.3f} | "
-            f"{metrics['mean_completed_depth']:.3f} | {metrics['mean_depth_delta_vs_baseline']:+.3f} |"
+            f"| `{margins_text(candidate['margins'])}` | {candidate['regret_rank']} | "
+            f"{metrics['mean_normalized_regret']:.6f} | {metrics['p90_normalized_regret']:.6f} | "
+            f"{metrics['median_normalized_regret']:.6f} | {format_percent(metrics['move_agreement_rate'])} |"
         )
     lines.extend(
         [
@@ -808,6 +889,7 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
         run_dir / "probes" / "reference.jsonl",
         expanded["reference_nodes"],
         baseline_margins,
+        all_root_scores=True,
     )
     baseline = parse_probe_output(
         run_dir / "probes" / "baseline.jsonl",
@@ -819,6 +901,7 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
         baseline,
         baseline,
         expanded["candidate_nodes"],
+        expanded["score_scale"],
     )
 
     candidates = []
@@ -828,7 +911,9 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
             expanded["candidate_nodes"],
             candidate_spec["margins"],
         )
-        metrics = compute_metrics(reference, baseline, output, expanded["candidate_nodes"])
+        metrics = compute_metrics(
+            reference, baseline, output, expanded["candidate_nodes"], expanded["score_scale"]
+        )
         candidates.append({**candidate_spec, "metrics": metrics})
 
     shortlist = rank_and_select(candidates, expanded["shortlist_size"])
@@ -836,6 +921,7 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
         "schema": RESULTS_SCHEMA,
         "candidate_nodes": expanded["candidate_nodes"],
         "reference_nodes": expanded["reference_nodes"],
+        "score_scale": expanded["score_scale"],
         "baseline": {"margins": baseline_margins, "metrics": baseline_metrics},
         "candidates": candidates,
         "shortlist": shortlist,
@@ -856,6 +942,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--probe", help="Path to the futility_probe binary")
     parser.add_argument("--input", action="append", default=[], help="FEN/CSV input; may be repeated")
     parser.add_argument("--weights", help="Optional runtime NNUE weights passed to every probe")
+    parser.add_argument("--no-weights", action="store_true", help="Use built-in weights even if config sets weights")
     parser.add_argument("--run-dir", help="Directory for manifest, probe outputs, and reports")
     parser.add_argument("--jobs", type=int, default=1, help="Concurrent candidate probe processes (default: 1)")
     parser.add_argument("--resume", action="store_true", help="Resume an exactly matching existing run")
@@ -863,12 +950,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.jobs <= 0:
         parser.error("--jobs must be positive")
-    if not args.dry_run:
-        if not args.probe:
-            parser.error("--probe is required unless --dry-run is used")
-        if not args.input:
-            parser.error("at least one --input is required unless --dry-run is used")
-        if not args.run_dir:
+    if args.no_weights and args.weights:
+        parser.error("--no-weights cannot be combined with --weights")
+    if not args.dry_run and not args.run_dir:
             parser.error("--run-dir is required unless --dry-run is used")
     if args.resume and args.dry_run:
         parser.error("--resume cannot be combined with --dry-run")
@@ -884,9 +968,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(json.dumps(expanded, indent=2, sort_keys=True))
             return 0
 
-        probe = Path(args.probe).resolve()
-        inputs = [Path(path).resolve() for path in args.input]
-        weights = Path(args.weights).resolve() if args.weights else None
+        probe, inputs, weights = resolve_effective_artifacts(config_path, expanded, args)
         run_dir = Path(args.run_dir).resolve()
         manifest = build_manifest(
             config_path,
@@ -902,6 +984,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "id": "reference",
             "nodes": expanded["reference_nodes"],
             "margins": expanded["baseline_margins"],
+            "all_root_scores": True,
         }
         run_jobs(
             [reference_job],

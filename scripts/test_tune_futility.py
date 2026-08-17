@@ -26,13 +26,16 @@ def position_record(
     score: int = 0,
     depth: int = 6,
     terminal: bool = False,
+    all_root_scores: bool = False,
+    root_scores: object = None,
 ) -> dict[str, object]:
-    return {
+    record: dict[str, object] = {
         "type": "position",
         "source": source,
         "line": line,
         "fen": fen,
         "futility_margins": margins,
+        "all_root_scores": all_root_scores,
         "node_limit": nodes,
         "nodes": 0 if terminal else nodes,
         "completed_nodes": 0 if terminal else nodes - 10,
@@ -47,9 +50,14 @@ def position_record(
         "futility_prunes": [0, 0, 0, 0, 0, 0, 0] if terminal else [1, 2, 3, 0, 0, 0, 0],
         "futility_prunes_in_check": [0, 0, 0, 0, 0, 0, 0] if terminal else [0, 1, 0, 0, 0, 0, 0],
     }
+    if all_root_scores and not terminal and depth > 0:
+        record["root_scores"] = root_scores if root_scores is not None else {move: score}
+    return record
 
 
-def probe_result(records: list[dict[str, object]], margins: list[int], nodes: int) -> dict[str, object]:
+def probe_result(
+    records: list[dict[str, object]], margins: list[int], nodes: int, all_root_scores: bool = False
+) -> dict[str, object]:
     return {
         "positions": {tune_futility.record_key(record): record for record in records},
         "summary": {
@@ -57,16 +65,20 @@ def probe_result(records: list[dict[str, object]], margins: list[int], nodes: in
             "positions": len(records),
             "futility_margins": margins,
             "node_limit": nodes,
+            "all_root_scores": all_root_scores,
         },
     }
 
 
-def write_probe_output(path: Path, records: list[dict[str, object]], margins: list[int], nodes: int) -> None:
+def write_probe_output(
+    path: Path, records: list[dict[str, object]], margins: list[int], nodes: int, all_root_scores: bool = False
+) -> None:
     summary = {
         "type": "summary",
         "positions": len(records),
         "futility_margins": margins,
         "node_limit": nodes,
+        "all_root_scores": all_root_scores,
     }
     path.write_text(
         "".join(json.dumps(record) + "\n" for record in records) + json.dumps(summary) + "\n",
@@ -130,6 +142,38 @@ class ConfigExpansionTest(unittest.TestCase):
                 }
             )
 
+    def test_score_scale_and_execution_defaults_are_expanded(self) -> None:
+        expanded = tune_futility.expand_config(
+            {
+                "candidate_nodes": 100,
+                "reference_nodes": 200,
+                "baseline_margins": [120],
+                "explicit_candidates": [[100]],
+                "score_scale": 750,
+                "probe": "bin/futility_probe",
+                "inputs": ["positions.fen"],
+                "weights": "net.bin",
+            }
+        )
+        self.assertEqual(expanded["score_scale"], 750.0)
+        self.assertEqual(expanded["probe"], "bin/futility_probe")
+        self.assertEqual(expanded["inputs"], ["positions.fen"])
+
+    def test_cli_execution_artifacts_override_config_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            expanded = {"probe": "config-probe", "inputs": ["config.fen"], "weights": "config.bin"}
+            args = tune_futility.argparse.Namespace(
+                probe="cli-probe", input=["cli.fen"], weights="cli.bin", no_weights=False
+            )
+            probe, inputs, weights = tune_futility.resolve_effective_artifacts(config_path, expanded, args)
+            self.assertEqual(probe, Path("cli-probe").resolve())
+            self.assertEqual(inputs, [Path("cli.fen").resolve()])
+            self.assertEqual(weights, Path("cli.bin").resolve())
+            args.no_weights = True
+            _, _, weights = tune_futility.resolve_effective_artifacts(config_path, expanded, args)
+            self.assertIsNone(weights)
+
 
 class ProbeContractTest(unittest.TestCase):
     def test_builds_probe_command(self) -> None:
@@ -141,10 +185,12 @@ class ProbeContractTest(unittest.TestCase):
             [100, 300],
             Path("result.jsonl"),
             50,
+            all_root_scores=True,
         )
         self.assertEqual(command[1:5], ["--nodes", "1234", "--futility-margins", "100,300"])
         self.assertIn("--overwrite", command)
         self.assertIn("--weights", command)
+        self.assertIn("--all-root-scores", command)
         self.assertTrue(command[-1].endswith("two.csv"))
 
     def test_parses_complete_output_and_rejects_mismatched_position(self) -> None:
@@ -170,6 +216,25 @@ class ProbeContractTest(unittest.TestCase):
             )
             self.assertFalse(tune_futility.probe_output_complete(path, 100, [100]))
 
+    def test_reference_requires_root_scores_but_candidates_forbid_them(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "probe.jsonl"
+            reference = position_record(
+                "input", 1, "fen", [100], 100, score=10, all_root_scores=True, root_scores={"e2e4": 10}
+            )
+            write_probe_output(path, [reference], [100], 100, all_root_scores=True)
+            tune_futility.parse_probe_output(path, 100, [100], all_root_scores=True)
+            reference.pop("root_scores")
+            write_probe_output(path, [reference], [100], 100, all_root_scores=True)
+            with self.assertRaisesRegex(tune_futility.TuningError, "root_scores"):
+                tune_futility.parse_probe_output(path, 100, [100], all_root_scores=True)
+
+            candidate = position_record("input", 1, "fen", [100], 100)
+            candidate["root_scores"] = {"e2e4": 10}
+            write_probe_output(path, [candidate], [100], 100)
+            with self.assertRaisesRegex(tune_futility.TuningError, "must not contain root_scores"):
+                tune_futility.parse_probe_output(path, 100, [100])
+
     @mock.patch("tune_futility.subprocess.run")
     def test_failed_probe_job_is_reported(self, run_mock: mock.Mock) -> None:
         run_mock.return_value.returncode = 7
@@ -190,19 +255,31 @@ class ProbeContractTest(unittest.TestCase):
 
 
 class MetricsAndRankingTest(unittest.TestCase):
-    def test_computes_paired_proxy_metrics(self) -> None:
+    def test_normalized_score_maps_mates_and_scales_centipawns(self) -> None:
+        self.assertEqual(tune_futility.normalized_score(29000, 600), 1.0)
+        self.assertEqual(tune_futility.normalized_score(-29000, 600), -1.0)
+        self.assertEqual(tune_futility.normalized_score(0, 600), 0.0)
+        self.assertGreater(tune_futility.normalized_score(100, 600), 0.0)
+    def test_computes_score_regret_metrics_and_mate_diagnostics(self) -> None:
         reference_margins = [120, 320, 550]
         candidate_margins = [100, 300, 500]
         nodes = 1000
         fens = ["fen-one", "fen-two", "fen-terminal"]
         reference = probe_result(
             [
-                position_record("input", 1, fens[0], reference_margins, 4000, move="e2e4", score=20, depth=9),
-                position_record("input", 2, fens[1], reference_margins, 4000, move="d2d4", score=29000, depth=8),
+                position_record(
+                    "input", 1, fens[0], reference_margins, 4000, move="e2e4", score=20, depth=9,
+                    all_root_scores=True, root_scores={"e2e4": 20, "d2d4": 10},
+                ),
+                position_record(
+                    "input", 2, fens[1], reference_margins, 4000, move="d2d4", score=29000, depth=8,
+                    all_root_scores=True, root_scores={"d2d4": 29000, "g1f3": 0},
+                ),
                 position_record("input", 3, fens[2], reference_margins, 4000, terminal=True),
             ],
             reference_margins,
             4000,
+            all_root_scores=True,
         )
         baseline = probe_result(
             [
@@ -216,7 +293,7 @@ class MetricsAndRankingTest(unittest.TestCase):
         candidate = probe_result(
             [
                 position_record("input", 1, fens[0], candidate_margins, nodes, move="e2e4", score=30, depth=7),
-                position_record("input", 2, fens[1], candidate_margins, nodes, move="g1f3", score=0, depth=7),
+                position_record("input", 2, fens[1], candidate_margins, nodes, move="g1f3", score=29000, depth=7),
                 position_record("input", 3, fens[2], candidate_margins, nodes, terminal=True),
             ],
             candidate_margins,
@@ -227,35 +304,39 @@ class MetricsAndRankingTest(unittest.TestCase):
         self.assertEqual(metrics["evaluated_positions"], 2)
         self.assertEqual(metrics["move_agreement_rate"], 0.5)
         self.assertEqual(metrics["score_mae"], 10.0)
-        self.assertEqual(metrics["mate_class_agreement_rate"], 0.5)
+        self.assertEqual(metrics["missed_reference_winning_mate_rate"], 1.0)
+        self.assertEqual(metrics["candidate_mate_claim_categories"]["non_mate"], 1)
+        self.assertEqual(metrics["candidate_mate_claim_categories"]["winning_unconfirmed"], 1)
+        self.assertGreater(metrics["mean_normalized_regret"], 0.49)
         self.assertEqual(metrics["mean_completed_depth"], 7.0)
         self.assertEqual(metrics["mean_depth_delta_vs_baseline"], 1.0)
         self.assertEqual(metrics["cap_hit_rate"], 1.0)
         self.assertEqual(metrics["futility_prunes"][:3], [2, 4, 6])
 
-    def test_pareto_selection_ranks_all_candidates(self) -> None:
-        def candidate(identifier: str, margins: list[int], agreement: float, mae: float, depth: float) -> dict:
+    def test_scalar_regret_selection_uses_documented_tie_breakers(self) -> None:
+        def candidate(identifier: str, margins: list[int], mean: float, p90: float, median: float) -> dict:
             return {
                 "id": identifier,
                 "margins": margins,
                 "origins": [identifier],
                 "metrics": {
-                    "move_agreement_rate": agreement,
-                    "score_mae": mae,
-                    "mean_completed_depth": depth,
+                    "mean_normalized_regret": mean,
+                    "p90_normalized_regret": p90,
+                    "median_normalized_regret": median,
                 },
             }
 
         candidates = [
-            candidate("a", [100], 0.90, 10.0, 6.0),
-            candidate("b", [120], 0.85, 8.0, 7.0),
-            candidate("c", [140], 0.80, 20.0, 5.0),
-            candidate("d", [160], 0.95, 9.0, 5.0),
+            candidate("a", [100], 0.10, 0.20, 0.10),
+            candidate("b", [120], 0.10, 0.10, 0.20),
+            candidate("c", [140], 0.20, 0.01, 0.01),
+            candidate("d", [160], 0.10, 0.10, 0.20),
         ]
         shortlist = tune_futility.rank_and_select(candidates, 2)
         self.assertEqual(len(shortlist), 2)
-        self.assertGreater(candidates[2]["pareto_rank"], 1)
-        self.assertTrue(all("pareto_rank" in item for item in candidates))
+        self.assertEqual(shortlist[0]["id"], "b")
+        self.assertEqual(shortlist[1]["id"], "d")
+        self.assertTrue(all("regret_rank" in item for item in candidates))
         self.assertEqual(sum(bool(item["selected"]) for item in candidates), 2)
 
 

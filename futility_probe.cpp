@@ -20,6 +20,7 @@ struct Options {
     SearchParameters parameters{};
     bool hasNodeLimit = false;
     bool hasMargins = false;
+    bool allRootScores = false;
     bool overwrite = false;
     bool helpRequested = false;
 };
@@ -95,6 +96,7 @@ void printUsage() {
         << "Options:\n"
         << "  --nodes <N>                 Hard cumulative node limit per position (required)\n"
         << "  --futility-margins <list>   Nonnegative margins for depths 1 through list length (required)\n"
+        << "  --all-root-scores            Search every root move with a full window and emit its score\n"
         << "  -w, --weights <path>        Load external NNUE weights; failure is fatal\n"
         << "  -o, --output <path>         Write JSON Lines to this file instead of stdout\n"
         << "  --overwrite                 Permit replacing an existing output file\n"
@@ -136,6 +138,8 @@ bool parseArgs(int argc, char** argv, Options& options) {
             const char* value = requireValue("--weights");
             if (value == nullptr) return false;
             options.weightsPath = value;
+        } else if (arg == "--all-root-scores") {
+            options.allRootScores = true;
         } else if (arg == "--output" || arg == "-o") {
             const char* value = requireValue("--output");
             if (value == nullptr) return false;
@@ -340,6 +344,7 @@ void writePosition(std::ostream& output, const std::string& source, uint64_t lin
     output << ",\"weights\":";
     writeJsonString(output, options.weightsPath.empty() ? "built-in" : options.weightsPath);
     output << ",\"futility_max_depth\":" << options.parameters.futilityMaxDepth
+           << ",\"all_root_scores\":" << (options.allRootScores ? "true" : "false")
            << ",\"node_limit\":" << options.nodeLimit
            << ",\"nodes\":" << result.nodes
            << ",\"completed_nodes\":" << result.completedNodes
@@ -355,7 +360,17 @@ void writePosition(std::ostream& output, const std::string& source, uint64_t lin
         if (i > 0) output << ',';
         writeJsonString(output, moveToUCI(result.pv[i]));
     }
-    output << "],\"futility_prunes\":";
+    output << ']';
+    if (options.allRootScores && result.hasMove) {
+        output << ",\"root_scores\":{";
+        for (std::size_t i = 0; i < result.rootMoveResults.size(); i++) {
+            if (i > 0) output << ',';
+            writeJsonString(output, moveToUCI(result.rootMoveResults[i].move));
+            output << ':' << result.rootMoveResults[i].score;
+        }
+        output << '}';
+    }
+    output << ",\"futility_prunes\":";
     writeFutilityCounts(output, result.stats.futilityPrunes);
     output << ",\"futility_prunes_in_check\":";
     writeFutilityCounts(output, result.stats.futilityPrunesInCheck);
@@ -368,6 +383,7 @@ void writeSummary(std::ostream& output, const Options& options, const RunStats& 
     output << ",\"weights\":";
     writeJsonString(output, options.weightsPath.empty() ? "built-in" : options.weightsPath);
     output << ",\"futility_max_depth\":" << options.parameters.futilityMaxDepth
+           << ",\"all_root_scores\":" << (options.allRootScores ? "true" : "false")
            << ",\"node_limit\":" << options.nodeLimit
            << ",\"positions\":" << stats.positions
            << ",\"terminal_positions\":" << stats.terminalPositions
@@ -414,6 +430,7 @@ bool processFile(const std::string& path, const Options& options, RunStats& stat
         limits.nodeLimit = options.nodeLimit;
         limits.parameters = options.parameters;
         limits.isolateTranspositionTable = true;
+        limits.collectRootMoveScores = options.allRootScores;
         SearchResult result = searchBestMove(pos, limits);
 
         stats.positions++;

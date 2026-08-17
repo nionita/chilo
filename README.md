@@ -378,15 +378,19 @@ work from the interrupted final iteration, while `completed_nodes`,
 `completed_depth`, score, best move, and PV describe the last fully completed
 iteration. A budget too small to finish depth 1 reports depth 0 and a legal
 fallback move. Use `--overwrite` explicitly to replace an existing output.
+For a deep tuning reference, add `--all-root-scores`; this emits a `root_scores`
+map for each non-terminal position after searching every legal root move with a
+full window.
 
-Use `scripts/tune_futility.py` to expand margin families, run the probe for a
-deeper baseline reference and equal-budget candidates, and select a diverse
-Pareto shortlist. A minimal configuration is:
+Use `scripts/tune_futility.py` to expand margin families, run a deeper
+all-root-score reference and equal-budget candidates, then rank candidates by
+their normalized reference-root score regret. A minimal configuration is:
 
 ```json
 {
   "candidate_nodes": 300000,
   "reference_nodes": 1200000,
+  "score_scale": 600,
   "baseline_margins": [120, 320, 550],
   "shortlist_size": 15,
   "explicit_candidates": [[100, 350, 550, 750, 950]],
@@ -400,6 +404,12 @@ Pareto shortlist. A minimal configuration is:
   ]
 }
 ```
+
+`probe`, `inputs`, and `weights` are optional execution defaults that may also
+be placed in this config; their relative paths are resolved from the config
+file. Command-line `--probe`, one or more `--input`, and `--weights` override
+their respective defaults. Use `--no-weights` to force the built-in net even
+when the config supplies `weights`.
 
 Power families use `"type": "power"` with `scales` and `exponents`.
 Explicit and generated tuples must have 1-7 nonnegative, nondecreasing
@@ -423,12 +433,22 @@ python3 scripts/tune_futility.py \
   --jobs 4
 ```
 
-The run directory retains a fingerprinted manifest, raw JSONL evidence, probe
-logs, `results.json`, `results.csv`, `shortlist.json`, and `report.md`. Resume
-an interrupted run with the same command plus `--resume`; any changed config,
-binary, net, or input is rejected. The proxy ranks reference move agreement,
-non-mate score MAE, and completed depth. It only screens candidates: use SPRT
-to establish playing strength.
+The reference probe uses `--all-root-scores`, which searches every root move
+with a full alpha-beta window and records its final completed-iteration score
+in `root_scores`; normal candidate records remain PVS-only and do not contain
+that map. For every candidate-selected move, the tuner maps its reference score
+through `tanh(score / score_scale)` (with winning/losing mates mapped to `+1`/
+`-1`) and computes regret versus the best reference-root score. The shortlist
+orders strictly by mean regret, P90 regret, median regret, then the margin
+tuple. Move agreement, raw score error, depth, mate-claim diagnostics, elapsed
+time, and futility counts remain diagnostic only.
+
+The run directory retains a fingerprinted manifest containing only the resolved
+effective probe, input, and weight artifacts with hashes, plus raw JSONL
+evidence, probe logs, `results.json`, `results.csv`, `shortlist.json`, and
+`report.md`. Resume an interrupted run with the same effective artifacts plus
+`--resume`; any changed config, binary, net, or input is rejected. The proxy
+only screens candidates: use SPRT to establish playing strength.
 
 For SPRT candidates, use `scripts/build_futility_variants.py` with a
 `chilo.futility_variants.v1` manifest. It compiles each tuple in an isolated

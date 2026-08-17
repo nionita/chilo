@@ -1048,6 +1048,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
     auto startTime = std::chrono::steady_clock::now();
     const bool collectRootDetails = limits.collectRootMoveResults;
+    const bool collectRootScores = limits.collectRootMoveScores || collectRootDetails;
     const bool collectBestMoveLeaf = limits.collectBestMoveLeaf || limits.collectRootMoveResults ||
                                      limits.sampleCallback != nullptr;
     const std::string rootFen = limits.sampleCallback != nullptr ? positionToFEN(pos) : std::string();
@@ -1112,7 +1113,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         bool interrupted = false;
         SearchLeaf bestMoveLeaf{};
         std::vector<RootMoveResult> iterationRootResults;
-        if (collectRootDetails) iterationRootResults.reserve(rootCount);
+        if (collectRootScores) iterationRootResults.reserve(rootCount);
 
         for (int i = 0; i < rootCount; i++) {
             const Move& move = iterationMoves[i];
@@ -1133,9 +1134,10 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
             }
             int score;
             SearchLeaf childLeaf{};
-            if (collectRootDetails) {
+            if (collectRootScores) {
+                SearchLeaf* childLeafOut = collectRootDetails ? &childLeaf : nullptr;
                 score = -alphaBeta(pos, nnueState, depth - 1, 1, childNnuePly, -INF_SCORE, INF_SCORE, true, true, true,
-                                   iterationNodes, iterationStats, pvTable, pvLength, &childLeaf);
+                                   iterationNodes, iterationStats, pvTable, pvLength, childLeafOut);
             } else {
                 if (i == 0) {
                     SearchLeaf* childLeafOut = collectBestMoveLeaf ? &childLeaf : nullptr;
@@ -1158,17 +1160,19 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                 interrupted = true;
                 break;
             }
-            if (collectRootDetails) {
+            if (collectRootScores) {
                 RootMoveResult rootResult{};
                 rootResult.move = move;
                 rootResult.score = score;
-                rootResult.evalScore = childLeaf.score;
-                rootResult.hasEval = childLeaf.valid;
-                rootResult.evalPieceCount = childLeaf.valid ? __builtin_popcountll(childLeaf.pos.occupancyAll) : 0;
-                rootResult.evalSideToMove = childLeaf.valid ? childLeaf.pos.sideToMove : WHITE;
-                rootResult.evalInCheck = childLeaf.inCheck;
-                rootResult.evalIsTerminal = childLeaf.terminal;
-                if (childLeaf.valid) rootResult.evalFen = positionToFEN(childLeaf.pos);
+                if (collectRootDetails) {
+                    rootResult.evalScore = childLeaf.score;
+                    rootResult.hasEval = childLeaf.valid;
+                    rootResult.evalPieceCount = childLeaf.valid ? __builtin_popcountll(childLeaf.pos.occupancyAll) : 0;
+                    rootResult.evalSideToMove = childLeaf.valid ? childLeaf.pos.sideToMove : WHITE;
+                    rootResult.evalInCheck = childLeaf.inCheck;
+                    rootResult.evalIsTerminal = childLeaf.terminal;
+                    if (childLeaf.valid) rootResult.evalFen = positionToFEN(childLeaf.pos);
+                }
                 iterationRootResults.push_back(std::move(rootResult));
             }
             if (score > bestScore) {

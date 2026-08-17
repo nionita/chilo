@@ -637,6 +637,24 @@ int testSearchSampleHook() {
     }
 
     resetDrawHistory(p);
+    SearchLimits scoreLimits{1, 0, nullptr, nullptr};
+    scoreLimits.collectRootMoveScores = true;
+    SearchResult scoreResult = searchBestMove(p, scoreLimits);
+    Move legalRootMoves[MAX_MOVES];
+    int legalRootCount = genLegalMoves(p, legalRootMoves);
+    if (!scoreResult.completed ||
+        static_cast<int>(scoreResult.rootMoveResults.size()) != legalRootCount) {
+        std::cout << "  FAIL (score-only root collection did not return every legal root move)\n";
+        return 1;
+    }
+    for (const RootMoveResult& rootMove : scoreResult.rootMoveResults) {
+        if (rootMove.hasEval || !rootMove.evalFen.empty()) {
+            std::cout << "  FAIL (score-only root collection captured unnecessary leaf details)\n";
+            return 1;
+        }
+    }
+
+    resetDrawHistory(p);
     SampleCapture filteredCapture;
     SearchLimits filteredLimits{1, 0, nullptr, nullptr};
     filteredLimits.collectBestMoveLeaf = true;

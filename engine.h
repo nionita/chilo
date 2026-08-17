@@ -195,6 +195,9 @@ struct SearchLimits {
     SearchInfoCallback infoCallback;
     void* infoUserData;
     bool collectRootMoveResults = false;
+    // Collect final-completed-iteration root scores with full windows, without
+    // constructing the leaf-detail payload needed by self-play collection.
+    bool collectRootMoveScores = false;
     bool collectBestMoveLeaf = false;
     int minSampleDepth = 0;
     SearchSampleCallback sampleCallback = nullptr;
