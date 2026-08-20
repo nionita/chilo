@@ -82,8 +82,7 @@ TensorBoard and disable histograms to retain scalars without large event files:
 ```
 
 The baseline screen is `32 / 4 / 8`. It must be run with the same screening
-conditions as the variants. The operator has completed this baseline; record
-its exact run path and metrics below when available.
+conditions as the variants.
 
 ### Initial Candidate Order
 
@@ -142,14 +141,38 @@ benchmarking and SPRT.
 
 | Run | Architecture | Scales | TensorBoard path | Epoch-4 validation loss | Diagnostics summary | Decision |
 |---|---|---|---|---:|---|---|
-| Baseline | pending architecture | `32 / 4 / 8` | pending | pending | pending | pending |
-| Variant | pending | pending | pending | pending | pending | pending |
+| Baseline | `64 -> 8` | `32 / 4 / 8` | archived with the screen results | `0.12508048` | Reference screen | Full-run control already available as `g4t1-64x8` |
+| Variant | `64 -> 8` | `32 / 2 / 8` | archived with the screen results | `0.12555031` | Worse early validation loss | Reject |
+| Variant | `64 -> 8` | `32 / 8 / 8` | archived with the screen results | `0.12481561` | Better early validation loss; no full run selected | Do not prioritize |
+| Variant | `64 -> 8` | `32 / 4 / 4` | archived with the screen results | `0.12541312` | Worse early validation loss | Reject |
+| Variant | `64 -> 8` | `32 / 4 / 16` | archived with the screen results | `0.12472711` | Better early loss, but hidden-2 validation saturation reached `11.44%` | Promote to 24 epochs |
+| Variant | `64 -> 8` | `16 / 4 / 8` | archived with the screen results | `0.12474426` | Better early loss with lower saturation than `32 / 4 / 16` | Promote to 24 epochs |
+| Variant | `64 -> 8` | `64 / 4 / 8` | archived with the screen results | `0.12523682` | Worse early validation loss | Do not prioritize |
+
+The screen selected `16 / 4 / 8` and `32 / 4 / 16` as the two useful
+24-epoch follow-ups. The short-run advantage of a scale is a screening signal,
+not evidence that it will beat the established setting after a full cosine run.
 
 ## Final Decision Log
 
 Record one entry for each architecture or scale setting promoted beyond short
 screening:
 
-| Candidate | Full-run validation loss | Export diagnostics | Eval/search benchmark | SPRT result | Decision and rationale |
+| Candidate | Best full-run validation loss | Export diagnostics | Eval/search benchmark | SPRT result | Decision and rationale |
 |---|---:|---|---|---|---|
-| pending | pending | pending | pending | pending | pending |
+| `g4t1-64x8`, `32 / 4 / 8` | `0.12188020` (epoch 24) | Existing exported control | not part of this scale decision | not part of this scale decision | Retain as the established `64 -> 8` QAT scale setting |
+| `16 / 4 / 8` | `0.12189165` (epoch 23) | Not exported. Final hidden-2 byte saturation `11.48%`; final hidden-2 validation clipping `9.50%`; dense/output weight clipping `0%` | not run | not run | Do not promote: essentially tied, but no validation-loss improvement over the control |
+| `32 / 4 / 16` | `0.12188615` (epoch 23) | Not exported. Final hidden-2 byte saturation `13.92%`; final hidden-2 validation clipping `11.92%`; dense/output weight clipping `0%` | not run | not run | Do not promote: essentially tied, but no validation-loss improvement and less comfortable activation headroom than `16 / 4 / 8` |
+
+The two follow-ups used the same generation-4 dataset, target, seed, batch
+size, learning-rate schedule, and scale-aware QAT mode as the control. They
+used five data workers, however, while `g4t1-64x8` used three; TensorBoard
+histograms were also disabled for the follow-ups. These implementation details
+do not invalidate the runs, but they make the very small loss differences
+insufficient to establish a strict ordering between scale settings.
+
+**Decision:** retain `32 / 4 / 8` for the `64 -> 8` architecture. Neither
+24-epoch candidate provided evidence to replace it, so neither was exported or
+advanced to engine benchmarking or SPRT. Do not schedule additional full scale
+runs unless a strictly matched repeat is worth the training cost; any future
+comparison should match worker count and all non-scale training settings.
