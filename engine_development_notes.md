@@ -126,11 +126,13 @@ treating a partially searched root move list as a completed result.
 Use `futility_probe`, not UCI options or tuning loops inside `search.cpp`, to
 compare margin tuples over a position corpus. The probe isolates TT state per
 position, accepts FEN or first-column CSV input, and emits JSON Lines suitable
-for `scripts/tune_futility.py`. The tuner runs a deeper current-margin
-reference, compares candidates at equal node budgets, and uses Pareto fronts
-over move agreement, non-mate score error, and completed depth to produce an
-SPRT shortlist. Its manifest fingerprints the probe, net, corpus, and config,
-so `--resume` cannot silently combine incompatible runs. The probe's separate
+for `scripts/tune_futility.py`. The tuner runs a full-window, all-root-score
+reference plus a candidate-budget baseline as a reusable anchor, then ranks
+candidates by normalized reference-root score regret. P90 regret, move
+agreement, depth, and raw-score/mate figures remain diagnostics. The anchor
+manifest fingerprints the probe, net, corpus, budgets, and baseline margins;
+candidate-family changes can reuse it safely. See `futility-tuning.md` for
+current filtered candidates and SPRT status. The probe's separate
 `futility_prunes_in_check` counters intentionally expose current behavior for
 analysis; changing whether in-check nodes may prune is a separate search
 experiment.

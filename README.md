@@ -21,6 +21,7 @@ Small chess engine project with:
 - `eval_fen.cpp`: tiny CLI for evaluating one or more FENs with the compiled engine
 - `nnue_eval_bench.cpp`: rebuilt/incremental NNUE evaluation throughput benchmark
 - `futility_probe.cpp`: fixed-node futility-margin probe with JSON Lines output
+- `futility-tuning.md`: persistent futility-filter and SPRT decision log
 - `perft.cpp`: CLI entry point for running perft
 - `perft_diag.cpp`: subtree divide helper for isolating perft mismatches
 - `engine_tests.cpp`: regression-style test program for engine behavior
