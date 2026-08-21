@@ -54,3 +54,33 @@ The built candidate mapping and hashes are recorded externally in
 `~/Tune/futility/g3-sr1-sprt.json` and its adjacent build receipt. Use the
 SPRT wrapper with explicit engine names and the shared `chilo-g4t1-64x8.bin`
 weights for both sides.
+
+## Future: Root-Budget-Adaptive Futility Profiles
+
+Static futility margins may have different strength optima at different time
+controls: aggressive pruning can buy useful depth at short controls, while a
+more conservative tuple may avoid tactical losses when searches are longer.
+Do not assume one tuple dominates across the whole time-control range.
+
+The first implementation should choose one discrete futility profile at the
+start of every root search, after the UCI time manager has calculated that
+move's search budget. It must keep that profile fixed across the entire
+iterative-deepening search. Select from a small short/normal/long profile set
+using the allocated root time (or an equivalent fixed-node bucket); fixed-depth
+and fixed-node tooling retain an explicit stable profile. Do **not** switch
+profiles between iterative-deepening iterations initially: that would make
+results sensitive to timing noise and would no longer match the static-profile
+SPRT evidence.
+
+Validation plan:
+
+1. Finish the current static `f11`/`f12`/`f13` SPRTs against `f01` at 6+0.1.
+2. Test promising static tuples at at least one much shorter and one much
+   longer control, for example 1+0.01, 6+0.1, and 30+0.3. Keep the net,
+   openings, adjudication, and other tournament settings fixed across those
+   comparisons.
+3. Only if different tuples show repeatable wins in different budget ranges,
+   implement a two-threshold short/normal/long selector at root-search setup.
+4. Test the adaptive engine against the strongest fixed tuple at each target
+   control, then against that fixed basis over a representative mixed control
+   set. SPRT remains the strength gate.
