@@ -16,10 +16,15 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 ANCHOR_SCHEMA = "chilo.futility_tuning_anchor.v1"
-CANDIDATES_SCHEMA = "chilo.futility_tuning_candidates.v1"
-RESULTS_SCHEMA = "chilo.futility_tuning_results.v3"
+CANDIDATES_SCHEMA = "chilo.futility_tuning_candidates.v2"
+RESULTS_SCHEMA = "chilo.futility_tuning_results.v4"
 MAX_FUTILITY_DEPTH = 7
 MATE_SCORE_FLOOR = 28936  # SEARCH_MATE_SCORE - MAX_SEARCH_DEPTH in engine.h
+# The ranking population is frozen from the durable anchor, never from an
+# individual candidate.  This keeps every candidate comparison on the same
+# positions while excluding positions where the all-root reference did not
+# complete at least one more nominal ply than the equal-budget baseline.
+TRUSTED_REFERENCE_DEPTH_GAP = 1
 
 
 class TuningError(RuntimeError):
@@ -283,7 +288,9 @@ def build_anchor_manifest(
     }
 
 
-def build_candidates_manifest(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, Any]:
+def build_candidates_manifest(
+    run_dir: Path, expanded: Mapping[str, Any], trusted_set: Mapping[str, Any]
+) -> Dict[str, Any]:
     anchor_manifest = run_dir / "anchor_manifest.json"
     reference = run_dir / "probes" / "reference.jsonl"
     baseline = run_dir / "probes" / "baseline.jsonl"
@@ -292,6 +299,7 @@ def build_candidates_manifest(run_dir: Path, expanded: Mapping[str, Any]) -> Dic
         "anchor_manifest": file_identity(anchor_manifest),
         "reference_root_scores": file_identity(reference),
         "baseline": file_identity(baseline),
+        "trusted_set": dict(trusted_set),
         "candidate_config": {
             "score_scale": expanded["score_scale"],
             "shortlist_size": expanded["shortlist_size"],
@@ -681,15 +689,68 @@ def ensure_position_sets(reference: Mapping[str, Any], other: Mapping[str, Any],
         raise TuningError(f"{name}: position set differs from reference (missing={missing}, extra={extra})")
 
 
+def is_evaluated_reference_record(record: Mapping[str, Any]) -> bool:
+    return (
+        not record.get("terminal")
+        and bool(record.get("has_move"))
+        and int(record.get("completed_depth", 0)) > 0
+    )
+
+
+def trusted_position_set(
+    reference: Mapping[str, Any], baseline: Mapping[str, Any]
+) -> Tuple[Dict[str, Any], List[Tuple[str, int, str]]]:
+    """Return the fixed, anchor-derived population used for candidate ranking."""
+    ensure_position_sets(reference, baseline, "baseline")
+    keys: List[Tuple[str, int, str]] = []
+    evaluated_positions = 0
+    for key, reference_record in reference["positions"].items():
+        if not is_evaluated_reference_record(reference_record):
+            continue
+        evaluated_positions += 1
+        baseline_record = baseline["positions"][key]
+        reference_depth = int(reference_record["completed_depth"])
+        baseline_depth = int(baseline_record.get("completed_depth", 0))
+        if reference_depth >= baseline_depth + TRUSTED_REFERENCE_DEPTH_GAP:
+            keys.append(key)
+    if not keys:
+        raise TuningError("trusted reference set is empty")
+
+    digest = hashlib.sha256()
+    for key in sorted(keys):
+        digest.update(json.dumps(key, ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return (
+        {
+            "rule": {
+                "reference_completed_depth_at_least_baseline_completed_depth_plus": (
+                    TRUSTED_REFERENCE_DEPTH_GAP
+                )
+            },
+            "anchor_position_count": len(reference["positions"]),
+            "evaluated_position_count": evaluated_positions,
+            "trusted_position_count": len(keys),
+            "position_keys_sha256": digest.hexdigest(),
+        },
+        keys,
+    )
+
+
 def compute_metrics(
     reference: Mapping[str, Any],
     baseline: Mapping[str, Any],
     candidate: Mapping[str, Any],
     candidate_nodes: int,
     score_scale: float = 600.0,
+    position_keys: Optional[Sequence[Tuple[str, int, str]]] = None,
 ) -> Dict[str, Any]:
     ensure_position_sets(reference, baseline, "baseline")
     ensure_position_sets(reference, candidate, "candidate")
+    included_keys = set(position_keys) if position_keys is not None else None
+    if included_keys is not None:
+        unknown_keys = included_keys - set(reference["positions"])
+        if unknown_keys:
+            raise TuningError("requested metric position set contains positions absent from the reference")
 
     agreement_values: List[float] = []
     baseline_agreement_values: List[float] = []
@@ -713,6 +774,8 @@ def compute_metrics(
     }
 
     for key, reference_record in reference["positions"].items():
+        if included_keys is not None and key not in included_keys:
+            continue
         baseline_record = baseline["positions"][key]
         candidate_record = candidate["positions"][key]
         elapsed_ms += int(candidate_record.get("elapsed_ms", 0))
@@ -723,9 +786,7 @@ def compute_metrics(
             if index < MAX_FUTILITY_DEPTH:
                 futility_prunes_in_check[index] += int(count)
 
-        if reference_record.get("terminal") or not reference_record.get("has_move"):
-            continue
-        if int(reference_record.get("completed_depth", 0)) <= 0:
+        if not is_evaluated_reference_record(reference_record):
             continue
 
         candidate_move = candidate_record.get("bestmove")
@@ -778,7 +839,7 @@ def compute_metrics(
         raise TuningError("reference contains no nonterminal completed positions")
 
     return {
-        "position_count": len(reference["positions"]),
+        "position_count": len(included_keys) if included_keys is not None else len(reference["positions"]),
         "evaluated_positions": len(agreement_values),
         "move_agreement_rate": statistics.mean(agreement_values),
         "move_agreement_se": standard_error(agreement_values),
@@ -827,6 +888,7 @@ def rank_and_select(candidates: List[Dict[str, Any]], shortlist_size: int) -> Li
 
 def flatten_result(candidate: Mapping[str, Any]) -> Dict[str, Any]:
     metrics = candidate["metrics"]
+    all_position_metrics = candidate["all_position_metrics"]
     return {
         "id": candidate["id"],
         "margins": margins_text(candidate["margins"]),
@@ -856,6 +918,13 @@ def flatten_result(candidate: Mapping[str, Any]) -> Dict[str, Any]:
         "elapsed_ms": metrics["elapsed_ms"],
         "futility_prunes": margins_text(metrics["futility_prunes"]),
         "futility_prunes_in_check": margins_text(metrics["futility_prunes_in_check"]),
+        "all_position_metrics": json.dumps(all_position_metrics, sort_keys=True),
+        "all_position_count": all_position_metrics["position_count"],
+        "all_evaluated_positions": all_position_metrics["evaluated_positions"],
+        "all_mean_normalized_regret": all_position_metrics["mean_normalized_regret"],
+        "all_median_normalized_regret": all_position_metrics["median_normalized_regret"],
+        "all_p90_normalized_regret": all_position_metrics["p90_normalized_regret"],
+        "all_move_agreement_rate": all_position_metrics["move_agreement_rate"],
     }
 
 
@@ -881,6 +950,8 @@ def format_number(value: Optional[float], precision: int = 3) -> str:
 
 def build_report(results: Mapping[str, Any]) -> str:
     baseline = results["baseline"]["metrics"]
+    baseline_all = results["baseline"]["all_position_metrics"]
+    trusted_set = results["trusted_set"]
     lines = [
         "# Futility Proxy Results",
         "",
@@ -888,20 +959,32 @@ def build_report(results: Mapping[str, Any]) -> str:
         f"Reference budget: `{results['reference_nodes']}` nodes per position  ",
         f"Score scale: `{results['score_scale']:g}`  ",
         f"Baseline margins: `{margins_text(results['baseline']['margins'])}`  ",
-        f"Positions: `{baseline['position_count']}` total, `{baseline['evaluated_positions']}` evaluated",
+        (
+            f"Positions: `{trusted_set['anchor_position_count']}` total, "
+            f"`{trusted_set['evaluated_position_count']}` evaluable, "
+            f"`{trusted_set['trusted_position_count']}` trusted"
+        ),
+        (
+            "Ranking set: reference completed depth >= baseline completed depth "
+            f"+ `{trusted_set['rule']['reference_completed_depth_at_least_baseline_completed_depth_plus']}`"
+        ),
         "",
         "The proxy screens candidates only. Playing strength still requires SPRT.",
         "",
-        "## Baseline Anchor",
+        "## Baseline Anchor (trusted set)",
         "",
         f"- Mean normalized score regret: `{baseline['mean_normalized_regret']:.6f}`",
         f"- Reference move agreement: `{format_percent(baseline['move_agreement_rate'])}`",
         f"- Non-mate score MAE: `{format_number(baseline['score_mae'])}` cp",
         f"- Mean completed depth: `{baseline['mean_completed_depth']:.3f}`",
+        (
+            f"- All-position mean normalized score regret (diagnostic): "
+            f"`{baseline_all['mean_normalized_regret']:.6f}`"
+        ),
         "",
         "## Shortlist",
         "",
-        "| Margins | Regret rank | Mean regret | P90 regret | Median regret | Move agreement |",
+        "| Margins | Regret rank | Trusted mean regret | Trusted P90 regret | Trusted median regret | Trusted move agreement |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for candidate in results["shortlist"]:
@@ -914,7 +997,10 @@ def build_report(results: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "Full per-candidate metrics are in `results.json` and `results.csv`; raw per-position evidence is under `probes/`.",
+            (
+                "Trusted-set metrics determine the shortlist. Full all-position diagnostics are retained in "
+                "`results.json` and `results.csv`; raw per-position evidence is under `probes/`."
+            ),
             "",
         ]
     )
@@ -934,12 +1020,21 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
         expanded["candidate_nodes"],
         baseline_margins,
     )
+    trusted_set, trusted_keys = trusted_position_set(reference, baseline)
+    baseline_all_position_metrics = compute_metrics(
+        reference,
+        baseline,
+        baseline,
+        expanded["candidate_nodes"],
+        expanded["score_scale"],
+    )
     baseline_metrics = compute_metrics(
         reference,
         baseline,
         baseline,
         expanded["candidate_nodes"],
         expanded["score_scale"],
+        trusted_keys,
     )
 
     candidates = []
@@ -949,10 +1044,20 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
             expanded["candidate_nodes"],
             candidate_spec["margins"],
         )
-        metrics = compute_metrics(
+        all_position_metrics = compute_metrics(
             reference, baseline, output, expanded["candidate_nodes"], expanded["score_scale"]
         )
-        candidates.append({**candidate_spec, "metrics": metrics})
+        metrics = compute_metrics(
+            reference,
+            baseline,
+            output,
+            expanded["candidate_nodes"],
+            expanded["score_scale"],
+            trusted_keys,
+        )
+        candidates.append(
+            {**candidate_spec, "metrics": metrics, "all_position_metrics": all_position_metrics}
+        )
 
     shortlist = rank_and_select(candidates, expanded["shortlist_size"])
     results = {
@@ -960,7 +1065,12 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
         "candidate_nodes": expanded["candidate_nodes"],
         "reference_nodes": expanded["reference_nodes"],
         "score_scale": expanded["score_scale"],
-        "baseline": {"margins": baseline_margins, "metrics": baseline_metrics},
+        "trusted_set": trusted_set,
+        "baseline": {
+            "margins": baseline_margins,
+            "metrics": baseline_metrics,
+            "all_position_metrics": baseline_all_position_metrics,
+        },
         "candidates": candidates,
         "shortlist": shortlist,
         "discarded": expanded["discarded"],
@@ -1034,8 +1144,11 @@ def run_candidates_phase(
     )
     # Candidate specifications are intentionally replaceable: the phase may be
     # rerun with a different family while consuming the immutable anchor.
-    atomic_write_json(run_dir / "candidates_manifest.json", build_candidates_manifest(run_dir, expanded))
-    return aggregate_results(run_dir, expanded)
+    results = aggregate_results(run_dir, expanded)
+    atomic_write_json(
+        run_dir / "candidates_manifest.json", build_candidates_manifest(run_dir, expanded, results["trusted_set"])
+    )
+    return results
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:

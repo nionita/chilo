@@ -29,6 +29,43 @@ The reference root-score memory is `probes/reference.jsonl`; it and the
 candidate-budget baseline are reusable for later candidate-family changes.
 The proxy baseline for this sweep was `120,320,550`, not `f01`.
 
+## G3-SR2 Deep Reference Anchor — 2026-08-22
+
+The follow-up anchor at `~/Tune/futility/g3-sr2/` uses the same corpus, net,
+probe, and 40,000-node candidate baseline as G3-SR1, but raises the all-root
+reference budget to 2,560,000 nodes per position. It completed at mean depth
+10.107 (median 9, P90 13), versus 7.476 for the baseline.
+
+Future G3-SR2 candidate ranking uses the fixed anchor-derived trusted set:
+reference completed depth must be at least baseline completed depth plus one.
+This keeps 23,007 of 24,980 evaluable positions (92.1%). The trusted set is
+fixed before candidate probes, recorded by count and deterministic key hash in
+`candidates_manifest.json`, and used identically for every family. Full-corpus
+metrics remain diagnostics; do not filter raw probe evidence or choose a
+candidate-specific position set.
+
+## G3-SR2 Candidate Filter — 2026-08-22
+
+Thirty linear and power tuples were searched at 40,000 nodes against the deep
+G3-SR2 reference. All ranking metrics selected the same power-family winner:
+mean trusted regret, trusted P90 regret, trusted move agreement, and trusted
+mean completed depth. The top three are retained as separate SPRT candidates;
+their external build manifest and receipt are
+`~/Tune/futility/g3-sr2-sprt.json` and
+`~/Tune/futility/g3-sr2-sprt.build-receipt.json`.
+
+| Code | Trusted rank | Margins | Family | Mean regret | P90 regret | Move agreement | Mean depth | All-position mean regret |
+|---|---:|---|---|---:|---:|---:|---:|---:|
+| `f21` | 1 | `75,212,390,600,839` | power d5, scale 75, exponent 1.5 | 0.018260 | 0.054151 | 57.456% | 7.491 | 0.017023 |
+| `f22` | 2 | `70,200,330` | linear d3, slope 130, intercept -60 | 0.018334 | 0.054698 | 57.330% | 7.451 | 0.017110 |
+| `f23` | 3 | `75,244,485,792,1157` | power d5, scale 75, exponent 1.6 | 0.018371 | 0.054619 | 57.352% | 7.461 | 0.017129 |
+
+Against the `120,320,550` proxy baseline, `f21` reduces trusted mean regret by
+3.85%, raises trusted move agreement by 0.535 percentage points, and gains
+0.162 completed plies. Its full-corpus diagnostics move in the same direction.
+The older G3-SR1 mean/P90/agreement candidates rank 15th, 7th, and 12th under
+this deeper trusted proxy, respectively.
+
 Median normalized regret was `0` for every one of the 30 tuples, so it did not
 distinguish candidates. The following three independent metric winners advance
 to SPRT against accepted basis `f01`:
@@ -44,11 +81,21 @@ it ranked 24th by mean regret and had lower move agreement.
 
 ## SPRT Queue
 
+### G3-SR2
+
 | Order | Candidate | Opponent | Status |
 |---:|---|---|---|
-| 1 | `f11` | `f01` | Running as `futility-f11-f01`. |
-| 2 | `f12` | `f01` | Pending `f11` result. |
-| 3 | `f13` | `f01` | Pending `f12` result. |
+| 1 | `f21` | `f01` | Built; first G3-SR2 SPRT candidate. |
+| 2 | `f22` | `f01` | Built; pending `f21` result. |
+| 3 | `f23` | `f01` | Built; pending `f22` result. |
+
+### G3-SR1 (historical)
+
+| Order | Candidate | Opponent | Status |
+|---:|---|---|---|
+| 1 | `f11` | `f01` | Interrupted after two games; resumable state retained, but superseded by G3-SR2. |
+| 2 | `f12` | `f01` | Not started; superseded by G3-SR2. |
+| 3 | `f13` | `f01` | Not started; superseded by G3-SR2. |
 
 The built candidate mapping and hashes are recorded externally in
 `~/Tune/futility/g3-sr1-sprt.json` and its adjacent build receipt. Use the
@@ -74,7 +121,7 @@ SPRT evidence.
 
 Validation plan:
 
-1. Finish the current static `f11`/`f12`/`f13` SPRTs against `f01` at 6+0.1.
+1. Finish the current static `f21`/`f22`/`f23` SPRTs against `f01` at 6+0.1.
 2. Test promising static tuples at at least one much shorter and one much
    longer control, for example 1+0.01, 6+0.1, and 30+0.3. Keep the net,
    openings, adjudication, and other tournament settings fixed across those

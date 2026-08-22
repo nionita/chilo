@@ -324,6 +324,57 @@ class MetricsAndRankingTest(unittest.TestCase):
         self.assertEqual(metrics["cap_hit_rate"], 1.0)
         self.assertEqual(metrics["futility_prunes"][:3], [2, 4, 6])
 
+    def test_trusted_set_is_fixed_from_anchor_depths_and_filters_metrics(self) -> None:
+        margins = [120]
+        nodes = 1000
+        reference = probe_result(
+            [
+                position_record(
+                    "input", 1, "fen-one", margins, 4000, move="e2e4", score=20, depth=8,
+                    all_root_scores=True, root_scores={"e2e4": 20, "d2d4": 0},
+                ),
+                position_record(
+                    "input", 2, "fen-two", margins, 4000, move="e2e4", score=20, depth=7,
+                    all_root_scores=True, root_scores={"e2e4": 20, "d2d4": 0},
+                ),
+            ],
+            margins,
+            4000,
+            all_root_scores=True,
+        )
+        baseline = probe_result(
+            [
+                position_record("input", 1, "fen-one", margins, nodes, depth=7),
+                position_record("input", 2, "fen-two", margins, nodes, depth=7),
+            ],
+            margins,
+            nodes,
+        )
+        candidate = probe_result(
+            [
+                position_record("input", 1, "fen-one", margins, nodes, move="e2e4", score=20, depth=7),
+                position_record("input", 2, "fen-two", margins, nodes, move="d2d4", score=0, depth=7),
+            ],
+            margins,
+            nodes,
+        )
+
+        trusted, keys = tune_futility.trusted_position_set(reference, baseline)
+        self.assertEqual(trusted["trusted_position_count"], 1)
+        self.assertEqual(trusted["evaluated_position_count"], 2)
+        self.assertEqual(
+            trusted["rule"]["reference_completed_depth_at_least_baseline_completed_depth_plus"], 1
+        )
+        self.assertEqual(len(trusted["position_keys_sha256"]), 64)
+
+        all_metrics = tune_futility.compute_metrics(reference, baseline, candidate, nodes)
+        trusted_metrics = tune_futility.compute_metrics(reference, baseline, candidate, nodes, position_keys=keys)
+        self.assertEqual(all_metrics["evaluated_positions"], 2)
+        self.assertEqual(trusted_metrics["position_count"], 1)
+        self.assertEqual(trusted_metrics["evaluated_positions"], 1)
+        self.assertEqual(trusted_metrics["mean_normalized_regret"], 0.0)
+        self.assertGreater(all_metrics["mean_normalized_regret"], 0.0)
+
     def test_scalar_regret_selection_uses_documented_tie_breakers(self) -> None:
         def candidate(identifier: str, margins: list[int], mean: float, p90: float, median: float) -> dict:
             return {
@@ -381,10 +432,16 @@ class PhaseManifestTest(unittest.TestCase):
                 "candidates": [{"id": "candidate", "margins": [100], "origins": ["test"]}],
                 "discarded": [],
             }
-            manifest = tune_futility.build_candidates_manifest(run_dir, expanded)
+            trusted_set = {
+                "rule": {"reference_completed_depth_at_least_baseline_completed_depth_plus": 1},
+                "trusted_position_count": 1,
+                "position_keys_sha256": "a" * 64,
+            }
+            manifest = tune_futility.build_candidates_manifest(run_dir, expanded, trusted_set)
             self.assertEqual(manifest["schema"], tune_futility.CANDIDATES_SCHEMA)
             self.assertEqual(manifest["reference_root_scores"]["path"], str(reference_path.resolve()))
             self.assertIn("sha256", manifest["reference_root_scores"])
+            self.assertEqual(manifest["trusted_set"], trusted_set)
 
     def test_legacy_single_manifest_layout_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

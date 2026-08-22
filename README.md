@@ -440,9 +440,11 @@ in `root_scores`; normal candidate records remain PVS-only and do not contain
 that map. For every candidate-selected move, the tuner maps its reference score
 through `tanh(score / score_scale)` (with winning/losing mates mapped to `+1`/
 `-1`) and computes regret versus the best reference-root score. The shortlist
-orders strictly by mean regret, P90 regret, median regret, then the margin
-tuple. Move agreement, raw score error, depth, mate-claim diagnostics, elapsed
-time, and futility counts remain diagnostic only.
+uses the fixed anchor-derived trusted subset: positions where the reference
+completed at least one more nominal ply than the equal-budget baseline. It then
+orders strictly by trusted-subset mean regret, P90 regret, median regret, then
+the margin tuple. Full-corpus regret, move agreement, raw score error, depth,
+mate-claim diagnostics, elapsed time, and futility counts remain diagnostics.
 
 The script keeps the durable reference memory and candidate work in the same
 run directory. By default `--phase all` first runs the anchor and then the
@@ -462,7 +464,8 @@ probe, inputs, weights, node budgets, and baseline margins. You may then change
 linear/power families or explicit candidates and rerun `--phase candidates`
 without repeating the anchor. A changed engine binary, net, input, budget, or
 baseline margins is rejected and requires a new run directory. The candidate
-phase records the exact anchor and JSONL hashes it consumed in
+phase records the exact anchor and JSONL hashes it consumed, together with the
+trusted-set rule, count, and deterministic position-key hash, in
 `candidates_manifest.json` and updates `results.json`, `results.csv`,
 `shortlist.json`, and `report.md`. The proxy only screens candidates: use SPRT
 to establish playing strength.
