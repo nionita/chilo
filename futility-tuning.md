@@ -66,6 +66,69 @@ Against the `120,320,550` proxy baseline, `f21` reduces trusted mean regret by
 The older G3-SR1 mean/P90/agreement candidates rank 15th, 7th, and 12th under
 this deeper trusted proxy, respectively.
 
+## G3-SR2 f01 Control and 120k Follow-up — 2026-08-23
+
+The active 6+0.1 SPRT compares `f21` with accepted control `f01`, not with the
+G3-SR2 source-style proxy baseline `120,320,550`. To make that direct proxy
+comparison, `f01` was probed at 40,000 nodes using the existing G3-SR2
+reference. Its returned JSONL used a remote source path, so it was validated
+against the local reference by the complete `(input line, FEN)` identity; all
+25,000 records matched.
+
+On the original 40k trusted set, f01 ranks about 13th among the 30 G3-SR2
+candidates. Both f01 and f21 are improvements over the source-style baseline,
+and f21 remains an improvement over f01 in the proxy:
+
+| Variant | Mean regret | P90 regret | Move agreement | Mean depth |
+|---|---:|---:|---:|---:|
+| source base `120,320,550` | 0.018990 | 0.056625 | 56.922% | 7.328 |
+| `f01` `120,240,360` | 0.018671 | 0.055569 | 57.165% | 7.368 |
+| `f21` `75,212,390,600,839` | 0.018260 | 0.054151 | 57.456% | 7.491 |
+
+The paired mean-regret differences are negative in the better direction:
+f01 minus source base is -0.000319 (95% interval -0.000513 to -0.000126),
+and f21 minus f01 is -0.000411 (-0.000674 to -0.000149). These are proxy
+intervals, not Elo intervals; they do not establish a conversion from regret
+to playing strength.
+
+The live 6+0.1 PGN shows that 40,000 nodes is not representative of most game
+moves. For f21, recorded node counts were P10 67k, median 118k, mean 121k, and
+P90 180k; only 1.9% of moves used fewer than 40k nodes. A serial cloud run
+therefore probed f01/f21/f22/f23 at 120,000 nodes on the same corpus and net.
+
+At 120k, the existing 2.56M all-root reference is marginal. Relative to f01,
+its nominal completed-depth advantage over all evaluable positions averaged
++0.843 ply, with P10 -1, median +1, and P90 +3; it was deeper in 13,744 positions,
+equal in 6,923, and shallower in 4,313. The f01-derived trusted set therefore
+contains only 13,744 positions (55.0%). On that set f21 has the best point
+metrics, with mean regret 0.011534 versus f01's 0.012640.
+
+That f01-only gate is not conservative enough for selecting among the 120k
+candidates, because f21/f22/f23 themselves search deeper than f01. The fixed
+common gate requiring the reference to complete at least one more ply than
+every one of f01/f21/f22/f23 retains 11,967 positions (47.9%):
+
+| Variant | Mean regret | P90 regret | Move agreement | Mean depth |
+|---|---:|---:|---:|---:|
+| `f01` | 0.012227 | 0.033300 | 56.330% | 9.384 |
+| `f21` | 0.011967 | 0.031877 | 56.965% | 9.524 |
+| `f22` | 0.012012 | 0.032506 | 56.664% | 9.470 |
+| `f23` | 0.011968 | 0.031820 | 56.940% | 9.502 |
+
+On this strict set f21 and f23 are effectively tied. In particular, f21's
+paired mean-regret interval against f01 crosses zero (-0.000568 to +0.000047).
+The 120k outputs are useful evidence that higher budgets can change the proxy,
+but not a sufficiently reliable basis for a new 120k ranking.
+
+Conclusion: the 2.56M full-root reference is suitable for the 40k G3-SR2
+screen but marginal for 120k PVS searches. A future high-budget screen should
+use f01 as its direct control and a smaller corpus with a reference made
+substantially deeper than every compared candidate. Do not extrapolate either
+the 40k or 120k regret differences directly into Elo; the running SPRT remains
+the strength decision.
+
+## G3-SR1 Candidate Results (continued)
+
 Median normalized regret was `0` for every one of the 30 tuples, so it did not
 distinguish candidates. The following three independent metric winners advance
 to SPRT against accepted basis `f01`:
