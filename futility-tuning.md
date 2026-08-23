@@ -127,6 +127,100 @@ substantially deeper than every compared candidate. Do not extrapolate either
 the 40k or 120k regret differences directly into Elo; the running SPRT remains
 the strength decision.
 
+## Procedure: Fresh Corpus and Remote High-Depth Anchor — 2026-08-23
+
+G3-SR3 starts a new, independent 25,000-position corpus and uses a much
+deeper all-root reference before any new family is considered. This is a
+single-corpus procedure; it deliberately makes no provision for combining or
+managing multiple shards.
+
+### 1. Collect one new FEN-disjoint corpus
+
+Use `scripts/sample_futility_positions.py` on a headered collector CSV with
+the fields `eval_fen,score,result`. It takes one prior corpus as `--exclude`,
+does a deterministic reservoir sample, rejects previously selected FENs, and
+refuses to overwrite either output. It writes the CSV plus a provenance JSON
+containing source and output hashes, seed, counts, and the zero-overlap check.
+
+The G3-SR3 corpus was made from the same G3 source as G3-SR2:
+
+```bash
+python3 scripts/sample_futility_positions.py \
+  --source ~/Tune/extract/2026/chilo-g3/chilo-1.csv \
+  --exclude ~/Tune/futility/g3-25k-seed990317.csv \
+  --output ~/Tune/futility/g3-25k-seed990318.csv \
+  --metadata ~/Tune/futility/g3-25k-seed990318.json \
+  --seed 990318 \
+  --count 25000
+```
+
+The result has 25,000 unique FENs and no overlap with G3-SR2. Keep the CSV
+and its adjacent provenance JSON together. Select a new deterministic seed
+for a later fresh corpus and pass the immediately relevant prior corpus as the
+single exclusion input; do not add multi-shard handling here without a
+separate design decision.
+
+### 2. Prepare a self-contained remote anchor package
+
+Create a new local run directory with a reviewed `tune.json`, then make a
+portable `.tgz` containing:
+
+- the exact AVX2 `futility_probe`, NNUE weights, input CSV, and input metadata;
+- `SHA256SUMS` for every packed artifact;
+- a `README.md` with return/install instructions;
+- `run-anchor.sh`, which runs the full-root reference and then the baseline
+  serially; and
+- `start-anchor.sh`, which writes a PID file and starts the runner through
+  `nohup` with a durable log.
+
+The runner must validate/reuse a completed JSONL by its final matching summary
+and rerun only an incomplete artifact. It must use one probe process at a time:
+the remote server has two CPUs, and the full-root search benefits from no
+contention. Never start a second launcher while its PID is live.
+
+For G3-SR3 the local config is `~/Tune/futility/g3-sr3/tune.json`: accepted
+control f01 (`120,240,360`) is both the 120,000-node baseline and the
+10,240,000-node all-root reference. The packaged runner emits
+`output/reference.jsonl` with `--all-root-scores`, followed by
+`output/baseline.jsonl` without that flag. Using f01 for both makes the anchor
+directly relevant to the current SPRT basis.
+
+### 3. Run remotely and install the finished anchor
+
+On the remote server:
+
+```bash
+tar -xzf g3-sr3-anchor.tgz
+cd g3-sr3-anchor
+sha256sum -c SHA256SUMS
+./start-anchor.sh
+tail -f logs/runner.log
+```
+
+After completion, copy `output/reference.jsonl` and `output/baseline.jsonl`
+back into the local run directory under `probes/`, then materialize the local
+manifest without rerunning completed probes:
+
+```bash
+mkdir -p ~/Tune/futility/g3-sr3/probes
+cp output/reference.jsonl ~/Tune/futility/g3-sr3/probes/reference.jsonl
+cp output/baseline.jsonl  ~/Tune/futility/g3-sr3/probes/baseline.jsonl
+
+cd ~/Sources/chilo
+python3 scripts/tune_futility.py \
+  --config ~/Tune/futility/g3-sr3/tune.json \
+  --run-dir ~/Tune/futility/g3-sr3 \
+  --phase anchor
+```
+
+The local input must be byte-identical to the packed one. The probe records a
+remote `source` path in both JSONLs; that is acceptable because it remains the
+same stable `(source, line, FEN)` key for reference and baseline. The local
+anchor manifest records the effective local probe, input, and weights hashes.
+Only after this anchor is complete should a reviewed config add families and
+run `--phase candidates`; those candidate choices can change without rerunning
+the retained root-score reference.
+
 ## G3-SR1 Candidate Results (continued)
 
 Median normalized regret was `0` for every one of the 30 tuples, so it did not
