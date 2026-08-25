@@ -205,6 +205,10 @@ struct SearchLimits {
     uint64_t nodeLimit = 0;
     SearchParameters parameters{};
     bool isolateTranspositionTable = false;
+    // Restrict the root to this one legal move. This preserves ordinary
+    // iterative deepening while making the root search a full-window search.
+    bool restrictRootMove = false;
+    Move rootMove{};
 };
 
 struct SearchStats {

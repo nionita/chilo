@@ -15,16 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-ANCHOR_SCHEMA = "chilo.futility_tuning_anchor.v1"
-CANDIDATES_SCHEMA = "chilo.futility_tuning_candidates.v2"
-RESULTS_SCHEMA = "chilo.futility_tuning_results.v4"
+ANCHOR_SCHEMA = "chilo.futility_tuning_anchor.v2"
+CANDIDATES_SCHEMA = "chilo.futility_tuning_candidates.v3"
+RESULTS_SCHEMA = "chilo.futility_tuning_results.v5"
 MAX_FUTILITY_DEPTH = 7
 MATE_SCORE_FLOOR = 28936  # SEARCH_MATE_SCORE - MAX_SEARCH_DEPTH in engine.h
-# The ranking population is frozen from the durable anchor, never from an
-# individual candidate.  This keeps every candidate comparison on the same
-# positions while excluding positions where the all-root reference did not
-# complete at least one more nominal ply than the equal-budget baseline.
-TRUSTED_REFERENCE_DEPTH_GAP = 1
+REFERENCE_MODE = "per_root_v1"
 
 
 class TuningError(RuntimeError):
@@ -85,12 +81,15 @@ def candidate_key(margins: Sequence[int]) -> str:
 def expand_config(raw: Mapping[str, Any], require_candidates: bool = True) -> Dict[str, Any]:
     allowed = {
         "candidate_nodes",
-        "reference_nodes",
+        "reference_nodes_per_root",
+        "reference_depth_gap",
+        "reference_report_every",
         "baseline_margins",
         "shortlist_size",
         "probe_report_every",
         "score_scale",
         "probe",
+        "reference_probe",
         "inputs",
         "weights",
         "explicit_candidates",
@@ -101,12 +100,14 @@ def expand_config(raw: Mapping[str, Any], require_candidates: bool = True) -> Di
         raise TuningError(f"unknown config field(s): {', '.join(unknown)}")
 
     candidate_nodes = require_int(raw.get("candidate_nodes"), "candidate_nodes", 1)
-    reference_nodes = require_int(raw.get("reference_nodes"), "reference_nodes", 1)
-    if reference_nodes <= candidate_nodes:
-        raise TuningError("reference_nodes must be greater than candidate_nodes")
+    reference_nodes_per_root = require_int(
+        raw.get("reference_nodes_per_root"), "reference_nodes_per_root", 1
+    )
+    reference_depth_gap = require_int(raw.get("reference_depth_gap"), "reference_depth_gap", 1)
     baseline = validate_margins(raw.get("baseline_margins"), "baseline_margins")
     shortlist_size = require_int(raw.get("shortlist_size", 15), "shortlist_size", 1)
     report_every = require_int(raw.get("probe_report_every", 100), "probe_report_every")
+    reference_report_every = require_int(raw.get("reference_report_every", 100), "reference_report_every")
     score_scale_raw = raw.get("score_scale", 600)
     if isinstance(score_scale_raw, bool) or not isinstance(score_scale_raw, (int, float)) or score_scale_raw <= 0:
         raise TuningError("score_scale must be a finite number > 0")
@@ -114,6 +115,7 @@ def expand_config(raw: Mapping[str, Any], require_candidates: bool = True) -> Di
     if not math.isfinite(score_scale):
         raise TuningError("score_scale must be a finite number > 0")
     probe_default = require_path(raw["probe"], "probe") if "probe" in raw else None
+    reference_probe_default = require_path(raw["reference_probe"], "reference_probe") if "reference_probe" in raw else None
     input_defaults = require_path_list(raw["inputs"], "inputs") if "inputs" in raw else []
     weights_default = require_path(raw["weights"], "weights") if "weights" in raw else None
 
@@ -218,12 +220,15 @@ def expand_config(raw: Mapping[str, Any], require_candidates: bool = True) -> Di
 
     return {
         "candidate_nodes": candidate_nodes,
-        "reference_nodes": reference_nodes,
+        "reference_nodes_per_root": reference_nodes_per_root,
+        "reference_depth_gap": reference_depth_gap,
+        "reference_report_every": reference_report_every,
         "baseline_margins": list(baseline),
         "shortlist_size": shortlist_size,
         "probe_report_every": report_every,
         "score_scale": score_scale,
         "probe": probe_default,
+        "reference_probe": reference_probe_default,
         "inputs": input_defaults,
         "weights": weights_default,
         "candidates": expanded_candidates,
@@ -273,23 +278,25 @@ def file_identity(path: Path) -> Dict[str, Any]:
 
 def build_anchor_manifest(
     expanded: Mapping[str, Any],
-    probe: Path,
+    reference_probe: Path,
     inputs: Sequence[Path],
     weights: Optional[Path],
 ) -> Dict[str, Any]:
     return {
         "schema": ANCHOR_SCHEMA,
-        "probe": file_identity(probe),
+        "reference_probe": file_identity(reference_probe),
         "weights": file_identity(weights) if weights is not None else None,
         "inputs": [file_identity(path) for path in inputs],
-        "reference_nodes": expanded["reference_nodes"],
+        "reference_mode": REFERENCE_MODE,
+        "reference_nodes_per_root": expanded["reference_nodes_per_root"],
+        "reference_depth_gap": expanded["reference_depth_gap"],
         "candidate_nodes": expanded["candidate_nodes"],
         "baseline_margins": expanded["baseline_margins"],
     }
 
 
 def build_candidates_manifest(
-    run_dir: Path, expanded: Mapping[str, Any], trusted_set: Mapping[str, Any]
+    run_dir: Path, expanded: Mapping[str, Any], trusted_set: Mapping[str, Any], candidate_probe: Path
 ) -> Dict[str, Any]:
     anchor_manifest = run_dir / "anchor_manifest.json"
     reference = run_dir / "probes" / "reference.jsonl"
@@ -299,6 +306,7 @@ def build_candidates_manifest(
         "anchor_manifest": file_identity(anchor_manifest),
         "reference_root_scores": file_identity(reference),
         "baseline": file_identity(baseline),
+        "candidate_probe": file_identity(candidate_probe),
         "trusted_set": dict(trusted_set),
         "candidate_config": {
             "score_scale": expanded["score_scale"],
@@ -316,7 +324,7 @@ def resolve_config_path(config_path: Path, path_text: str) -> Path:
 
 def resolve_effective_artifacts(
     config_path: Path, expanded: Mapping[str, Any], args: argparse.Namespace
-) -> Tuple[Path, List[Path], Optional[Path]]:
+) -> Tuple[Path, Path, List[Path], Optional[Path]]:
     probe_text = args.probe if args.probe else expanded.get("probe")
     input_texts = args.input if args.input else expanded.get("inputs", [])
     if not probe_text:
@@ -324,6 +332,14 @@ def resolve_effective_artifacts(
     if not input_texts:
         raise TuningError("at least one --input is required unless config.inputs is set")
     probe = Path(probe_text).resolve() if args.probe else resolve_config_path(config_path, probe_text)
+    reference_probe_text = getattr(args, "reference_probe", None) or expanded.get("reference_probe")
+    reference_probe = (
+        Path(reference_probe_text).resolve()
+        if getattr(args, "reference_probe", None)
+        else resolve_config_path(config_path, reference_probe_text)
+        if reference_probe_text
+        else probe
+    )
     inputs = (
         [Path(path).resolve() for path in input_texts]
         if args.input
@@ -337,7 +353,7 @@ def resolve_effective_artifacts(
         weights = resolve_config_path(config_path, expanded["weights"])
     else:
         weights = None
-    return probe, inputs, weights
+    return probe, reference_probe, inputs, weights
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -428,6 +444,36 @@ def build_probe_command(
     return command
 
 
+def build_per_root_reference_command(
+    probe: Path,
+    inputs: Sequence[Path],
+    weights: Optional[Path],
+    baseline_nodes: int,
+    nodes_per_root: int,
+    depth_gap: int,
+    margins: Sequence[int],
+    reference_output: Path,
+    baseline_output: Path,
+    report_every: int,
+) -> List[str]:
+    command = [
+        str(probe.resolve()),
+        "--per-root-reference",
+        "--baseline-nodes", str(baseline_nodes),
+        "--reference-nodes-per-root", str(nodes_per_root),
+        "--reference-depth-gap", str(depth_gap),
+        "--futility-margins", margins_text(margins),
+        "--report-every", str(report_every),
+        "--baseline-output", str(baseline_output.resolve()),
+        "--output", str(reference_output.resolve()),
+        "--overwrite",
+    ]
+    if weights is not None:
+        command.extend(["--weights", str(weights.resolve())])
+    command.extend(str(path.resolve()) for path in inputs)
+    return command
+
+
 def record_key(record: Mapping[str, Any]) -> Tuple[str, int, str]:
     try:
         source = record["source"]
@@ -443,7 +489,13 @@ def record_key(record: Mapping[str, Any]) -> Tuple[str, int, str]:
         or not isinstance(fen, str)
     ):
         raise TuningError("position record has an invalid source, line, or FEN")
-    return source, line, fen
+    # The raw source path is provenance and legitimately differs when an
+    # anchor is made on Windows and candidates run on Linux.  The packaged
+    # corpus filename, line, and FEN are the portable input identity.
+    source_name = source.replace("\\", "/").rsplit("/", 1)[-1]
+    if not source_name:
+        raise TuningError("position record source must end in a filename")
+    return source_name, line, fen
 
 
 def validate_root_scores(record: Mapping[str, Any], path: Path, line_number: int) -> None:
@@ -472,7 +524,8 @@ def validate_root_scores(record: Mapping[str, Any], path: Path, line_number: int
 
 
 def validate_position_record(
-    record: Mapping[str, Any], path: Path, line_number: int, all_root_scores: bool
+    record: Mapping[str, Any], path: Path, line_number: int, all_root_scores: bool,
+    per_root_reference: bool = False,
 ) -> None:
     integer_fields = ("node_limit", "nodes", "completed_nodes", "completed_depth", "elapsed_ms", "score")
     boolean_fields = ("iteration_interrupted", "terminal", "has_move")
@@ -491,7 +544,29 @@ def validate_position_record(
     if record.get("all_root_scores") is not all_root_scores:
         raise TuningError(f"{path}:{line_number}: position all_root_scores does not match expected mode")
     if all_root_scores:
-        if not record["terminal"] and record["has_move"] and record["completed_depth"] > 0:
+        if per_root_reference:
+            if record.get("reference_mode") != REFERENCE_MODE:
+                raise TuningError(f"{path}:{line_number}: unexpected reference_mode")
+            status = record.get("reference_status")
+            if status not in ("complete", "rejected", "terminal"):
+                raise TuningError(f"{path}:{line_number}: invalid reference_status")
+            for field in (
+                "node_limit_per_root", "baseline_node_limit", "baseline_completed_depth", "target_depth",
+                "legal_root_moves", "completed_root_moves", "baseline_nodes", "total_nodes",
+            ):
+                if isinstance(record.get(field), bool) or not isinstance(record.get(field), int) or record[field] < 0:
+                    raise TuningError(f"{path}:{line_number}: invalid per-root field {field}")
+            if status == "complete":
+                if record["terminal"] or not record["has_move"] or record["completed_depth"] != record["target_depth"]:
+                    raise TuningError(f"{path}:{line_number}: complete reference depth/status mismatch")
+                if record["completed_root_moves"] != record["legal_root_moves"]:
+                    raise TuningError(f"{path}:{line_number}: complete reference root count mismatch")
+                validate_root_scores(record, path, line_number)
+                if len(record["root_scores"]) != record["legal_root_moves"]:
+                    raise TuningError(f"{path}:{line_number}: reference root_scores count mismatch")
+            elif "root_scores" in record:
+                raise TuningError(f"{path}:{line_number}: incomplete reference must not contain root_scores")
+        elif not record["terminal"] and record["has_move"] and record["completed_depth"] > 0:
             validate_root_scores(record, path, line_number)
     elif "root_scores" in record:
         raise TuningError(f"{path}:{line_number}: candidate output must not contain root_scores")
@@ -508,7 +583,9 @@ def validate_position_record(
 
 
 def parse_probe_output(
-    path: Path, nodes: int, margins: Sequence[int], all_root_scores: bool = False
+    path: Path, nodes: int, margins: Sequence[int], all_root_scores: bool = False,
+    per_root_reference: bool = False, baseline_nodes: Optional[int] = None,
+    reference_depth_gap: Optional[int] = None,
 ) -> Dict[str, Any]:
     positions: Dict[Tuple[str, int, str], Dict[str, Any]] = {}
     summary = None
@@ -527,7 +604,7 @@ def parse_probe_output(
                 if record_type == "position":
                     if summary is not None:
                         raise TuningError(f"{path}:{line_number}: position follows summary")
-                    validate_position_record(record, path, line_number, all_root_scores)
+                    validate_position_record(record, path, line_number, all_root_scores, per_root_reference)
                     if record.get("node_limit") != nodes or record.get("futility_margins") != list(margins):
                         raise TuningError(
                             f"{path}:{line_number}: position does not match expected nodes or margins"
@@ -553,18 +630,34 @@ def parse_probe_output(
         raise TuningError(f"{path}: summary does not match expected nodes or margins")
     if summary.get("all_root_scores") is not all_root_scores:
         raise TuningError(f"{path}: summary all_root_scores does not match expected mode")
+    if per_root_reference:
+        if summary.get("reference_mode") != REFERENCE_MODE:
+            raise TuningError(f"{path}: summary reference_mode does not match per-root mode")
+        if summary.get("node_limit_per_root") != nodes or summary.get("baseline_node_limit") != baseline_nodes:
+            raise TuningError(f"{path}: summary per-root budgets do not match")
+        if summary.get("reference_depth_gap") != reference_depth_gap:
+            raise TuningError(f"{path}: summary reference depth gap does not match")
+        for record in positions.values():
+            if record.get("baseline_node_limit") != baseline_nodes or record.get("node_limit_per_root") != nodes:
+                raise TuningError(f"{path}: position per-root budgets do not match")
+            if record.get("target_depth") != record.get("baseline_completed_depth", 0) + reference_depth_gap and \
+               record.get("reference_status") not in ("terminal", "rejected"):
+                raise TuningError(f"{path}: complete reference target depth does not match baseline gap")
     if summary.get("positions") != len(positions):
         raise TuningError(f"{path}: summary position count does not match records")
     return {"positions": positions, "summary": summary}
 
 
 def probe_output_complete(
-    path: Path, nodes: int, margins: Sequence[int], all_root_scores: bool = False
+    path: Path, nodes: int, margins: Sequence[int], all_root_scores: bool = False,
+    per_root_reference: bool = False, baseline_nodes: Optional[int] = None,
+    reference_depth_gap: Optional[int] = None,
 ) -> bool:
     if not path.is_file():
         return False
     try:
-        parse_probe_output(path, nodes, margins, all_root_scores)
+        parse_probe_output(path, nodes, margins, all_root_scores, per_root_reference, baseline_nodes,
+                           reference_depth_gap)
     except TuningError:
         return False
     return True
@@ -604,6 +697,45 @@ def run_probe_job(
         raise TuningError(f"probe job {job['id']} failed; see {log_path}")
     parse_probe_output(output_path, job["nodes"], job["margins"], all_root_scores)
     return {"id": job["id"], "status": "completed", "output": str(output_path)}
+
+
+def run_per_root_anchor(
+    expanded: Mapping[str, Any], probe: Path, inputs: Sequence[Path], weights: Optional[Path], run_dir: Path
+) -> Dict[str, str]:
+    reference_path = run_dir / "probes" / "reference.jsonl"
+    baseline_path = run_dir / "probes" / "baseline.jsonl"
+    log_path = run_dir / "logs" / "reference.log"
+    margins = expanded["baseline_margins"]
+    reference_nodes = expanded["reference_nodes_per_root"]
+    baseline_nodes = expanded["candidate_nodes"]
+    depth_gap = expanded["reference_depth_gap"]
+    if (
+        probe_output_complete(reference_path, reference_nodes, margins, True, True, baseline_nodes, depth_gap)
+        and probe_output_complete(baseline_path, baseline_nodes, margins)
+    ):
+        return {"status": "reused", "reference": str(reference_path), "baseline": str(baseline_path)}
+
+    command = build_per_root_reference_command(
+        probe, inputs, weights, baseline_nodes, reference_nodes, depth_gap, margins,
+        reference_path, baseline_path, expanded["reference_report_every"],
+    )
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("command=" + json.dumps(command) + "\n")
+        log.flush()
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.PIPE, text=True)
+        assert process.stderr is not None
+        for line in process.stderr:
+            log.write(line)
+            log.flush()
+            sys.stderr.write(line)
+            sys.stderr.flush()
+        return_code = process.wait()
+        log.write(f"exit_code={return_code}\n")
+    if return_code != 0:
+        raise TuningError(f"per-root reference failed; see {log_path}")
+    parse_probe_output(reference_path, reference_nodes, margins, True, True, baseline_nodes, depth_gap)
+    parse_probe_output(baseline_path, baseline_nodes, margins)
+    return {"status": "completed", "reference": str(reference_path), "baseline": str(baseline_path)}
 
 
 def run_jobs(
@@ -690,15 +822,23 @@ def ensure_position_sets(reference: Mapping[str, Any], other: Mapping[str, Any],
 
 
 def is_evaluated_reference_record(record: Mapping[str, Any]) -> bool:
+    if record.get("reference_mode") != REFERENCE_MODE:
+        return (
+            not record.get("terminal")
+            and bool(record.get("has_move"))
+            and int(record.get("completed_depth", 0)) > 0
+        )
     return (
-        not record.get("terminal")
+        record.get("reference_mode") == REFERENCE_MODE
+        and record.get("reference_status") == "complete"
+        and not record.get("terminal")
         and bool(record.get("has_move"))
-        and int(record.get("completed_depth", 0)) > 0
+        and int(record.get("completed_depth", 0)) == int(record.get("target_depth", -1))
     )
 
 
 def trusted_position_set(
-    reference: Mapping[str, Any], baseline: Mapping[str, Any]
+    reference: Mapping[str, Any], baseline: Mapping[str, Any], reference_depth_gap: int = 1
 ) -> Tuple[Dict[str, Any], List[Tuple[str, int, str]]]:
     """Return the fixed, anchor-derived population used for candidate ranking."""
     ensure_position_sets(reference, baseline, "baseline")
@@ -709,10 +849,15 @@ def trusted_position_set(
             continue
         evaluated_positions += 1
         baseline_record = baseline["positions"][key]
-        reference_depth = int(reference_record["completed_depth"])
-        baseline_depth = int(baseline_record.get("completed_depth", 0))
-        if reference_depth >= baseline_depth + TRUSTED_REFERENCE_DEPTH_GAP:
-            keys.append(key)
+        if reference_record.get("reference_mode") != REFERENCE_MODE:
+            if int(reference_record.get("completed_depth", 0)) >= int(baseline_record.get("completed_depth", 0)) + reference_depth_gap:
+                keys.append(key)
+            continue
+        if reference_record.get("baseline_completed_depth") != baseline_record.get("completed_depth"):
+            raise TuningError("reference baseline depth does not match paired baseline output")
+        if reference_record.get("target_depth") != baseline_record.get("completed_depth", 0) + reference_depth_gap:
+            raise TuningError("reference target depth is inconsistent")
+        keys.append(key)
     if not keys:
         raise TuningError("trusted reference set is empty")
 
@@ -723,9 +868,9 @@ def trusted_position_set(
     return (
         {
             "rule": {
-                "reference_completed_depth_at_least_baseline_completed_depth_plus": (
-                    TRUSTED_REFERENCE_DEPTH_GAP
-                )
+                "reference_mode": REFERENCE_MODE,
+                "complete_reference_only": True,
+                "reference_completed_depth_at_least_baseline_completed_depth_plus": reference_depth_gap,
             },
             "anchor_position_count": len(reference["positions"]),
             "evaluated_position_count": evaluated_positions,
@@ -956,7 +1101,8 @@ def build_report(results: Mapping[str, Any]) -> str:
         "# Futility Proxy Results",
         "",
         f"Candidate budget: `{results['candidate_nodes']}` nodes per position  ",
-        f"Reference budget: `{results['reference_nodes']}` nodes per position  ",
+        f"Reference budget: `{results['reference_nodes_per_root']}` nodes per legal root move  ",
+        f"Reference depth gap: `{results['reference_depth_gap']}` plies over baseline  ",
         f"Score scale: `{results['score_scale']:g}`  ",
         f"Baseline margins: `{margins_text(results['baseline']['margins'])}`  ",
         (
@@ -1011,16 +1157,19 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
     baseline_margins = expanded["baseline_margins"]
     reference = parse_probe_output(
         run_dir / "probes" / "reference.jsonl",
-        expanded["reference_nodes"],
+        expanded["reference_nodes_per_root"],
         baseline_margins,
         all_root_scores=True,
+        per_root_reference=True,
+        baseline_nodes=expanded["candidate_nodes"],
+        reference_depth_gap=expanded["reference_depth_gap"],
     )
     baseline = parse_probe_output(
         run_dir / "probes" / "baseline.jsonl",
         expanded["candidate_nodes"],
         baseline_margins,
     )
-    trusted_set, trusted_keys = trusted_position_set(reference, baseline)
+    trusted_set, trusted_keys = trusted_position_set(reference, baseline, expanded["reference_depth_gap"])
     baseline_all_position_metrics = compute_metrics(
         reference,
         baseline,
@@ -1063,7 +1212,8 @@ def aggregate_results(run_dir: Path, expanded: Mapping[str, Any]) -> Dict[str, A
     results = {
         "schema": RESULTS_SCHEMA,
         "candidate_nodes": expanded["candidate_nodes"],
-        "reference_nodes": expanded["reference_nodes"],
+        "reference_nodes_per_root": expanded["reference_nodes_per_root"],
+        "reference_depth_gap": expanded["reference_depth_gap"],
         "score_scale": expanded["score_scale"],
         "trusted_set": trusted_set,
         "baseline": {
@@ -1089,30 +1239,11 @@ def run_anchor_phase(
     inputs: Sequence[Path],
     weights: Optional[Path],
 ) -> None:
-    anchor_jobs = [
-        {
-            "id": "reference",
-            "nodes": expanded["reference_nodes"],
-            "margins": expanded["baseline_margins"],
-            "all_root_scores": True,
-        },
-        {
-            "id": "baseline",
-            "nodes": expanded["candidate_nodes"],
-            "margins": expanded["baseline_margins"],
-        },
-    ]
-    # These are durable anchor artifacts. Valid existing JSONL is always reused;
-    # a missing or invalid one is regenerated without touching the other anchor.
-    run_jobs(
-        anchor_jobs,
-        probe,
-        inputs,
-        weights,
-        expanded["probe_report_every"],
-        run_dir,
-        True,
-        1,
+    outcome = run_per_root_anchor(expanded, probe, inputs, weights, run_dir)
+    print(
+        f"progress: per-root anchor ready ({outcome['status']}: reference and baseline)",
+        file=sys.stderr,
+        flush=True,
     )
 
 
@@ -1146,7 +1277,8 @@ def run_candidates_phase(
     # rerun with a different family while consuming the immutable anchor.
     results = aggregate_results(run_dir, expanded)
     atomic_write_json(
-        run_dir / "candidates_manifest.json", build_candidates_manifest(run_dir, expanded, results["trusted_set"])
+        run_dir / "candidates_manifest.json",
+        build_candidates_manifest(run_dir, expanded, results["trusted_set"], probe),
     )
     return results
 
@@ -1157,6 +1289,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--config", required=True, help="JSON tuning configuration")
     parser.add_argument("--probe", help="Path to the futility_probe binary")
+    parser.add_argument(
+        "--reference-probe",
+        help="Optional per-root reference probe; defaults to --probe or config.reference_probe",
+    )
     parser.add_argument("--input", action="append", default=[], help="FEN/CSV input; may be repeated")
     parser.add_argument("--weights", help="Optional runtime NNUE weights passed to every probe")
     parser.add_argument("--no-weights", action="store_true", help="Use built-in weights even if config sets weights")
@@ -1193,13 +1329,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(json.dumps(expanded, indent=2, sort_keys=True))
             return 0
 
-        probe, inputs, weights = resolve_effective_artifacts(config_path, expanded, args)
+        probe, reference_probe, inputs, weights = resolve_effective_artifacts(config_path, expanded, args)
         run_dir = Path(args.run_dir).resolve()
         prepare_run_directory(run_dir)
-        anchor_manifest = build_anchor_manifest(expanded, probe, inputs, weights)
+        anchor_manifest = build_anchor_manifest(expanded, reference_probe, inputs, weights)
         if args.phase in ("all", "anchor"):
             ensure_anchor_manifest(run_dir, anchor_manifest)
-            run_anchor_phase(run_dir, expanded, probe, inputs, weights)
+            run_anchor_phase(run_dir, expanded, reference_probe, inputs, weights)
         if args.phase in ("all", "candidates"):
             require_anchor_manifest(run_dir, anchor_manifest)
             results = run_candidates_phase(run_dir, expanded, probe, inputs, weights, args.jobs)

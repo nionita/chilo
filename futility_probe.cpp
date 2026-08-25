@@ -1,6 +1,7 @@
 #include "engine.h"
 
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -15,12 +16,20 @@ struct Options {
     std::vector<std::string> inputPaths;
     std::string weightsPath;
     std::string outputPath;
+    std::string baselineOutputPath;
     uint64_t nodeLimit = 0;
+    uint64_t baselineNodeLimit = 0;
+    uint64_t referenceNodesPerRoot = 0;
     uint64_t reportEvery = 100;
+    int referenceDepthGap = 0;
     SearchParameters parameters{};
     bool hasNodeLimit = false;
+    bool hasBaselineNodeLimit = false;
+    bool hasReferenceNodesPerRoot = false;
+    bool hasReferenceDepthGap = false;
     bool hasMargins = false;
     bool allRootScores = false;
+    bool perRootReference = false;
     bool overwrite = false;
     bool helpRequested = false;
 };
@@ -29,6 +38,18 @@ struct RunStats {
     uint64_t positions = 0;
     uint64_t terminalPositions = 0;
     uint64_t interruptedSearches = 0;
+    uint64_t nodes = 0;
+    uint64_t completedNodes = 0;
+    uint64_t elapsedMs = 0;
+    std::array<uint64_t, MAX_FUTILITY_DEPTH + 1> futilityPrunes{};
+    std::array<uint64_t, MAX_FUTILITY_DEPTH + 1> futilityPrunesInCheck{};
+};
+
+struct ReferenceRunStats {
+    uint64_t positions = 0;
+    uint64_t terminalPositions = 0;
+    uint64_t completedPositions = 0;
+    uint64_t rejectedPositions = 0;
     uint64_t nodes = 0;
     uint64_t completedNodes = 0;
     uint64_t elapsedMs = 0;
@@ -97,6 +118,11 @@ void printUsage() {
         << "  --nodes <N>                 Hard cumulative node limit per position (required)\n"
         << "  --futility-margins <list>   Nonnegative margins for depths 1 through list length (required)\n"
         << "  --all-root-scores            Search every root move with a full window and emit its score\n"
+        << "  --per-root-reference         Run baseline then a full-window reference for every root move\n"
+        << "  --baseline-nodes <N>         Baseline PVS nodes per position (per-root mode)\n"
+        << "  --reference-nodes-per-root <N>  Full-window cap for each legal root move\n"
+        << "  --reference-depth-gap <N>    Required reference depth over baseline (per-root mode)\n"
+        << "  --baseline-output <path>     Baseline JSONL output (per-root mode)\n"
         << "  -w, --weights <path>        Load external NNUE weights; failure is fatal\n"
         << "  -o, --output <path>         Write JSON Lines to this file instead of stdout\n"
         << "  --overwrite                 Permit replacing an existing output file\n"
@@ -127,6 +153,29 @@ bool parseArgs(int argc, char** argv, Options& options) {
                 return false;
             }
             options.hasNodeLimit = true;
+        } else if (arg == "--baseline-nodes") {
+            const char* value = requireValue("--baseline-nodes");
+            if (value == nullptr || !parseUInt64(value, options.baselineNodeLimit) || options.baselineNodeLimit == 0) {
+                std::cerr << "--baseline-nodes must be a positive integer\n";
+                return false;
+            }
+            options.hasBaselineNodeLimit = true;
+        } else if (arg == "--reference-nodes-per-root") {
+            const char* value = requireValue("--reference-nodes-per-root");
+            if (value == nullptr || !parseUInt64(value, options.referenceNodesPerRoot) ||
+                options.referenceNodesPerRoot == 0) {
+                std::cerr << "--reference-nodes-per-root must be a positive integer\n";
+                return false;
+            }
+            options.hasReferenceNodesPerRoot = true;
+        } else if (arg == "--reference-depth-gap") {
+            const char* value = requireValue("--reference-depth-gap");
+            if (value == nullptr || !parseNonNegativeInt(value, options.referenceDepthGap) ||
+                options.referenceDepthGap <= 0) {
+                std::cerr << "--reference-depth-gap must be a positive integer\n";
+                return false;
+            }
+            options.hasReferenceDepthGap = true;
         } else if (arg == "--futility-margins") {
             const char* value = requireValue("--futility-margins");
             if (value == nullptr || !parseMargins(value, options.parameters)) {
@@ -140,6 +189,12 @@ bool parseArgs(int argc, char** argv, Options& options) {
             options.weightsPath = value;
         } else if (arg == "--all-root-scores") {
             options.allRootScores = true;
+        } else if (arg == "--per-root-reference") {
+            options.perRootReference = true;
+        } else if (arg == "--baseline-output") {
+            const char* value = requireValue("--baseline-output");
+            if (value == nullptr) return false;
+            options.baselineOutputPath = value;
         } else if (arg == "--output" || arg == "-o") {
             const char* value = requireValue("--output");
             if (value == nullptr) return false;
@@ -160,7 +215,18 @@ bool parseArgs(int argc, char** argv, Options& options) {
         }
     }
 
-    if (!options.hasNodeLimit) {
+    if (options.perRootReference) {
+        if (options.hasNodeLimit || options.allRootScores) {
+            std::cerr << "--per-root-reference cannot be combined with --nodes or --all-root-scores\n";
+            return false;
+        }
+        if (!options.hasBaselineNodeLimit || !options.hasReferenceNodesPerRoot || !options.hasReferenceDepthGap ||
+            options.baselineOutputPath.empty() || options.outputPath.empty()) {
+            std::cerr << "--per-root-reference requires --baseline-nodes, --reference-nodes-per-root, "
+                         "--reference-depth-gap, --baseline-output, and --output\n";
+            return false;
+        }
+    } else if (!options.hasNodeLimit) {
         std::cerr << "--nodes is required\n";
         return false;
     }
@@ -398,6 +464,138 @@ void writeSummary(std::ostream& output, const Options& options, const RunStats& 
     output << "}\n";
 }
 
+void writeReferencePosition(std::ostream& output, const std::string& source, uint64_t lineNumber,
+                            const std::string& fen, const Options& options, const SearchResult& baseline,
+                            const std::vector<RootMoveResult>& rootScores, uint64_t rootNodes,
+                            uint64_t rootCompletedNodes, uint64_t rootElapsedMs, int targetDepth,
+                            int legalRootMoves, const char* status, const char* rejectionReason = nullptr,
+                            const SearchResult* failedRoot = nullptr, int completedRootMoves = 0) {
+    const bool complete = std::string(status) == "complete";
+    const bool terminal = !baseline.hasMove;
+    Move bestMove{};
+    int bestScore = baseline.score;
+    if (complete && !rootScores.empty()) {
+        bestMove = rootScores.front().move;
+        bestScore = rootScores.front().score;
+        for (const RootMoveResult& root : rootScores) {
+            if (root.score > bestScore) {
+                bestScore = root.score;
+                bestMove = root.move;
+            }
+        }
+    } else if (baseline.hasMove) {
+        bestMove = baseline.bestMove;
+    }
+
+    output << "{\"type\":\"position\",\"reference_mode\":\"per_root_v1\",\"reference_status\":";
+    writeJsonString(output, status);
+    output << ",\"source\":";
+    writeJsonString(output, source);
+    output << ",\"line\":" << lineNumber << ",\"fen\":";
+    writeJsonString(output, fen);
+    output << ",\"futility_margins\":";
+    writeMargins(output, options.parameters);
+    output << ",\"weights\":";
+    writeJsonString(output, options.weightsPath.empty() ? "built-in" : options.weightsPath);
+    output << ",\"futility_max_depth\":" << options.parameters.futilityMaxDepth
+           << ",\"all_root_scores\":true"
+           << ",\"node_limit\":" << options.referenceNodesPerRoot
+           << ",\"node_limit_per_root\":" << options.referenceNodesPerRoot
+           << ",\"baseline_node_limit\":" << options.baselineNodeLimit
+           << ",\"baseline_completed_depth\":" << baseline.depth
+           << ",\"target_depth\":" << targetDepth
+           << ",\"legal_root_moves\":" << legalRootMoves
+           << ",\"completed_root_moves\":" << completedRootMoves
+           << ",\"nodes\":" << rootNodes
+           << ",\"completed_nodes\":" << rootCompletedNodes
+           << ",\"baseline_nodes\":" << baseline.nodes
+           << ",\"total_nodes\":" << (baseline.nodes + rootNodes)
+           << ",\"completed_depth\":" << (complete ? targetDepth : 0)
+           << ",\"elapsed_ms\":" << rootElapsedMs
+           << ",\"iteration_interrupted\":" << (complete || terminal ? "false" : "true")
+           << ",\"terminal\":" << (terminal ? "true" : "false")
+           << ",\"has_move\":" << (baseline.hasMove ? "true" : "false")
+           << ",\"bestmove\":";
+    writeJsonString(output, baseline.hasMove ? moveToUCI(bestMove) : "0000");
+    output << ",\"score\":" << bestScore << ",\"pv\":[]";
+    if (complete) {
+        output << ",\"root_scores\":{";
+        for (std::size_t i = 0; i < rootScores.size(); i++) {
+            if (i > 0) output << ',';
+            writeJsonString(output, moveToUCI(rootScores[i].move));
+            output << ':' << rootScores[i].score;
+        }
+        output << '}';
+    }
+    if (rejectionReason != nullptr) {
+        output << ",\"rejection_reason\":";
+        writeJsonString(output, rejectionReason);
+    }
+    if (failedRoot != nullptr) {
+        output << ",\"failed_root_move\":";
+        writeJsonString(output, failedRoot->hasMove ? moveToUCI(failedRoot->bestMove) : "0000");
+        output << ",\"failed_root_completed_depth\":" << failedRoot->depth
+               << ",\"failed_root_nodes\":" << failedRoot->nodes
+               << ",\"failed_root_completed_nodes\":" << failedRoot->completedNodes;
+    }
+    output << ",\"futility_prunes\":[0,0,0,0,0,0,0]"
+           << ",\"futility_prunes_in_check\":[0,0,0,0,0,0,0]}\n";
+}
+
+void writeReferenceSummary(std::ostream& output, const Options& options, const ReferenceRunStats& stats) {
+    output << "{\"type\":\"summary\",\"reference_mode\":\"per_root_v1\",\"futility_margins\":";
+    writeMargins(output, options.parameters);
+    output << ",\"weights\":";
+    writeJsonString(output, options.weightsPath.empty() ? "built-in" : options.weightsPath);
+    output << ",\"futility_max_depth\":" << options.parameters.futilityMaxDepth
+           << ",\"all_root_scores\":true"
+           << ",\"node_limit\":" << options.referenceNodesPerRoot
+           << ",\"node_limit_per_root\":" << options.referenceNodesPerRoot
+           << ",\"baseline_node_limit\":" << options.baselineNodeLimit
+           << ",\"reference_depth_gap\":" << options.referenceDepthGap
+           << ",\"positions\":" << stats.positions
+           << ",\"terminal_positions\":" << stats.terminalPositions
+           << ",\"completed_reference_positions\":" << stats.completedPositions
+           << ",\"rejected_reference_positions\":" << stats.rejectedPositions
+           << ",\"nodes\":" << stats.nodes
+           << ",\"completed_nodes\":" << stats.completedNodes
+           << ",\"elapsed_ms\":" << stats.elapsedMs
+           << ",\"futility_prunes\":[0,0,0,0,0,0,0]"
+           << ",\"futility_prunes_in_check\":[0,0,0,0,0,0,0]}\n";
+}
+
+uint64_t countInputPositions(const std::vector<std::string>& paths) {
+    uint64_t count = 0;
+    for (const std::string& path : paths) {
+        std::ifstream input(path);
+        std::string line;
+        while (std::getline(input, line)) {
+            std::string text = trim(line);
+            if (text.empty() || text[0] == '#') continue;
+            std::string field;
+            std::string error;
+            if (extractFirstField(text, field, error) && !isHeaderField(field)) count++;
+        }
+    }
+    return count;
+}
+
+void reportReferenceProgress(const ReferenceRunStats& stats, uint64_t total,
+                             std::chrono::steady_clock::time_point started) {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    const double rate = elapsed > 0 ? (1000.0 * static_cast<double>(stats.positions) / elapsed) : 0.0;
+    const double etaSeconds = rate > 0.0 && total >= stats.positions ? (total - stats.positions) / rate : 0.0;
+    std::cerr << "reference progress: " << stats.positions << '/' << total
+              << " complete=" << stats.completedPositions
+              << " rejected=" << stats.rejectedPositions
+              << " terminal=" << stats.terminalPositions
+              << " nodes=" << stats.nodes
+              << " elapsed_s=" << elapsed / 1000
+              << " positions_per_s=" << rate
+              << " eta_s=" << static_cast<uint64_t>(etaSeconds) << "\n";
+}
+
 bool processFile(const std::string& path, const Options& options, RunStats& stats, std::ostream& output) {
     std::ifstream input(path);
     if (!input) {
@@ -452,6 +650,134 @@ bool processFile(const std::string& path, const Options& options, RunStats& stat
     return true;
 }
 
+bool processReferenceFile(const std::string& path, const Options& options, RunStats& baselineStats,
+                          ReferenceRunStats& referenceStats, std::ostream& baselineOutput,
+                          std::ostream& referenceOutput, uint64_t totalPositions,
+                          std::chrono::steady_clock::time_point started) {
+    std::ifstream input(path);
+    if (!input) {
+        std::cerr << "fatal: failed to open input file " << path << "\n";
+        return false;
+    }
+
+    Options baselineOptions = options;
+    baselineOptions.nodeLimit = options.baselineNodeLimit;
+    baselineOptions.allRootScores = false;
+    std::string line;
+    uint64_t lineNumber = 0;
+    while (std::getline(input, line)) {
+        lineNumber++;
+        std::string text = trim(line);
+        if (text.empty() || text[0] == '#') continue;
+
+        std::string fen;
+        std::string parseError;
+        if (!extractFirstField(text, fen, parseError)) {
+            std::cerr << "fatal: " << path << ':' << lineNumber << ": " << parseError << "\n";
+            return false;
+        }
+        if (isHeaderField(fen)) continue;
+        if (!looksLikeFen(fen)) {
+            std::cerr << "fatal: " << path << ':' << lineNumber << ": invalid FEN in first field\n";
+            return false;
+        }
+
+        Position pos = parseFEN(fen);
+        resetDrawHistory(pos);
+        SearchLimits baselineLimits{};
+        baselineLimits.nodeLimit = options.baselineNodeLimit;
+        baselineLimits.parameters = options.parameters;
+        baselineLimits.isolateTranspositionTable = true;
+        SearchResult baseline = searchBestMove(pos, baselineLimits);
+        baselineStats.positions++;
+        if (!baseline.hasMove) baselineStats.terminalPositions++;
+        if (!baseline.completed) baselineStats.interruptedSearches++;
+        baselineStats.nodes += baseline.nodes;
+        baselineStats.completedNodes += baseline.completedNodes;
+        baselineStats.elapsedMs += baseline.totalElapsedMs;
+        for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; depth++) {
+            baselineStats.futilityPrunes[depth] += baseline.stats.futilityPrunes[depth];
+            baselineStats.futilityPrunesInCheck[depth] += baseline.stats.futilityPrunesInCheck[depth];
+        }
+        writePosition(baselineOutput, path, lineNumber, fen, baselineOptions, baseline);
+
+        referenceStats.positions++;
+        if (!baseline.hasMove) {
+            referenceStats.terminalPositions++;
+            writeReferencePosition(referenceOutput, path, lineNumber, fen, options, baseline, {}, 0, 0, 0, 0, 0,
+                                   "terminal");
+        } else if (baseline.depth == 0) {
+            referenceStats.rejectedPositions++;
+            writeReferencePosition(referenceOutput, path, lineNumber, fen, options, baseline, {}, 0, 0, 0, 0, 0,
+                                   "rejected", "baseline_depth_zero");
+        } else {
+            const int targetDepth = baseline.depth + options.referenceDepthGap;
+            Move rootMoves[MAX_MOVES];
+            const int rootCount = genLegalMoves(pos, rootMoves);
+            if (targetDepth > MAX_SEARCH_DEPTH) {
+                referenceStats.rejectedPositions++;
+                writeReferencePosition(referenceOutput, path, lineNumber, fen, options, baseline, {}, 0, 0, 0,
+                                       targetDepth, rootCount, "rejected", "target_depth_exceeds_max");
+            } else {
+                std::vector<RootMoveResult> rootScores;
+                rootScores.reserve(rootCount);
+                uint64_t rootNodes = 0;
+                uint64_t rootCompletedNodes = 0;
+                uint64_t rootElapsedMs = 0;
+                bool rejected = false;
+                SearchResult failedRoot{};
+                for (int i = 0; i < rootCount; i++) {
+                    resetDrawHistory(pos);
+                    SearchLimits rootLimits{};
+                    rootLimits.depth = targetDepth;
+                    rootLimits.nodeLimit = options.referenceNodesPerRoot;
+                    rootLimits.parameters = options.parameters;
+                    rootLimits.isolateTranspositionTable = true;
+                    rootLimits.restrictRootMove = true;
+                    rootLimits.rootMove = rootMoves[i];
+                    SearchResult root = searchBestMove(pos, rootLimits);
+                    rootNodes += root.nodes;
+                    rootCompletedNodes += root.completedNodes;
+                    rootElapsedMs += root.totalElapsedMs;
+                    for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; depth++) {
+                        referenceStats.futilityPrunes[depth] += root.stats.futilityPrunes[depth];
+                        referenceStats.futilityPrunesInCheck[depth] += root.stats.futilityPrunesInCheck[depth];
+                    }
+                    if (!root.completed || root.depth != targetDepth || !root.hasMove) {
+                        rejected = true;
+                        failedRoot = root;
+                        break;
+                    }
+                    RootMoveResult rootScore{};
+                    rootScore.move = rootMoves[i];
+                    rootScore.score = root.score;
+                    rootScores.push_back(std::move(rootScore));
+                }
+                referenceStats.nodes += rootNodes;
+                referenceStats.completedNodes += rootCompletedNodes;
+                referenceStats.elapsedMs += rootElapsedMs;
+                if (rejected) {
+                    referenceStats.rejectedPositions++;
+                    writeReferencePosition(referenceOutput, path, lineNumber, fen, options, baseline, rootScores,
+                                           rootNodes, rootCompletedNodes, rootElapsedMs, targetDepth, rootCount,
+                                           "rejected", "root_node_limit", &failedRoot,
+                                           static_cast<int>(rootScores.size()));
+                } else {
+                    referenceStats.completedPositions++;
+                    writeReferencePosition(referenceOutput, path, lineNumber, fen, options, baseline, rootScores,
+                                           rootNodes, rootCompletedNodes, rootElapsedMs, targetDepth, rootCount,
+                                           "complete", nullptr, nullptr, rootCount);
+                }
+            }
+        }
+
+        if (options.reportEvery > 0 && referenceStats.positions % options.reportEvery == 0) {
+            reportReferenceProgress(referenceStats, totalPositions, started);
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -471,26 +797,74 @@ int main(int argc, char** argv) {
         std::cerr << "loaded NNUE weights from " << options.weightsPath << "\n";
     }
 
-    std::ofstream outputFile;
-    std::ostream* output = &std::cout;
-    if (!options.outputPath.empty() && options.outputPath != "-") {
-        std::filesystem::path outputPath = std::filesystem::absolute(options.outputPath).lexically_normal();
+    auto checkOutputPath = [&](const std::string& text, const char* label,
+                               std::filesystem::path& outputPath) -> bool {
+        outputPath = std::filesystem::absolute(text).lexically_normal();
         for (const std::string& inputPath : options.inputPaths) {
             if (std::filesystem::absolute(inputPath).lexically_normal() == outputPath) {
-                std::cerr << "fatal: output file must not also be an input file\n";
-                return 1;
+                std::cerr << "fatal: " << label << " must not also be an input file\n";
+                return false;
             }
         }
         std::error_code existsError;
         bool exists = std::filesystem::exists(outputPath, existsError);
         if (existsError) {
-            std::cerr << "fatal: failed to inspect output path " << options.outputPath << "\n";
-            return 1;
+            std::cerr << "fatal: failed to inspect " << label << " " << text << "\n";
+            return false;
         }
         if (exists && !options.overwrite) {
-            std::cerr << "fatal: output file already exists; pass --overwrite to replace it\n";
+            std::cerr << "fatal: " << label << " already exists; pass --overwrite to replace it\n";
+            return false;
+        }
+        return true;
+    };
+
+    if (options.perRootReference) {
+        std::filesystem::path referencePath;
+        std::filesystem::path baselinePath;
+        if (!checkOutputPath(options.outputPath, "reference output", referencePath) ||
+            !checkOutputPath(options.baselineOutputPath, "baseline output", baselinePath)) {
             return 1;
         }
+        if (referencePath == baselinePath) {
+            std::cerr << "fatal: reference output and baseline output must differ\n";
+            return 1;
+        }
+        std::ofstream referenceFile(referencePath, std::ios::out | std::ios::trunc);
+        std::ofstream baselineFile(baselinePath, std::ios::out | std::ios::trunc);
+        if (!referenceFile || !baselineFile) {
+            std::cerr << "fatal: failed to open per-root reference outputs\n";
+            return 1;
+        }
+        const uint64_t totalPositions = countInputPositions(options.inputPaths);
+        const auto started = std::chrono::steady_clock::now();
+        RunStats baselineStats;
+        ReferenceRunStats referenceStats;
+        for (const std::string& path : options.inputPaths) {
+            if (!processReferenceFile(path, options, baselineStats, referenceStats, baselineFile, referenceFile,
+                                      totalPositions, started)) {
+                return 1;
+            }
+        }
+        Options baselineOptions = options;
+        baselineOptions.nodeLimit = options.baselineNodeLimit;
+        baselineOptions.allRootScores = false;
+        writeSummary(baselineFile, baselineOptions, baselineStats);
+        writeReferenceSummary(referenceFile, options, referenceStats);
+        if (!referenceFile || !baselineFile) {
+            std::cerr << "fatal: failed while writing per-root reference JSON Lines output\n";
+            return 1;
+        }
+        if (referenceStats.positions == 0) std::cerr << "warning: no positions processed\n";
+        reportReferenceProgress(referenceStats, totalPositions, started);
+        return 0;
+    }
+
+    std::ofstream outputFile;
+    std::ostream* output = &std::cout;
+    if (!options.outputPath.empty() && options.outputPath != "-") {
+        std::filesystem::path outputPath;
+        if (!checkOutputPath(options.outputPath, "output file", outputPath)) return 1;
         outputFile.open(outputPath, std::ios::out | std::ios::trunc);
         if (!outputFile) {
             std::cerr << "fatal: failed to open output file " << options.outputPath << "\n";
@@ -508,8 +882,6 @@ int main(int argc, char** argv) {
         std::cerr << "fatal: failed while writing JSON Lines output\n";
         return 1;
     }
-    if (stats.positions == 0) {
-        std::cerr << "warning: no positions processed\n";
-    }
+    if (stats.positions == 0) std::cerr << "warning: no positions processed\n";
     return 0;
 }

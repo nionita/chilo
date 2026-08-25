@@ -379,9 +379,32 @@ work from the interrupted final iteration, while `completed_nodes`,
 `completed_depth`, score, best move, and PV describe the last fully completed
 iteration. A budget too small to finish depth 1 reports depth 0 and a legal
 fallback move. Use `--overwrite` explicitly to replace an existing output.
-For a deep tuning reference, add `--all-root-scores`; this emits a `root_scores`
-map for each non-terminal position after searching every legal root move with a
-full window.
+For the score-regret tuning reference, use `--per-root-reference`. It runs the
+ordinary baseline first, sets a per-position target depth from that result, and
+then searches every legal root move independently with a full window and the
+same node cap. It writes a normal baseline JSONL plus a reference JSONL. A
+position is rejected immediately if any root cannot reach the target, so a
+reference file never retains a partial root-score map.
+
+```bash
+build/release-avx2/futility_probe \
+  --per-root-reference \
+  --baseline-nodes 120000 \
+  --reference-nodes-per-root 480000 \
+  --reference-depth-gap 2 \
+  --futility-margins 120,240,360 \
+  --baseline-output probes/baseline.jsonl \
+  --output probes/reference.jsonl \
+  --report-every 100 \
+  --overwrite \
+  positions.csv
+```
+
+Reference progress is emitted to stderr so the JSONL stream stays valid. Each
+reference record states whether it is `complete`, `rejected`, or `terminal`;
+rejections retain their failed root-move diagnostics. The legacy
+`--all-root-scores` option remains available as a raw full-root diagnostic, but
+the tuner anchor uses the per-root mode.
 
 Use `scripts/tune_futility.py` to expand margin families, run a deeper
 all-root-score reference and equal-budget candidates, then rank candidates by
@@ -390,7 +413,9 @@ their normalized reference-root score regret. A minimal configuration is:
 ```json
 {
   "candidate_nodes": 300000,
-  "reference_nodes": 1200000,
+  "reference_nodes_per_root": 480000,
+  "reference_depth_gap": 2,
+  "reference_report_every": 100,
   "score_scale": 600,
   "baseline_margins": [120, 320, 550],
   "shortlist_size": 15,
@@ -411,6 +436,12 @@ be placed in this config; their relative paths are resolved from the config
 file. Command-line `--probe`, one or more `--input`, and `--weights` override
 their respective defaults. Use `--no-weights` to force the built-in net even
 when the config supplies `weights`.
+
+`reference_probe` is optional and defaults to `probe`. Set it when the
+expensive per-root anchor is produced on another platform, for example with a
+Windows probe while ordinary candidate probes later run on Linux. The anchor
+manifest records the reference executable; the candidates manifest records the
+candidate executable separately.
 
 Power families use `"type": "power"` with `scales` and `exponents`.
 Explicit and generated tuples must have 1-7 nonnegative, nondecreasing

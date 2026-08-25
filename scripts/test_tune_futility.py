@@ -90,7 +90,8 @@ class ConfigExpansionTest(unittest.TestCase):
     def test_anchor_phase_can_expand_config_without_candidates(self) -> None:
         config = {
             "candidate_nodes": 100,
-            "reference_nodes": 200,
+            "reference_nodes_per_root": 200,
+            "reference_depth_gap": 2,
             "baseline_margins": [120],
         }
         expanded = tune_futility.expand_config(config, require_candidates=False)
@@ -102,7 +103,8 @@ class ConfigExpansionTest(unittest.TestCase):
         expanded = tune_futility.expand_config(
             {
                 "candidate_nodes": 1000,
-                "reference_nodes": 4000,
+                "reference_nodes_per_root": 4000,
+                "reference_depth_gap": 2,
                 "baseline_margins": [120, 320, 550],
                 "explicit_candidates": [[100, 300, 500], [100, 300, 500], [120, 320, 550]],
                 "families": [
@@ -135,7 +137,8 @@ class ConfigExpansionTest(unittest.TestCase):
             tune_futility.expand_config(
                 {
                     "candidate_nodes": 100,
-                    "reference_nodes": 200,
+                    "reference_nodes_per_root": 200,
+                    "reference_depth_gap": 2,
                     "baseline_margins": [120, 320, 550],
                     "explicit_candidates": [[100, 90]],
                 }
@@ -146,7 +149,8 @@ class ConfigExpansionTest(unittest.TestCase):
             tune_futility.expand_config(
                 {
                     "candidate_nodes": 100,
-                    "reference_nodes": 200,
+                    "reference_nodes_per_root": 200,
+                    "reference_depth_gap": 2,
                     "baseline_margins": [120],
                     "explicit_candidates": [[100]],
                     "candidate_node": 10,
@@ -157,7 +161,8 @@ class ConfigExpansionTest(unittest.TestCase):
         expanded = tune_futility.expand_config(
             {
                 "candidate_nodes": 100,
-                "reference_nodes": 200,
+                "reference_nodes_per_root": 200,
+                "reference_depth_gap": 2,
                 "baseline_margins": [120],
                 "explicit_candidates": [[100]],
                 "score_scale": 750,
@@ -175,18 +180,24 @@ class ConfigExpansionTest(unittest.TestCase):
             config_path = Path(directory) / "config.json"
             expanded = {"probe": "config-probe", "inputs": ["config.fen"], "weights": "config.bin"}
             args = tune_futility.argparse.Namespace(
-                probe="cli-probe", input=["cli.fen"], weights="cli.bin", no_weights=False
+                probe="cli-probe", reference_probe=None, input=["cli.fen"], weights="cli.bin", no_weights=False
             )
-            probe, inputs, weights = tune_futility.resolve_effective_artifacts(config_path, expanded, args)
+            probe, reference_probe, inputs, weights = tune_futility.resolve_effective_artifacts(config_path, expanded, args)
             self.assertEqual(probe, Path("cli-probe").resolve())
+            self.assertEqual(reference_probe, Path("cli-probe").resolve())
             self.assertEqual(inputs, [Path("cli.fen").resolve()])
             self.assertEqual(weights, Path("cli.bin").resolve())
             args.no_weights = True
-            _, _, weights = tune_futility.resolve_effective_artifacts(config_path, expanded, args)
+            _, _, _, weights = tune_futility.resolve_effective_artifacts(config_path, expanded, args)
             self.assertIsNone(weights)
 
 
 class ProbeContractTest(unittest.TestCase):
+    def test_record_key_is_portable_across_windows_and_linux_source_paths(self) -> None:
+        windows = position_record(r"input\g3-25k-seed990319.csv", 7, "fen", [120], 100)
+        linux = position_record("/home/nicu/Tune/futility/g3-25k-seed990319.csv", 7, "fen", [120], 100)
+        self.assertEqual(tune_futility.record_key(windows), tune_futility.record_key(linux))
+
     def test_builds_probe_command(self) -> None:
         command = tune_futility.build_probe_command(
             Path("probe"),
@@ -203,6 +214,66 @@ class ProbeContractTest(unittest.TestCase):
         self.assertIn("--weights", command)
         self.assertIn("--all-root-scores", command)
         self.assertTrue(command[-1].endswith("two.csv"))
+
+    def test_builds_per_root_reference_command(self) -> None:
+        command = tune_futility.build_per_root_reference_command(
+            Path("probe"), [Path("positions.csv")], Path("net.bin"), 120000, 480000, 2,
+            [120, 240, 360], Path("reference.jsonl"), Path("baseline.jsonl"), 100,
+        )
+        self.assertIn("--per-root-reference", command)
+        self.assertIn("--baseline-nodes", command)
+        self.assertIn("480000", command)
+        self.assertIn("--baseline-output", command)
+
+    def test_parses_complete_and_rejected_per_root_reference(self) -> None:
+        margins = [120]
+        baseline_nodes = 100
+        root_nodes = 400
+        complete = position_record(
+            "input", 1, "fen-complete", margins, root_nodes, move="e2e4", score=10, depth=8,
+            all_root_scores=True, root_scores={"e2e4": 10},
+        )
+        complete.update({
+            "reference_mode": tune_futility.REFERENCE_MODE,
+            "reference_status": "complete",
+            "node_limit_per_root": root_nodes,
+            "baseline_node_limit": baseline_nodes,
+            "baseline_completed_depth": 6,
+            "target_depth": 8,
+            "legal_root_moves": 1,
+            "completed_root_moves": 1,
+            "baseline_nodes": baseline_nodes,
+            "total_nodes": root_nodes + baseline_nodes,
+        })
+        rejected = position_record("input", 2, "fen-rejected", margins, root_nodes, depth=0, all_root_scores=True)
+        rejected.update({
+            "reference_mode": tune_futility.REFERENCE_MODE,
+            "reference_status": "rejected",
+            "node_limit_per_root": root_nodes,
+            "baseline_node_limit": baseline_nodes,
+            "baseline_completed_depth": 6,
+            "target_depth": 8,
+            "legal_root_moves": 2,
+            "completed_root_moves": 1,
+            "baseline_nodes": baseline_nodes,
+            "total_nodes": root_nodes + baseline_nodes,
+            "rejection_reason": "root_node_limit",
+        })
+        summary = {
+            "type": "summary", "reference_mode": tune_futility.REFERENCE_MODE,
+            "futility_margins": margins, "all_root_scores": True, "node_limit": root_nodes,
+            "node_limit_per_root": root_nodes, "baseline_node_limit": baseline_nodes,
+            "reference_depth_gap": 2, "positions": 2,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "reference.jsonl"
+            path.write_text(
+                "".join(json.dumps(item) + "\n" for item in (complete, rejected, summary)), encoding="utf-8"
+            )
+            parsed = tune_futility.parse_probe_output(
+                path, root_nodes, margins, True, True, baseline_nodes, 2
+            )
+            self.assertEqual(parsed["positions"][tune_futility.record_key(complete)]["reference_status"], "complete")
 
     def test_parses_complete_output_and_rejects_mismatched_position(self) -> None:
         margins = [100, 300]
@@ -423,9 +494,11 @@ class PhaseManifestTest(unittest.TestCase):
             anchor_path = run_dir / "anchor_manifest.json"
             reference_path = run_dir / "probes" / "reference.jsonl"
             baseline_path = run_dir / "probes" / "baseline.jsonl"
+            probe_path = run_dir / "futility_probe"
             anchor_path.write_text("{}", encoding="utf-8")
             reference_path.write_text("reference root scores", encoding="utf-8")
             baseline_path.write_text("baseline", encoding="utf-8")
+            probe_path.write_text("probe", encoding="utf-8")
             expanded = {
                 "score_scale": 600.0,
                 "shortlist_size": 1,
@@ -437,7 +510,7 @@ class PhaseManifestTest(unittest.TestCase):
                 "trusted_position_count": 1,
                 "position_keys_sha256": "a" * 64,
             }
-            manifest = tune_futility.build_candidates_manifest(run_dir, expanded, trusted_set)
+            manifest = tune_futility.build_candidates_manifest(run_dir, expanded, trusted_set, probe_path)
             self.assertEqual(manifest["schema"], tune_futility.CANDIDATES_SCHEMA)
             self.assertEqual(manifest["reference_root_scores"]["path"], str(reference_path.resolve()))
             self.assertIn("sha256", manifest["reference_root_scores"])

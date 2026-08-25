@@ -221,6 +221,43 @@ Only after this anchor is complete should a reviewed config add families and
 run `--phase candidates`; those candidate choices can change without rerunning
 the retained root-score reference.
 
+## Per-root Reference Contract — 2026-08-25
+
+New reference experiments use a different contract from the still-running
+G3-SR3 cloud reference. The cloud run remains a valid total-position-budget
+reference and is analysed on branch `futility-score-regret`; do not mix its
+JSONL with a per-root anchor.
+
+For the new contract, each input position is handled in one combined anchor
+probe: f01 is first searched at the candidate budget and completes at depth
+`B`. Every legal root move is then searched independently with a full window,
+its own cumulative cap `R`, and target root depth `B + gap`. The reference
+accepts the position only if every root completes that target. It rejects the
+position on the first failed root and records the FEN, baseline/target depths,
+legal and completed root counts, failed move, failed depth/nodes, and reason.
+No partial score map is retained.
+
+The first planned Windows anchor uses f01 `120,240,360`, baseline `120k`,
+`R = 480k` nodes per legal root move, `gap = 2`, and reference progress every
+100 positions. Progress reports processed/total, completed/rejected/terminal
+counts, nodes, elapsed time, rate, and ETA on stderr; the tuner streams it to
+both the terminal and `logs/reference.log`.
+
+G3-SR4 uses `~/Tune/extract/2026/chilo-g3/chilo-2.csv` and seed `990319`.
+Because the sampler intentionally remains single-exclusion-input, a one-off
+CSV `~/Tune/futility/g3-exclude-sr2-sr3.csv` was made by merging the FENs from
+G3-SR2 (`seed990317`) and G3-SR3 (`seed990318`). Its provenance JSON records
+the two input hashes; it contains 49,996 unique FENs and has SHA-256
+`9cf16193456f489a362addea41fb2ead7a432346e14cb9aa9dfa56229520e081`.
+Sampling against it produced `g3-25k-seed990319.csv`: 25,000 unique FENs,
+zero overlap, SHA-256
+`ca60ed4bf656d2a86f5ccce7a6740b8ceacf8a4bc639919de488ebe16a0c1e19`.
+The merged exclusion is only a collection-time artifact, not a new
+multi-shard tuning feature.
+
+This contract intentionally measures score regret on completed references only.
+Depth remains a reference-quality gate, not a candidate ranking objective.
+
 ## G3-SR1 Candidate Results (continued)
 
 Median normalized regret was `0` for every one of the 30 tuples, so it did not

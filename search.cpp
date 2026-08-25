@@ -1082,6 +1082,25 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         return result;
     }
 
+    if (limits.restrictRootMove) {
+        int selected = -1;
+        for (int i = 0; i < rootCount; i++) {
+            if (movesEqual(rootMoves[i], limits.rootMove)) {
+                selected = i;
+                break;
+            }
+        }
+        if (selected < 0) {
+            result.completed = false;
+            result.totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - startTime)
+                                        .count();
+            return result;
+        }
+        rootMoves[0] = rootMoves[selected];
+        rootCount = 1;
+    }
+
     result.bestMove = rootMoves[0];
     result.hasMove = true;
     result.pv[0] = rootMoves[0];

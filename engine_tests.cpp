@@ -655,6 +655,40 @@ int testSearchSampleHook() {
     }
 
     resetDrawHistory(p);
+    SearchLimits allDepthTwo{};
+    allDepthTwo.depth = 2;
+    allDepthTwo.collectRootMoveScores = true;
+    allDepthTwo.isolateTranspositionTable = true;
+    SearchResult allDepthTwoResult = searchBestMove(p, allDepthTwo);
+    resetDrawHistory(p);
+    SearchLimits oneRoot{};
+    oneRoot.depth = 2;
+    oneRoot.nodeLimit = 100000;
+    oneRoot.isolateTranspositionTable = true;
+    oneRoot.restrictRootMove = true;
+    oneRoot.rootMove = legalRootMoves[0];
+    SearchResult oneRootResult = searchBestMove(p, oneRoot);
+    int expectedOneRootScore = 0;
+    bool foundOneRootScore = false;
+    for (const RootMoveResult& rootMove : allDepthTwoResult.rootMoveResults) {
+        if (moveToUCI(rootMove.move) == moveToUCI(legalRootMoves[0])) {
+            expectedOneRootScore = rootMove.score;
+            foundOneRootScore = true;
+            break;
+        }
+    }
+    if (!allDepthTwoResult.completed || !foundOneRootScore || !oneRootResult.completed ||
+        oneRootResult.depth != 2 || moveToUCI(oneRootResult.bestMove) != moveToUCI(legalRootMoves[0]) ||
+        oneRootResult.score != expectedOneRootScore) {
+        std::cout << "  FAIL (single-root full-window search did not match all-root score)\n";
+        return 1;
+    }
+    if (positionToFEN(p) != "4k3/8/8/8/8/8/8/3QK3 w - - 0 1") {
+        std::cout << "  FAIL (single-root search did not restore root position)\n";
+        return 1;
+    }
+
+    resetDrawHistory(p);
     SampleCapture filteredCapture;
     SearchLimits filteredLimits{1, 0, nullptr, nullptr};
     filteredLimits.collectBestMoveLeaf = true;
