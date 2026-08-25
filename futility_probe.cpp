@@ -580,6 +580,13 @@ uint64_t countInputPositions(const std::vector<std::string>& paths) {
     return count;
 }
 
+std::string formatHoursMinutes(uint64_t seconds) {
+    const uint64_t hours = seconds / 3600;
+    const uint64_t minutes = (seconds % 3600) / 60;
+    const std::string hoursText = hours < 10 ? "0" + std::to_string(hours) : std::to_string(hours);
+    return hoursText + ':' + (minutes < 10 ? "0" : "") + std::to_string(minutes);
+}
+
 void reportReferenceProgress(const ReferenceRunStats& stats, uint64_t total,
                              std::chrono::steady_clock::time_point started) {
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -593,7 +600,7 @@ void reportReferenceProgress(const ReferenceRunStats& stats, uint64_t total,
               << " nodes=" << stats.nodes
               << " elapsed_s=" << elapsed / 1000
               << " positions_per_s=" << rate
-              << " eta_s=" << static_cast<uint64_t>(etaSeconds) << "\n";
+              << " eta=" << formatHoursMinutes(static_cast<uint64_t>(etaSeconds)) << "\n";
 }
 
 bool processFile(const std::string& path, const Options& options, RunStats& stats, std::ostream& output) {

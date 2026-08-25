@@ -237,11 +237,14 @@ position on the first failed root and records the FEN, baseline/target depths,
 legal and completed root counts, failed move, failed depth/nodes, and reason.
 No partial score map is retained.
 
-The first planned Windows anchor uses f01 `120,240,360`, baseline `120k`,
-`R = 480k` nodes per legal root move, `gap = 2`, and reference progress every
-100 positions. Progress reports processed/total, completed/rejected/terminal
-counts, nodes, elapsed time, rate, and ETA on stderr; the tuner streams it to
-both the terminal and `logs/reference.log`.
+The first 480k-per-root Windows calibration rejected 393 of 804 non-terminal
+positions after 806 completed records. Of those rejections, 392 exhausted the
+cap and 320 were only one completed iteration short of the target. G3-SR4
+therefore restarts with f01 `120,240,360`, baseline `120k`, `R = 2M` nodes per
+legal root move, and `gap = 2`. The cap is a safety bound, not a work target:
+each root stops as soon as it completes the target. Reference progress is
+reported every 100 positions with completed/rejected/terminal counts, nodes,
+elapsed time, rate, and an `HH:MM` ETA.
 
 G3-SR4 uses `~/Tune/extract/2026/chilo-g3/chilo-2.csv` and seed `990319`.
 Because the sampler intentionally remains single-exclusion-input, a one-off
