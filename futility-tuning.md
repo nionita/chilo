@@ -6,11 +6,15 @@ selects SPRT candidates; it does not establish playing strength.
 
 ## Accepted SPRT Basis
 
-`f01` is the current practical basis for future futility SPRTs:
+`f21` is the current short-control playing basis: its 6+0.1 SPRT against
+`f01` accepted H1. `f01` remains frozen as the reference control for futility
+proxy optimization, baseline depth measurement, and candidate comparisons.
+Do not replace or overwrite either binary.
 
 | Binary | Margins | Status |
 |---|---|---|
-| `chilo-0.7.5-f01-avx2` | `120,240,360` | Previous SPRT accepted it at more than +3 Elo. Do not overwrite this binary. |
+| `chilo-0.7.5-f01-avx2` | `120,240,360` | Accepted previous basis; frozen proxy control. |
+| `chilo-0.7.5-f21-avx2` | `75,212,390,600,839` | H1 accepted versus f01 at 6+0.1; current practical playing candidate. |
 
 The variant manifest for `f01` through `f06` is maintained externally at
 `~/Tune/futility/futility-sprt-g4t1-64x8-d3-d5-first.json`.
@@ -68,7 +72,7 @@ this deeper trusted proxy, respectively.
 
 ## G3-SR2 f01 Control and 120k Follow-up — 2026-08-23
 
-The active 6+0.1 SPRT compares `f21` with accepted control `f01`, not with the
+The 6+0.1 SPRT compared `f21` with accepted control `f01`, not with the
 G3-SR2 source-style proxy baseline `120,320,550`. To make that direct proxy
 comparison, `f01` was probed at 40,000 nodes using the existing G3-SR2
 reference. Its returned JSONL used a remote source path, so it was validated
@@ -124,180 +128,92 @@ Conclusion: the 2.56M full-root reference is suitable for the 40k G3-SR2
 screen but marginal for 120k PVS searches. A future high-budget screen should
 use f01 as its direct control and a smaller corpus with a reference made
 substantially deeper than every compared candidate. Do not extrapolate either
-the 40k or 120k regret differences directly into Elo; the running SPRT remains
-the strength decision.
+the 40k or 120k regret differences directly into Elo. The subsequent f21/f01
+SPRT accepted H1, which validates the directional prediction without turning
+small proxy deltas into an Elo conversion.
 
-## Procedure: Fresh Corpus and Remote High-Depth Anchor — 2026-08-23
+## Historical G3-SR3 Shared-Budget Anchor
 
-G3-SR3 starts a new, independent 25,000-position corpus and uses a much
-deeper all-root reference before any new family is considered. This is a
-single-corpus procedure; it deliberately makes no provision for combining or
-managing multiple shards.
+G3-SR3 seed `990318` is a 25,000-position corpus, FEN-disjoint from G3-SR2.
+Its completed historical anchor at `~/Tune/futility/g3-sr3/` used f01 at 120k
+for the baseline and a 10.24M **position-wide** full-root budget. Retain its
+`probes/reference.jsonl` and `probes/baseline.jsonl` as durable raw evidence;
+they remain valid only under the shared-budget contract.
 
-### 1. Collect one new FEN-disjoint corpus
+The old reference hit its total cap on 99.4% of non-terminal positions, yet it
+completed at least one nominal ply beyond f01 in 23,045 of 24,983 non-terminal
+positions (92.2%), and at least two plies beyond in 19,237 (77.0%). f01's
+score-regret baseline on the +1 trusted set is mean `0.015773`, P90
+`0.046616`, and 58.61% move agreement. The retained maps contain a mean 26.66
+legal root moves per position (median 28; P90 42).
 
-Use `scripts/sample_futility_positions.py` on a headered collector CSV with
-the fields `eval_fen,score,result`. It takes one prior corpus as `--exclude`,
-does a deterministic reservoir sample, rejects previously selected FENs, and
-refuses to overwrite either output. It writes the CSV plus a provenance JSON
-containing source and output hashes, seed, counts, and the zero-overlap check.
+This anchor may still screen a known candidate such as f21 at 120k as an
+independent old-contract holdout. Do not pool it with per-root ranking results
+or overwrite it with the new contract.
 
-The G3-SR3 corpus was made from the same G3 source as G3-SR2:
+## Per-root Reference Anchors and Contract Comparison
 
-```bash
-python3 scripts/sample_futility_positions.py \
-  --source ~/Tune/extract/2026/chilo-g3/chilo-1.csv \
-  --exclude ~/Tune/futility/g3-25k-seed990317.csv \
-  --output ~/Tune/futility/g3-25k-seed990318.csv \
-  --metadata ~/Tune/futility/g3-25k-seed990318.json \
-  --seed 990318 \
-  --count 25000
-```
+The per-root contract is the future proxy basis. For each position, f01 first
+searches at the candidate budget and completes at depth `B`. Every legal root
+is then searched independently with a full window, its own cap `R`, and target
+depth `B + gap`. A position is complete only if every legal root reaches that
+target. The first failed root rejects the position and records the FEN,
+baseline/target depths, root counts, failed move, failed depth/nodes, and
+reason. No partial root-score map is retained.
 
-The result has 25,000 unique FENs and no overlap with G3-SR2. Keep the CSV
-and its adjacent provenance JSON together. Select a new deterministic seed
-for a later fresh corpus and pass the immediately relevant prior corpus as the
-single exclusion input; do not add multi-shard handling here without a
-separate design decision.
+`R` is a safety bound, not a work target: a root stops as soon as it completes
+the common target. Score regret is calculated only on complete references;
+depth is a reference-quality gate, never a candidate ranking objective.
 
-### 2. Prepare a self-contained remote anchor package
+| Anchor | Corpus | Status | Contract |
+|---|---|---|---|
+| G3-SR4 | seed 990319, 25k FENs | Windows anchor running | f01 120k, `B + 2`, 2M/root |
+| G3-SR3-R2M | seed 990318, 25k FENs | serial cloud anchor running | f01 120k, `B + 2`, 2M/root |
 
-Create a new local run directory with a reviewed `tune.json`, then make a
-portable `.tgz` containing:
+The earlier 480k/root SR4 calibration completed 411 and rejected 393 of 804
+non-terminal positions; 392 failures exhausted the cap and 320 were only one
+iteration short. The 2M/root restart is therefore intentional. Both current
+anchors report every 100 positions with completed/rejected/terminal counts,
+nodes, elapsed time, rate, and an `HH:MM` ETA. The cloud launcher runs under
+`nohup` with a PID and durable log, so an SSH disconnect is safe.
 
-- the exact AVX2 `futility_probe`, NNUE weights, input CSV, and input metadata;
-- `SHA256SUMS` for every packed artifact;
-- a `README.md` with return/install instructions;
-- `run-anchor.sh`, which runs the full-root reference and then the baseline
-  serially; and
-- `start-anchor.sh`, which writes a PID file and starts the runner through
-  `nohup` with a durable log.
+G3-SR4 was sampled from `chilo-2.csv` with seed 990319, excluding the merged
+G3-SR2/SR3 FEN set. Its provenance JSON records 25,000 unique FENs and zero
+overlap. The sampler itself remains single-input; do not introduce generic
+multi-shard sampling merely to support these two anchors.
 
-The runner must validate/reuse a completed JSONL by its final matching summary
-and rerun only an incomplete artifact. It must use one probe process at a time:
-the remote server has two CPUs, and the full-root search benefits from no
-contention. Never start a second launcher while its PID is live.
+Keep every anchor as its own paired raw JSONL evidence and manifest. After the
+two per-root runs complete, treat one shard as optimizer development evidence
+and the other as an untouched selection shard until an explicit aggregation
+design is reviewed.
 
-For G3-SR3 the local config is `~/Tune/futility/g3-sr3/tune.json`: accepted
-control f01 (`120,240,360`) is both the 120,000-node baseline and the
-10,240,000-node all-root reference. The packaged runner emits
-`output/reference.jsonl` with `--all-root-scores`, followed by
-`output/baseline.jsonl` without that flag. Using f01 for both makes the anchor
-directly relevant to the current SPRT basis.
+### G3-SR3 Old-versus-New Reference Report
 
-### 3. Run remotely and install the finished anchor
+The old shared-budget and new per-root G3-SR3 anchors use the same input FENs,
+which makes them a controlled reference-design experiment. On
+`futility-score-regret`, add a read-only report that matches records by input
+basename, line, and FEN and reports:
 
-On the remote server:
+1. deterministic agreement of the repeated 120k f01 baselines;
+2. old depth separation against new per-root acceptance/rejection;
+3. best-move and root-score agreement for positions complete under both
+   contracts;
+4. new rejection characteristics by old root count, old depth gap, and old
+   root-score spread; and
+5. f01/f21 and later candidate-regret/ranking agreement under both contracts.
 
-```bash
-tar -xzf g3-sr3-anchor.tgz
-cd g3-sr3-anchor
-sha256sum -c SHA256SUMS
-./start-anchor.sh
-tail -f logs/runner.log
-```
+This report extracts value from the historical anchor without treating it as a
+per-root shard. Keep `futility-score-regret` available until it and any desired
+old-contract candidate probes are complete. Before merging the per-root branch,
+tag the old-contract tip so the analysis remains reproducible.
 
-After completion, copy `output/reference.jsonl` and `output/baseline.jsonl`
-back into the local run directory under `probes/`, then materialize the local
-manifest without rerunning completed probes:
+## Current SPRT Status
 
-```bash
-mkdir -p ~/Tune/futility/g3-sr3/probes
-cp output/reference.jsonl ~/Tune/futility/g3-sr3/probes/reference.jsonl
-cp output/baseline.jsonl  ~/Tune/futility/g3-sr3/probes/baseline.jsonl
-
-cd ~/Sources/chilo
-python3 scripts/tune_futility.py \
-  --config ~/Tune/futility/g3-sr3/tune.json \
-  --run-dir ~/Tune/futility/g3-sr3 \
-  --phase anchor
-```
-
-The local input must be byte-identical to the packed one. The probe records a
-remote `source` path in both JSONLs; that is acceptable because it remains the
-same stable `(source, line, FEN)` key for reference and baseline. The local
-anchor manifest records the effective local probe, input, and weights hashes.
-Only after this anchor is complete should a reviewed config add families and
-run `--phase candidates`; those candidate choices can change without rerunning
-the retained root-score reference.
-
-## Per-root Reference Contract — 2026-08-25
-
-New reference experiments use a different contract from the still-running
-G3-SR3 cloud reference. The cloud run remains a valid total-position-budget
-reference and is analysed on branch `futility-score-regret`; do not mix its
-JSONL with a per-root anchor.
-
-For the new contract, each input position is handled in one combined anchor
-probe: f01 is first searched at the candidate budget and completes at depth
-`B`. Every legal root move is then searched independently with a full window,
-its own cumulative cap `R`, and target root depth `B + gap`. The reference
-accepts the position only if every root completes that target. It rejects the
-position on the first failed root and records the FEN, baseline/target depths,
-legal and completed root counts, failed move, failed depth/nodes, and reason.
-No partial score map is retained.
-
-The first 480k-per-root Windows calibration rejected 393 of 804 non-terminal
-positions after 806 completed records. Of those rejections, 392 exhausted the
-cap and 320 were only one completed iteration short of the target. G3-SR4
-therefore restarts with f01 `120,240,360`, baseline `120k`, `R = 2M` nodes per
-legal root move, and `gap = 2`. The cap is a safety bound, not a work target:
-each root stops as soon as it completes the target. Reference progress is
-reported every 100 positions with completed/rejected/terminal counts, nodes,
-elapsed time, rate, and an `HH:MM` ETA.
-
-G3-SR4 uses `~/Tune/extract/2026/chilo-g3/chilo-2.csv` and seed `990319`.
-Because the sampler intentionally remains single-exclusion-input, a one-off
-CSV `~/Tune/futility/g3-exclude-sr2-sr3.csv` was made by merging the FENs from
-G3-SR2 (`seed990317`) and G3-SR3 (`seed990318`). Its provenance JSON records
-the two input hashes; it contains 49,996 unique FENs and has SHA-256
-`9cf16193456f489a362addea41fb2ead7a432346e14cb9aa9dfa56229520e081`.
-Sampling against it produced `g3-25k-seed990319.csv`: 25,000 unique FENs,
-zero overlap, SHA-256
-`ca60ed4bf656d2a86f5ccce7a6740b8ceacf8a4bc639919de488ebe16a0c1e19`.
-The merged exclusion is only a collection-time artifact, not a new
-multi-shard tuning feature.
-
-This contract intentionally measures score regret on completed references only.
-Depth remains a reference-quality gate, not a candidate ranking objective.
-
-## G3-SR1 Candidate Results (continued)
-
-Median normalized regret was `0` for every one of the 30 tuples, so it did not
-distinguish candidates. The following three independent metric winners advance
-to SPRT against accepted basis `f01`:
-
-| Code | Proxy winner | Margins | Mean regret | P90 regret | Move agreement | Mean completed depth |
-|---|---|---|---:|---:|---:|---:|
-| `f11` | Mean regret | `100,283,520` | 0.008820 | 0.019906 | 70.552% | 7.506 |
-| `f12` | P90 regret | `100,260,420` | 0.008851 | 0.019852 | 70.564% | 7.520 |
-| `f13` | Move agreement | `100,283,520,800,1118` | 0.008888 | 0.019913 | 70.576% | 7.562 |
-
-The mean-depth winner (`75,212,390,600,839`, depth 7.639) was not advanced:
-it ranked 24th by mean regret and had lower move agreement.
-
-## SPRT Queue
-
-### G3-SR2
-
-| Order | Candidate | Opponent | Status |
-|---:|---|---|---|
-| 1 | `f21` | `f01` | Built; first G3-SR2 SPRT candidate. |
-| 2 | `f22` | `f01` | Built; pending `f21` result. |
-| 3 | `f23` | `f01` | Built; pending `f22` result. |
-
-### G3-SR1 (historical)
-
-| Order | Candidate | Opponent | Status |
-|---:|---|---|---|
-| 1 | `f11` | `f01` | Interrupted after two games; resumable state retained, but superseded by G3-SR2. |
-| 2 | `f12` | `f01` | Not started; superseded by G3-SR2. |
-| 3 | `f13` | `f01` | Not started; superseded by G3-SR2. |
-
-The built candidate mapping and hashes are recorded externally in
-`~/Tune/futility/g3-sr1-sprt.json` and its adjacent build receipt. Use the
-SPRT wrapper with explicit engine names and the shared `chilo-g4t1-64x8.bin`
-weights for both sides.
+| Candidate | Opponent | Control | Status |
+|---|---|---|---|
+| `f21` | `f01` | 6+0.1 | H1 accepted. |
+| `f22`, `f23` | `f01` | 6+0.1 | Not started; lower proxy promise, no longer queued by default. |
+| `f21` | source futility `0.7.4` | longer control | Planned confirmation of the practical best version. |
 
 ## Future: Root-Budget-Adaptive Futility Profiles
 
@@ -318,7 +234,9 @@ SPRT evidence.
 
 Validation plan:
 
-1. Finish the current static `f21`/`f22`/`f23` SPRTs against `f01` at 6+0.1.
+1. Confirm f21 against source futility `0.7.4` at a longer control. Do not
+   automatically consume time on f22/f23 unless later per-root evidence makes
+   one a useful structural control.
 2. Test promising static tuples at at least one much shorter and one much
    longer control, for example 1+0.01, 6+0.1, and 30+0.3. Keep the net,
    openings, adjudication, and other tournament settings fixed across those
