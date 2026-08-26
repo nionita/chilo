@@ -221,6 +221,42 @@ and state entries are reused; an anchor, probe, input, net, budget, or config
 hash mismatch requires a new optimizer run directory. The example is
 `scripts/futility_optimizer.example.json`.
 
+### Future: Post-anchor Mate Rescue
+
+Do not discard every reference rejection whose f01 baseline eventually reports
+mate. In fixed-node PVS, a short forced mate can make later iterations cheap,
+so its final completed depth may be far higher than the work needed to prove
+the mate. An all-root reference must still search every alternative move and
+can exhaust its per-root cap even when the tactical fact is clear. Longer
+forced mates are valuable futility tests: a radically pruned candidate that
+misses one must not gain an advantage merely because the position was removed
+from score-regret ranking.
+
+After G3-SR4 completes, inspect only the rejected records and run a separate
+mate-rescue pass; do not change or repeat the full anchor. The **reference**,
+not the baseline alone, triggers rescue: it must establish a winning mate on a
+root before the normal `R` failure. Let `D_found` be the completed iterative
+search depth at which that mate was established (not the displayed mate-in-N
+distance), then use a fixed rescue target of `D_found + gap`.
+
+Roots already searched beyond that target retain their stronger score and
+record their individual score depth; later roots are searched to the rescue
+target. A heterogeneous map is acceptable for this mate-specific contract,
+but its depth provenance must be retained. Its regret is defined from the
+exact best reference value `+1`: a candidate selecting a certified winning
+mate has regret zero; for each distinct non-mating root selected by any
+evaluated candidate, refine that root to the fixed rescue target when its
+available score is shallower, then calculate `1 - transformed(selected-root
+score)`. Deduplicate these selected-root refinements across candidates and
+retain the rescue contract, root scores, depths, cap, and mate metadata in
+separate durable artifacts.
+
+First measure the number and type of G3-SR4 rejections, including how many
+are mate-interesting, before implementing this new contract. A simple
+higher-`R`, rejected-only rerun remains the control comparison: it retains the
+ordinary uniform contract and reveals whether the specialized rescue is worth
+its additional complexity.
+
 ### G3-SR3 Old-versus-New Reference Report
 
 The old shared-budget and new per-root G3-SR3 anchors use the same input FENs,
