@@ -187,6 +187,40 @@ two per-root runs complete, treat one shard as optimizer development evidence
 and the other as an untouched selection shard until an explicit aggregation
 design is reviewed.
 
+## Discrete Margin Optimizer
+
+`scripts/optimize_futility.py` runs a dependency-free, deterministic
+coordinate search over explicit nondecreasing margin tuples. Its generic
+search core only handles ordered integer vectors and lexicographic objective
+tuples; the futility adapter alone reads probe JSONL and calculates score
+regret. No SciPy or other optimizer package is required, and the existing
+`~/Sources/chilo/.venv` can run the script from this worktree.
+
+The optimizer configuration names a development and validation reference
+directory independently. Its first intended experiment uses G3-SR4 as the
+development anchor because it is expected first, and keeps G3-SR3-R2M
+untouched for validation. `--phase optimize` is the safe default; it searches
+only development and persists every candidate output and state under its run
+directory. `--phase validate` promotes the top five distinct non-baseline
+development tuples, reruns them against the selection anchor, and ranks only
+that fixed set there. `--phase all` is explicit because validation is costly.
+
+Each configuration must give a seed for every enabled maximum futility depth.
+The first search covers depths 3 through 7, represents a profile as its first
+margin plus nonnegative increments, and refines with 80, 40, 20, then 10 cp
+steps. The default cap of 80 newly probed development tuples, maximum allowed
+margin, promoted-count, seeds, and steps are all configuration parameters.
+The ordering remains mean normalized regret, then P90, median, and the margin
+tuple; depth and all other probe metrics remain diagnostics.
+
+The reference directory and its declared contract are part of the strict
+optimizer manifest. `per_root_v1` is the future contract; `shared_budget_v1`
+can be named for a separately labelled historical G3-SR3 experiment, but must
+never be pooled with per-root results. Existing valid JSONL candidate outputs
+and state entries are reused; an anchor, probe, input, net, budget, or config
+hash mismatch requires a new optimizer run directory. The example is
+`scripts/futility_optimizer.example.json`.
+
 ### G3-SR3 Old-versus-New Reference Report
 
 The old shared-budget and new per-root G3-SR3 anchors use the same input FENs,

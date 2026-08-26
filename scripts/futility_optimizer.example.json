@@ -1,0 +1,31 @@
+{
+  "probe": "/path/to/futility_probe-avx2",
+  "inputs": ["/path/to/g3-25k.csv"],
+  "weights": "/path/to/chilo-g4t1-64x8.bin",
+  "candidate_nodes": 120000,
+  "baseline_margins": [120, 240, 360],
+  "score_scale": 600,
+  "probe_report_every": 1000,
+  "development": {
+    "reference_dir": "/path/to/g3-sr4",
+    "contract": "per_root_v1"
+  },
+  "validation": {
+    "reference_dir": "/path/to/g3-sr3-r2m",
+    "contract": "per_root_v1"
+  },
+  "optimizer": {
+    "depths": [3, 4, 5, 6, 7],
+    "seeds": [
+      [120, 240, 360],
+      [100, 240, 400, 600],
+      [75, 212, 390, 600, 839],
+      [75, 212, 390, 600, 839, 1100],
+      [75, 212, 390, 600, 839, 1100, 1380]
+    ],
+    "steps": [80, 40, 20, 10],
+    "max_margin": 2000,
+    "max_new_evaluations": 80,
+    "validation_top": 5
+  }
+}
