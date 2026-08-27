@@ -1,0 +1,30 @@
+{
+  "probe": "/path/to/futility_probe-avx2",
+  "inputs": ["/path/to/g3-25k.csv"],
+  "weights": "/path/to/chilo-g4t1-64x8.bin",
+  "candidate_nodes": 120000,
+  "baseline_margins": [120, 240, 360],
+  "score_scale": 600,
+  "probe_report_every": 1000,
+  "development": {
+    "reference_dir": "/path/to/g3-sr4",
+    "contract": "per_root_v1"
+  },
+  "spsa": {
+    "tracks": [
+      {"id": "d3-f01", "margins": [120, 240, 360]},
+      {"id": "d3-low", "margins": [40, 160, 280]}
+    ],
+    "iterations": 12,
+    "workers": 4,
+    "subset_fraction": 0.1,
+    "seed": 20260827,
+    "gain_a": 40.0,
+    "stability_A": 6.0,
+    "gain_alpha": 0.602,
+    "perturbation_c": 40.0,
+    "perturbation_gamma": 0.101,
+    "objective_scale": 1000.0,
+    "max_margin": 2000
+  }
+}

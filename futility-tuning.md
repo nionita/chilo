@@ -167,7 +167,7 @@ depth is a reference-quality gate, never a candidate ranking objective.
 
 | Anchor | Corpus | Status | Contract |
 |---|---|---|---|
-| G3-SR4 | seed 990319, 25k FENs | Windows anchor running | f01 120k, `B + 2`, 2M/root |
+| G3-SR4 | seed 990319, 25k FENs | Windows anchor complete; development anchor | f01 120k, `B + 2`, 2M/root |
 | G3-SR3-R2M | seed 990318, 25k FENs | serial cloud anchor running | f01 120k, `B + 2`, 2M/root |
 
 The earlier 480k/root SR4 calibration completed 411 and rejected 393 of 804
@@ -220,6 +220,48 @@ never be pooled with per-root results. Existing valid JSONL candidate outputs
 and state entries are reused; an anchor, probe, input, net, budget, or config
 hash mismatch requires a new optimizer run directory. The example is
 `scripts/futility_optimizer.example.json`.
+
+## SPSA Margin Optimizer and Subset Sensitivity
+
+`scripts/optimize_futility_spsa.py` adds a separate, dependency-free SPSA
+path; it does not change the coordinate optimizer.  A track starts from one
+fixed-depth tuple represented as first margin plus nonnegative increments.
+At iteration `k`, it creates a random ±1 direction, probes `theta + c_k delta`
+and `theta - c_k delta`, then updates all continuous increment coordinates
+from their scalar mean-normalized-regret difference.  Projection turns those
+coordinates back into nondecreasing integer margins bounded by `max_margin`.
+
+The plus and minus probes for one track/iteration always use the same
+deterministically sampled subset of the fixed anchor-derived trusted set. This
+common-random-numbers pairing removes subset noise from the finite difference.
+The next iteration samples a new deterministic subset. `workers` bounds all
+concurrent plus/minus probes, so two tracks can occupy four workers without
+changing either track's paired comparison. The seed, fraction, schedules
+(`a`, `A`, alpha, `c`, gamma), objective scale, starts, worker count, anchor,
+and artifact identities are all in the strict manifest.
+
+The runner is deliberately development-only. It persists a state record and
+raw candidate JSONL for every pair, supports resume by parsing valid existing
+outputs, and writes `finalists.json` with projected tuples. Those tuples are
+**not** automatically full-corpus ranked or sent to G3-SR3-R2M; review them
+before a separate promotion run. See `scripts/futility_spsa.example.json`.
+
+`scripts/analyze_futility_subsets.py` is the complementary read-only tool for
+the four finished SR4 outputs: f01, `[40,160,280]`, `[120,160,280]`, and
+`[200,320,440]`. Because each output has a fixed-node result for every input
+position, filtering the raw JSONL to a deterministic trusted subset is exactly
+the candidate comparison on that smaller corpus—no probe needs to rerun. The
+example evaluates 5%, 10%, and 20%, with three replicates each, and reports
+per-sample rankings, aggregate rank/winner stability, and paired mean-regret
+deltas versus f01. See `scripts/futility_subset_analysis.example.json`.
+
+The initial read-only SR4 check confirms why a tiny SPSA subset needs care. At
+5% (about 1,125 trusted positions), the winner varied: f01 won two samples
+and `[200,320,440]` one. At both 10% and 20%, `[40,160,280]` won all three
+samples and beat f01 by mean-regret deltas of roughly `-0.00063` and
+`-0.00065`, respectively. This is only a sensitivity observation from the
+existing smoke outputs, not a strength claim; begin SPSA at 10% or higher
+unless a deliberately noisier experiment is wanted.
 
 ### Future: Post-anchor Mate Rescue
 
