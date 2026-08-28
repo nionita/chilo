@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import discrete_optimizer
+import rescue_futility_mates
 import tune_futility
 
 
@@ -125,6 +126,7 @@ class AnchorContext:
     trusted_keys: Sequence[Tuple[str, int, str]]
     reference_identity: Mapping[str, Any]
     baseline_identity: Mapping[str, Any]
+    rescue: Optional[Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,140 @@ class Settings:
     validation: Optional[AnchorContext]
 
 
+def portable_identity_matches(expected: Any, actual: Mapping[str, Any], label: str) -> None:
+    if not isinstance(expected, dict):
+        raise OptimizationError(f"{label}: missing artifact identity")
+    for field in ("sha256", "size"):
+        if expected.get(field) != actual.get(field):
+            raise OptimizationError(f"{label}: artifact {field} does not match the base anchor")
+
+
+def parse_key_list(value: Any, label: str) -> List[Tuple[str, int, str]]:
+    if not isinstance(value, list):
+        raise OptimizationError(f"{label}: position_keys must be a list")
+    keys: List[Tuple[str, int, str]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, list) or len(item) != 3:
+            raise OptimizationError(f"{label}: position_keys[{index}] must be a three-item list")
+        source, line, fen = item
+        if not isinstance(source, str) or not source or isinstance(line, bool) or not isinstance(line, int) or line <= 0 or not isinstance(fen, str):
+            raise OptimizationError(f"{label}: position_keys[{index}] is invalid")
+        keys.append((source, line, fen))
+    if len(set(keys)) != len(keys):
+        raise OptimizationError(f"{label}: position_keys contains duplicates")
+    return keys
+
+
+def key_hash(keys: Sequence[Tuple[str, int, str]]) -> str:
+    digest = hashlib.sha256()
+    for key in sorted(keys):
+        digest.update(json.dumps(key, ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def load_rescue_population(
+    label: str,
+    rescue_dir: Path,
+    reference: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+    ordinary_trusted_set: Mapping[str, Any],
+    ordinary_trusted_keys: Sequence[Tuple[str, int, str]],
+    reference_path: Path,
+    baseline_path: Path,
+    candidate_nodes: int,
+    baseline_margins: Margins,
+    depth_gap: int,
+) -> Tuple[Mapping[str, Any], Mapping[str, Any], Dict[str, Any], List[Tuple[str, int, str]], Mapping[str, Any]]:
+    """Merge a completed mate-rescue sidecar with its immutable base anchor."""
+    manifest_path = rescue_dir / "rescue_manifest.json"
+    result_path = rescue_dir / "rescue_results.json"
+    population_path = rescue_dir / "combined_population.json"
+    rescue_reference_path = rescue_dir / "rescue_reference.jsonl"
+    rescue_baseline_path = rescue_dir / "rescue_baseline.jsonl"
+    rescue_manifest = read_json(manifest_path, f"{label} rescue manifest")
+    rescue_results = read_json(result_path, f"{label} rescue results")
+    population = read_json(population_path, f"{label} combined population")
+    if rescue_manifest.get("schema") != rescue_futility_mates.SCHEMA:
+        raise OptimizationError(f"{label}: invalid mate-rescue manifest schema")
+    anchor = rescue_manifest.get("anchor")
+    if not isinstance(anchor, dict):
+        raise OptimizationError(f"{label}: rescue manifest lacks anchor")
+    portable_identity_matches(anchor.get("reference"), tune_futility.file_identity(reference_path), f"{label} rescue reference")
+    portable_identity_matches(anchor.get("baseline"), tune_futility.file_identity(baseline_path), f"{label} rescue baseline")
+    if rescue_manifest.get("candidate_nodes") != candidate_nodes:
+        raise OptimizationError(f"{label}: rescue candidate_nodes does not match")
+    if rescue_manifest.get("reference_depth_gap") != depth_gap:
+        raise OptimizationError(f"{label}: rescue reference depth gap does not match")
+    if rescue_manifest.get("baseline_margins") != list(baseline_margins):
+        raise OptimizationError(f"{label}: rescue baseline margins do not match")
+    if rescue_results.get("schema") != rescue_futility_mates.SCHEMA:
+        raise OptimizationError(f"{label}: invalid mate-rescue results schema")
+    if rescue_results.get("ordinary_trusted_set") != ordinary_trusted_set:
+        raise OptimizationError(f"{label}: rescue ordinary trusted set does not match the base anchor")
+    if population.get("schema") != rescue_futility_mates.SCHEMA:
+        raise OptimizationError(f"{label}: invalid combined population schema")
+    if population.get("ordinary_trusted_set") != ordinary_trusted_set:
+        raise OptimizationError(f"{label}: combined population ordinary trusted set does not match the base anchor")
+    rescue_nodes = require_int(rescue_manifest.get("reference_nodes_per_root"), f"{label} rescue reference_nodes_per_root", 1)
+    if rescue_nodes != reference["summary"].get("node_limit"):
+        raise OptimizationError(f"{label}: rescue per-root node cap does not match the base anchor")
+    portable_identity_matches(rescue_results.get("rescue_reference"), tune_futility.file_identity(rescue_reference_path), f"{label} rescue result reference")
+    portable_identity_matches(rescue_results.get("rescue_baseline"), tune_futility.file_identity(rescue_baseline_path), f"{label} rescue result baseline")
+    rescue_reference = rescue_futility_mates.parse_rescue(
+        rescue_reference_path,
+        rescue_nodes,
+        baseline_margins,
+        candidate_nodes,
+        depth_gap,
+    )
+    rescue_baseline = tune_futility.parse_probe_output(rescue_baseline_path, candidate_nodes, baseline_margins)
+    rescued_keys = sorted(
+        key for key, record in rescue_reference["positions"].items()
+        if record.get("reference_status") == "rescued"
+    )
+    if rescue_results.get("rescued_position_count") != len(rescued_keys):
+        raise OptimizationError(f"{label}: rescue results rescued count does not match raw evidence")
+    result_keys = parse_key_list(rescue_results.get("rescued_position_keys"), f"{label} rescue results")
+    if sorted(result_keys) != rescued_keys:
+        raise OptimizationError(f"{label}: rescue result keys do not match certified rescue records")
+    ordinary_keys = set(ordinary_trusted_keys)
+    if ordinary_keys & set(rescued_keys):
+        raise OptimizationError(f"{label}: rescue keys overlap the ordinary trusted population")
+    for key in rescued_keys:
+        if key not in reference["positions"] or key not in baseline["positions"]:
+            raise OptimizationError(f"{label}: rescued key is absent from the base anchor")
+        if key not in rescue_baseline["positions"]:
+            raise OptimizationError(f"{label}: rescue baseline lacks a certified rescue key")
+    combined_keys = sorted(ordinary_keys | set(rescued_keys))
+    declared_keys = parse_key_list(population.get("position_keys"), f"{label} combined population")
+    if sorted(declared_keys) != combined_keys:
+        raise OptimizationError(f"{label}: combined population keys do not match ordinary-plus-rescued evidence")
+    if population.get("rescued_position_count") != len(rescued_keys) or population.get("combined_position_count") != len(combined_keys):
+        raise OptimizationError(f"{label}: combined population counts do not match raw evidence")
+    merged_reference = {"positions": dict(reference["positions"]), "summary": reference["summary"]}
+    merged_baseline = {"positions": dict(baseline["positions"]), "summary": baseline["summary"]}
+    for key in rescued_keys:
+        merged_reference["positions"][key] = rescue_futility_mates.rescue_as_reference(rescue_reference["positions"][key])
+        merged_baseline["positions"][key] = rescue_baseline["positions"][key]
+    trusted_set = dict(ordinary_trusted_set)
+    trusted_set["evaluated_position_count"] = int(ordinary_trusted_set["evaluated_position_count"]) + len(rescued_keys)
+    trusted_set["trusted_position_count"] = len(combined_keys)
+    trusted_set["position_keys_sha256"] = key_hash(combined_keys)
+    trusted_set["rule"] = dict(ordinary_trusted_set["rule"])
+    trusted_set["rule"]["certified_mate_rescue"] = True
+    trusted_set["rescued_position_count"] = len(rescued_keys)
+    rescue_identity = {
+        "directory": str(rescue_dir),
+        "manifest": tune_futility.file_identity(manifest_path),
+        "results": tune_futility.file_identity(result_path),
+        "combined_population": tune_futility.file_identity(population_path),
+        "reference": tune_futility.file_identity(rescue_reference_path),
+        "baseline": tune_futility.file_identity(rescue_baseline_path),
+    }
+    return merged_reference, merged_baseline, trusted_set, combined_keys, rescue_identity
+
+
 def load_anchor(
     config_path: Path,
     label: str,
@@ -152,7 +288,7 @@ def load_anchor(
     candidate_nodes: int,
     baseline_margins: Margins,
 ) -> AnchorContext:
-    allowed = {"reference_dir", "contract", "trusted_depth_gap"}
+    allowed = {"reference_dir", "contract", "trusted_depth_gap", "rescue_dir"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise OptimizationError(f"{label}: unknown field(s): {', '.join(unknown)}")
@@ -189,6 +325,25 @@ def load_anchor(
         )
     baseline = tune_futility.parse_probe_output(baseline_path, candidate_nodes, baseline_margins)
     trusted_set, trusted_keys = tune_futility.trusted_position_set(reference, baseline, depth_gap)
+    rescue: Optional[Mapping[str, Any]] = None
+    rescue_dir_raw = raw.get("rescue_dir")
+    if rescue_dir_raw is not None:
+        if contract != "per_root_v1":
+            raise OptimizationError(f"{label}.rescue_dir requires the per_root_v1 contract")
+        rescue_dir = resolve_path(config_path, require_string(rescue_dir_raw, f"{label}.rescue_dir"))
+        reference, baseline, trusted_set, trusted_keys, rescue = load_rescue_population(
+            label,
+            rescue_dir,
+            reference,
+            baseline,
+            trusted_set,
+            trusted_keys,
+            reference_path,
+            baseline_path,
+            candidate_nodes,
+            baseline_margins,
+            depth_gap,
+        )
     return AnchorContext(
         label,
         contract,
@@ -201,6 +356,7 @@ def load_anchor(
         trusted_keys,
         tune_futility.file_identity(reference_path),
         tune_futility.file_identity(baseline_path),
+        rescue,
     )
 
 
@@ -321,6 +477,7 @@ def settings_manifest(settings: Settings) -> Dict[str, Any]:
             "reference": context.reference_identity,
             "baseline": context.baseline_identity,
             "trusted_set": dict(context.trusted_set),
+            "rescue": dict(context.rescue) if context.rescue is not None else None,
         }
 
     return {

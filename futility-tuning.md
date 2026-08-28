@@ -6,15 +6,17 @@ selects SPRT candidates; it does not establish playing strength.
 
 ## Accepted SPRT Basis
 
-`f21` is the current short-control playing basis: its 6+0.1 SPRT against
-`f01` accepted H1. `f01` remains frozen as the reference control for futility
-proxy optimization, baseline depth measurement, and candidate comparisons.
-Do not replace or overwrite either binary.
+`f21` is the current practical playing basis: its 6+0.1 SPRT against `f01`
+accepted H1, and its longer-control SPRT against the source `g4t1-64x8`
+accepted H1. Future futility SPRTs compare candidates against f21. `f01`
+remains frozen only as the reference control for futility proxy optimization,
+baseline depth measurement, and candidate comparisons. Do not replace or
+overwrite either binary.
 
 | Binary | Margins | Status |
 |---|---|---|
 | `chilo-0.7.5-f01-avx2` | `120,240,360` | Accepted previous basis; frozen proxy control. |
-| `chilo-0.7.5-f21-avx2` | `75,212,390,600,839` | H1 accepted versus f01 at 6+0.1; current practical playing candidate. |
+| `chilo-0.7.5-f21-avx2` | `75,212,390,600,839` | H1 accepted versus f01 at 6+0.1 and source `g4t1-64x8` at longer control; practical SPRT basis. |
 
 The variant manifest for `f01` through `f06` is maintained externally at
 `~/Tune/futility/futility-sprt-g4t1-64x8-d3-d5-first.json`.
@@ -186,9 +188,9 @@ Keep every anchor as its own paired raw JSONL evidence and manifest. G3-SR4
 has 22,723 ordinary trusted positions and is the optimizer development shard;
 G3-SR3-R2M has 22,829 ordinary trusted positions and is the untouched
 selection shard. Do not pool them until an explicit aggregation design is
-reviewed. The pending full-corpus selection comparison of the two SPSA
-endpoints belongs to G3-SR3-R2M and must be recorded from its durable output,
-not inferred from development results.
+reviewed. The full-corpus G3-SR3-R2M selection comparison of the two SPSA
+endpoints is recorded below from its durable probe output, not inferred from
+development results.
 
 ## Historical Coordinate Optimizer
 
@@ -282,6 +284,27 @@ primary candidate; the d3 endpoint improves it by about 3.5% and is the
 structurally distinct alternate. These are development-proxy results, not Elo
 claims. Their increase in mean depth is diagnostic only.
 
+### G3-SR3-R2M full selection — 2026-08-28
+
+The independently prepared Windows run evaluated both endpoints at 120k nodes
+on all 22,829 trusted G3-SR3-R2M positions. It reproduced the G3-SR4 ordering
+on mean regret, P90 regret, and move agreement. The durable results archive
+is `g3-sr3-r2m-full-probes-win-rez.zip`; its `run/` directory contains the
+probe JSONL, manifests, `results.json`, and report.
+
+| Variant | Margins | Mean regret | P90 regret | Move agreement | Mean depth |
+|---|---|---:|---:|---:|---:|
+| f01 | `120,240,360` | 0.015209 | 0.045557 | 56.647% | 9.084 |
+| SPSA d3 endpoint | `23,62,194` | 0.014443 | 0.042343 | 57.055% | 9.432 |
+| SPSA d5 endpoint | `10,54,175,264,503` | **0.014298** | **0.041591** | **57.418%** | 9.653 |
+
+Relative to f01, d3 improves mean regret by 5.03%, P90 regret by 7.06%, and
+move agreement by 0.407 percentage points. D5 improves those metrics by
+5.98%, 8.71%, and 0.771 points respectively. Thus d5 is the primary SPRT
+candidate and d3 is the retained structural alternate. This is two-shard
+proxy evidence only; f21 has not yet been measured under this exact per-root
+selection contract.
+
 ## Post-anchor Mate Rescue
 
 ### Rationale and policy
@@ -336,6 +359,25 @@ reference failed at target depth 12: a reference root proved mate at depth 1,
 so the rescue target was 3 and all 46 legal roots completed there. This is the
 intended distinction from merely trusting the baseline's mate score.
 
+### Completed G3-SR4 and G3-SR3-R2M rescue passes — 2026-08-28
+
+Both completed anchors now have immutable rescue sidecars. G3-SR4 rescued 102
+of 2,253 rejected positions in 5.06 hours; G3-SR3-R2M rescued 105 of 2,154 in
+4.32 hours. They add only about 0.45% to each corpus, but include nontrivial
+mates: 44 SR4 and 41 SR3-R2M rescues first proved a mate at depth 7 or deeper.
+
+| Anchor | Combined positions | D3 combined mean regret | D5 combined mean regret |
+|---|---:|---:|---:|
+| G3-SR4 development | 22,825 | 0.014258 | **0.014157** |
+| G3-SR3-R2M selection | 22,934 | 0.014378 | **0.014233** |
+
+D5 had zero rescue-only mean regret on both shards. These combined values
+preserve the ordinary-population ordering; they do not establish playing
+strength. New optimizer configurations must declare the completed rescue
+`run/` directory as `development.rescue_dir` (or `validation.rescue_dir`).
+The adapter validates the rescue manifest, raw maps, baseline maps, exact
+combined keys, and artifact hashes before accepting the merged population.
+
 ## Optional Historical G3-SR3 Contract Report
 
 The old shared-budget and new per-root G3-SR3 anchors use the same input FENs,
@@ -375,7 +417,7 @@ per-root tuning runs.
 |---|---|---|---|
 | `f21` | `f01` | 6+0.1 | H1 accepted. |
 | `f22`, `f23` | `f01` | 6+0.1 | Not started; lower proxy promise, no longer queued by default. |
-| `f21` | source futility `0.7.4` | longer control | Planned confirmation of the practical best version. |
+| `f21` | source `g4t1-64x8` futility | longer control | H1 accepted; f21 is the practical SPRT basis. |
 
 ## Future: Root-Budget-Adaptive Futility Profiles
 

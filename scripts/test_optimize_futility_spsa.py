@@ -32,6 +32,25 @@ class SpsaAdapterTest(unittest.TestCase):
             self.assertEqual(optimize_futility_spsa.sample_keys(settings, "d3", 0), optimize_futility_spsa.sample_keys(settings, "d3", 0))
             self.assertEqual(optimize_futility_spsa.manifest(settings)["spsa"]["workers"], 2)
 
+    def test_samples_certified_rescue_keys_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = OptimizerAdapterTest()
+            anchor = root / "anchor"
+            helper.write_per_root_anchor_with_rejection(anchor)
+            rescue_run = helper.write_rescue_run(root, anchor)
+            probe, inputs, weights = root / "probe", root / "positions.csv", root / "net.bin"
+            for path in (probe, inputs, weights):
+                path.write_text("test", encoding="utf-8")
+            config = {"probe": str(probe), "inputs": [str(inputs)], "weights": str(weights), "candidate_nodes": 100, "baseline_margins": [120, 240, 360], "development": {"reference_dir": str(anchor), "contract": "per_root_v1", "rescue_dir": str(rescue_run)}, "spsa": {"tracks": [{"id": "d3", "margins": [120, 240, 360]}], "iterations": 2, "workers": 2, "subset_fraction": 1.0, "seed": 7, "gain_a": 40, "stability_A": 4, "gain_alpha": 0.602, "perturbation_c": 40, "perturbation_gamma": 0.101, "objective_scale": 1000, "max_margin": 1000}}
+            path = root / "spsa.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            settings = optimize_futility_spsa.load_settings(path)
+            keys = optimize_futility_spsa.sample_keys(settings, "d3", 0)
+            self.assertEqual(len(keys), 2)
+            self.assertIn(("positions.csv", 2, "fen-rescue"), keys)
+            self.assertIsNotNone(optimize_futility_spsa.manifest(settings)["development"]["rescue"])
+
 
 if __name__ == "__main__":
     unittest.main()

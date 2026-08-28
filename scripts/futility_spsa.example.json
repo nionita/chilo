@@ -8,7 +8,8 @@
   "probe_report_every": 1000,
   "development": {
     "reference_dir": "/path/to/g3-sr4",
-    "contract": "per_root_v1"
+    "contract": "per_root_v1",
+    "rescue_dir": "/path/to/g3-sr4-mate-rescue/run"
   },
   "spsa": {
     "tracks": [

@@ -4,7 +4,8 @@
   "score_scale": 600,
   "development": {
     "reference_dir": "/path/to/per-root-development-anchor",
-    "contract": "per_root_v1"
+    "contract": "per_root_v1",
+    "rescue_dir": "/path/to/mate-rescue-run"
   },
   "variants": [
     {"id": "baseline", "margins": [120, 240, 360], "output": "/path/to/baseline.jsonl"},
