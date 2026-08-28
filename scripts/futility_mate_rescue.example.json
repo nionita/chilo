@@ -1,0 +1,23 @@
+{
+  "anchor_dir": "/home/nicu/Tune/futility/g3-sr4",
+  "probe": "/path/to/new/futility_probe-avx2",
+  "inputs": ["/home/nicu/Tune/futility/g3-25k-seed990319.csv"],
+  "weights": "/home/nicu/NNUE/Nets/chilo-g4t1-64x8.bin",
+  "candidate_nodes": 120000,
+  "reference_nodes_per_root": 2000000,
+  "reference_depth_gap": 2,
+  "baseline_margins": [120, 240, 360],
+  "report_every": 25,
+  "candidates": [
+    {
+      "id": "f01",
+      "margins": [120, 240, 360],
+      "output": "/home/nicu/Tune/futility/g3-sr4/probes/baseline.jsonl"
+    },
+    {
+      "id": "spsa-d5",
+      "margins": [10, 54, 175, 264, 503],
+      "output": "/path/to/full-development-candidate.jsonl"
+    }
+  ]
+}

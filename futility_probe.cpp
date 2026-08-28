@@ -1,5 +1,6 @@
 #include "engine.h"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -30,6 +31,7 @@ struct Options {
     bool hasMargins = false;
     bool allRootScores = false;
     bool perRootReference = false;
+    bool perRootMateRescue = false;
     bool overwrite = false;
     bool helpRequested = false;
 };
@@ -119,6 +121,7 @@ void printUsage() {
         << "  --futility-margins <list>   Nonnegative margins for depths 1 through list length (required)\n"
         << "  --all-root-scores            Search every root move with a full window and emit its score\n"
         << "  --per-root-reference         Run baseline then a full-window reference for every root move\n"
+        << "  --per-root-mate-rescue       Rescue rejected positions only after the reference proves a winning mate\n"
         << "  --baseline-nodes <N>         Baseline PVS nodes per position (per-root mode)\n"
         << "  --reference-nodes-per-root <N>  Full-window cap for each legal root move\n"
         << "  --reference-depth-gap <N>    Required reference depth over baseline (per-root mode)\n"
@@ -191,6 +194,9 @@ bool parseArgs(int argc, char** argv, Options& options) {
             options.allRootScores = true;
         } else if (arg == "--per-root-reference") {
             options.perRootReference = true;
+        } else if (arg == "--per-root-mate-rescue") {
+            options.perRootMateRescue = true;
+            options.perRootReference = true;
         } else if (arg == "--baseline-output") {
             const char* value = requireValue("--baseline-output");
             if (value == nullptr) return false;
@@ -239,6 +245,24 @@ bool parseArgs(int argc, char** argv, Options& options) {
         return false;
     }
     return true;
+}
+
+struct RescueRootScore {
+    Move move{};
+    int score = 0;
+    int depth = 0;
+};
+
+struct MateDepthTracker {
+    int firstWinningMateDepth = 0;
+};
+
+void trackWinningMateDepth(const SearchResult& result, void* userData) {
+    auto* tracker = static_cast<MateDepthTracker*>(userData);
+    if (tracker != nullptr && tracker->firstWinningMateDepth == 0 &&
+        result.completed && result.score >= SEARCH_MATE_THRESHOLD) {
+        tracker->firstWinningMateDepth = result.depth;
+    }
 }
 
 bool isHeaderField(const std::string& field) {
@@ -564,6 +588,109 @@ void writeReferenceSummary(std::ostream& output, const Options& options, const R
            << ",\"futility_prunes_in_check\":[0,0,0,0,0,0,0]}\n";
 }
 
+void writeMateRescuePosition(std::ostream& output, const std::string& source, uint64_t lineNumber,
+                             const std::string& fen, const Options& options, const SearchResult& baseline,
+                             const std::vector<RescueRootScore>& roots, uint64_t rootNodes,
+                             uint64_t rootCompletedNodes, uint64_t rootElapsedMs, int normalTargetDepth,
+                             int rescueTargetDepth, int mateFoundDepth, int legalRootMoves,
+                             int normalCompletedRoots, int rescueCompletedRoots, const char* status,
+                             const char* reason = nullptr) {
+    const bool rescued = std::string(status) == "rescued";
+    Move bestMove = baseline.bestMove;
+    int bestScore = baseline.score;
+    Move mateMove{};
+    int mateScore = 0;
+    for (const RescueRootScore& root : roots) {
+        if (root.score > bestScore) {
+            bestScore = root.score;
+            bestMove = root.move;
+        }
+        if (root.score >= SEARCH_MATE_THRESHOLD && mateScore == 0) {
+            mateMove = root.move;
+            mateScore = root.score;
+        }
+    }
+    output << "{\"type\":\"position\",\"reference_mode\":\"per_root_mate_rescue_v1\",\"reference_status\":";
+    writeJsonString(output, status);
+    output << ",\"source\":";
+    writeJsonString(output, source);
+    output << ",\"line\":" << lineNumber << ",\"fen\":";
+    writeJsonString(output, fen);
+    output << ",\"futility_margins\":";
+    writeMargins(output, options.parameters);
+    output << ",\"weights\":";
+    writeJsonString(output, options.weightsPath.empty() ? "built-in" : options.weightsPath);
+    output << ",\"futility_max_depth\":" << options.parameters.futilityMaxDepth
+           << ",\"all_root_scores\":true"
+           << ",\"node_limit\":" << options.referenceNodesPerRoot
+           << ",\"node_limit_per_root\":" << options.referenceNodesPerRoot
+           << ",\"baseline_node_limit\":" << options.baselineNodeLimit
+           << ",\"baseline_completed_depth\":" << baseline.depth
+           << ",\"normal_target_depth\":" << normalTargetDepth
+           << ",\"rescue_target_depth\":" << rescueTargetDepth
+           << ",\"mate_found_depth\":" << mateFoundDepth
+           << ",\"legal_root_moves\":" << legalRootMoves
+           << ",\"normal_completed_root_moves\":" << normalCompletedRoots
+           << ",\"rescue_completed_root_moves\":" << rescueCompletedRoots
+           << ",\"nodes\":" << rootNodes
+           << ",\"completed_nodes\":" << rootCompletedNodes
+           << ",\"baseline_nodes\":" << baseline.nodes
+           << ",\"total_nodes\":" << (baseline.nodes + rootNodes)
+           << ",\"completed_depth\":" << (rescued ? rescueTargetDepth : 0)
+           << ",\"elapsed_ms\":" << rootElapsedMs
+           << ",\"iteration_interrupted\":" << (rescued || !baseline.hasMove ? "false" : "true")
+           << ",\"terminal\":" << (!baseline.hasMove ? "true" : "false")
+           << ",\"has_move\":" << (baseline.hasMove ? "true" : "false")
+           << ",\"bestmove\":";
+    writeJsonString(output, baseline.hasMove ? moveToUCI(bestMove) : "0000");
+    output << ",\"score\":" << bestScore << ",\"pv\":[]";
+    if (rescued) {
+        output << ",\"mate_move\":";
+        writeJsonString(output, moveToUCI(mateMove));
+        output << ",\"mate_score\":" << mateScore << ",\"root_scores\":{";
+        for (std::size_t i = 0; i < roots.size(); ++i) {
+            if (i > 0) output << ',';
+            writeJsonString(output, moveToUCI(roots[i].move));
+            output << ':' << roots[i].score;
+        }
+        output << "},\"root_score_depths\":{";
+        for (std::size_t i = 0; i < roots.size(); ++i) {
+            if (i > 0) output << ',';
+            writeJsonString(output, moveToUCI(roots[i].move));
+            output << ':' << roots[i].depth;
+        }
+        output << '}';
+    }
+    if (reason != nullptr) {
+        output << ",\"rescue_reason\":";
+        writeJsonString(output, reason);
+    }
+    output << ",\"futility_prunes\":[0,0,0,0,0,0,0]"
+           << ",\"futility_prunes_in_check\":[0,0,0,0,0,0,0]}\n";
+}
+
+void writeMateRescueSummary(std::ostream& output, const Options& options, const ReferenceRunStats& stats) {
+    output << "{\"type\":\"summary\",\"reference_mode\":\"per_root_mate_rescue_v1\",\"futility_margins\":";
+    writeMargins(output, options.parameters);
+    output << ",\"weights\":";
+    writeJsonString(output, options.weightsPath.empty() ? "built-in" : options.weightsPath);
+    output << ",\"futility_max_depth\":" << options.parameters.futilityMaxDepth
+           << ",\"all_root_scores\":true"
+           << ",\"node_limit\":" << options.referenceNodesPerRoot
+           << ",\"node_limit_per_root\":" << options.referenceNodesPerRoot
+           << ",\"baseline_node_limit\":" << options.baselineNodeLimit
+           << ",\"reference_depth_gap\":" << options.referenceDepthGap
+           << ",\"positions\":" << stats.positions
+           << ",\"terminal_positions\":" << stats.terminalPositions
+           << ",\"rescued_reference_positions\":" << stats.completedPositions
+           << ",\"not_rescued_reference_positions\":" << stats.rejectedPositions
+           << ",\"nodes\":" << stats.nodes
+           << ",\"completed_nodes\":" << stats.completedNodes
+           << ",\"elapsed_ms\":" << stats.elapsedMs
+           << ",\"futility_prunes\":[0,0,0,0,0,0,0]"
+           << ",\"futility_prunes_in_check\":[0,0,0,0,0,0,0]}\n";
+}
+
 uint64_t countInputPositions(const std::vector<std::string>& paths) {
     uint64_t count = 0;
     for (const std::string& path : paths) {
@@ -785,6 +912,176 @@ bool processReferenceFile(const std::string& path, const Options& options, RunSt
     return true;
 }
 
+bool processMateRescueFile(const std::string& path, const Options& options, RunStats& baselineStats,
+                           ReferenceRunStats& referenceStats, std::ostream& baselineOutput,
+                           std::ostream& referenceOutput, uint64_t totalPositions,
+                           std::chrono::steady_clock::time_point started) {
+    std::ifstream input(path);
+    if (!input) {
+        std::cerr << "fatal: failed to open input file " << path << "\n";
+        return false;
+    }
+    Options baselineOptions = options;
+    baselineOptions.nodeLimit = options.baselineNodeLimit;
+    baselineOptions.allRootScores = false;
+    std::string line;
+    uint64_t lineNumber = 0;
+    while (std::getline(input, line)) {
+        ++lineNumber;
+        std::string text = trim(line);
+        if (text.empty() || text[0] == '#') continue;
+        std::string fen;
+        std::string parseError;
+        if (!extractFirstField(text, fen, parseError)) {
+            std::cerr << "fatal: " << path << ':' << lineNumber << ": " << parseError << "\n";
+            return false;
+        }
+        if (isHeaderField(fen)) continue;
+        if (!looksLikeFen(fen)) {
+            std::cerr << "fatal: " << path << ':' << lineNumber << ": invalid FEN in first field\n";
+            return false;
+        }
+
+        Position pos = parseFEN(fen);
+        resetDrawHistory(pos);
+        SearchLimits baselineLimits{};
+        baselineLimits.nodeLimit = options.baselineNodeLimit;
+        baselineLimits.parameters = options.parameters;
+        baselineLimits.isolateTranspositionTable = true;
+        SearchResult baseline = searchBestMove(pos, baselineLimits);
+        baselineStats.positions++;
+        if (!baseline.hasMove) baselineStats.terminalPositions++;
+        if (!baseline.completed) baselineStats.interruptedSearches++;
+        baselineStats.nodes += baseline.nodes;
+        baselineStats.completedNodes += baseline.completedNodes;
+        baselineStats.elapsedMs += baseline.totalElapsedMs;
+        for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; ++depth) {
+            baselineStats.futilityPrunes[depth] += baseline.stats.futilityPrunes[depth];
+            baselineStats.futilityPrunesInCheck[depth] += baseline.stats.futilityPrunesInCheck[depth];
+        }
+        writePosition(baselineOutput, path, lineNumber, fen, baselineOptions, baseline);
+
+        referenceStats.positions++;
+        if (!baseline.hasMove) {
+            referenceStats.terminalPositions++;
+            writeMateRescuePosition(referenceOutput, path, lineNumber, fen, options, baseline, {}, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, "terminal");
+        } else if (baseline.depth == 0) {
+            referenceStats.rejectedPositions++;
+            writeMateRescuePosition(referenceOutput, path, lineNumber, fen, options, baseline, {}, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, "not_rescued", "baseline_depth_zero");
+        } else {
+            const int normalTarget = baseline.depth + options.referenceDepthGap;
+            Move rootMoves[MAX_MOVES];
+            const int rootCount = genLegalMoves(pos, rootMoves);
+            if (normalTarget > MAX_SEARCH_DEPTH) {
+                referenceStats.rejectedPositions++;
+                writeMateRescuePosition(referenceOutput, path, lineNumber, fen, options, baseline, {}, 0, 0, 0,
+                                        normalTarget, 0, 0, rootCount, 0, 0, "not_rescued",
+                                        "normal_target_exceeds_max");
+            } else {
+                std::vector<RescueRootScore> roots;
+                roots.reserve(rootCount);
+                uint64_t rootNodes = 0;
+                uint64_t rootCompletedNodes = 0;
+                uint64_t rootElapsedMs = 0;
+                auto runRoot = [&](const Move& move, int depth, MateDepthTracker* tracker) {
+                    resetDrawHistory(pos);
+                    SearchLimits limits{};
+                    limits.depth = depth;
+                    limits.nodeLimit = options.referenceNodesPerRoot;
+                    limits.parameters = options.parameters;
+                    limits.isolateTranspositionTable = true;
+                    limits.restrictRootMove = true;
+                    limits.rootMove = move;
+                    if (tracker != nullptr) {
+                        limits.infoCallback = trackWinningMateDepth;
+                        limits.infoUserData = tracker;
+                    }
+                    SearchResult result = searchBestMove(pos, limits);
+                    rootNodes += result.nodes;
+                    rootCompletedNodes += result.completedNodes;
+                    rootElapsedMs += result.totalElapsedMs;
+                    for (int pruneDepth = 1; pruneDepth <= MAX_FUTILITY_DEPTH; ++pruneDepth) {
+                        referenceStats.futilityPrunes[pruneDepth] += result.stats.futilityPrunes[pruneDepth];
+                        referenceStats.futilityPrunesInCheck[pruneDepth] += result.stats.futilityPrunesInCheck[pruneDepth];
+                    }
+                    return result;
+                };
+
+                int mateFoundDepth = 0;
+                bool normalFailed = false;
+                for (int i = 0; i < rootCount; ++i) {
+                    MateDepthTracker tracker{};
+                    SearchResult root = runRoot(rootMoves[i], normalTarget, &tracker);
+                    if (!root.completed || root.depth != normalTarget || !root.hasMove) {
+                        normalFailed = true;
+                        break;
+                    }
+                    roots.push_back({rootMoves[i], root.score, normalTarget});
+                    if (tracker.firstWinningMateDepth > 0 &&
+                        (mateFoundDepth == 0 || tracker.firstWinningMateDepth < mateFoundDepth)) {
+                        mateFoundDepth = tracker.firstWinningMateDepth;
+                    }
+                }
+                const int normalCompletedRoots = static_cast<int>(roots.size());
+
+                int rescueTarget = 0;
+                const char* status = "not_rescued";
+                const char* reason = nullptr;
+                int rescueCompletedRoots = 0;
+                if (!normalFailed) {
+                    reason = "normal_reference_complete";
+                } else if (mateFoundDepth == 0) {
+                    reason = "no_reference_winning_mate_before_normal_failure";
+                } else {
+                    rescueTarget = mateFoundDepth + options.referenceDepthGap;
+                    if (rescueTarget > MAX_SEARCH_DEPTH) {
+                        reason = "rescue_target_exceeds_max";
+                    } else {
+                        bool rescueFailed = false;
+                        for (int i = 0; i < rootCount; ++i) {
+                            auto existing = std::find_if(roots.begin(), roots.end(), [&](const RescueRootScore& root) {
+                                return moveToUCI(root.move) == moveToUCI(rootMoves[i]);
+                            });
+                            if (existing != roots.end() && existing->depth >= rescueTarget) {
+                                ++rescueCompletedRoots;
+                                continue;
+                            }
+                            SearchResult root = runRoot(rootMoves[i], rescueTarget, nullptr);
+                            if (!root.completed || root.depth != rescueTarget || !root.hasMove) {
+                                rescueFailed = true;
+                                break;
+                            }
+                            if (existing == roots.end()) roots.push_back({rootMoves[i], root.score, rescueTarget});
+                            else *existing = {rootMoves[i], root.score, rescueTarget};
+                            ++rescueCompletedRoots;
+                        }
+                        if (rescueFailed) {
+                            reason = "rescue_root_node_limit";
+                        } else {
+                            status = "rescued";
+                        }
+                    }
+                }
+                referenceStats.nodes += rootNodes;
+                referenceStats.completedNodes += rootCompletedNodes;
+                referenceStats.elapsedMs += rootElapsedMs;
+                if (std::string(status) == "rescued") referenceStats.completedPositions++;
+                else referenceStats.rejectedPositions++;
+                writeMateRescuePosition(referenceOutput, path, lineNumber, fen, options, baseline, roots,
+                                        rootNodes, rootCompletedNodes, rootElapsedMs, normalTarget, rescueTarget,
+                                        mateFoundDepth, rootCount, normalCompletedRoots, rescueCompletedRoots,
+                                        status, reason);
+            }
+        }
+        if (options.reportEvery > 0 && referenceStats.positions % options.reportEvery == 0) {
+            reportReferenceProgress(referenceStats, totalPositions, started);
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -848,8 +1145,12 @@ int main(int argc, char** argv) {
         RunStats baselineStats;
         ReferenceRunStats referenceStats;
         for (const std::string& path : options.inputPaths) {
-            if (!processReferenceFile(path, options, baselineStats, referenceStats, baselineFile, referenceFile,
-                                      totalPositions, started)) {
+            const bool processed = options.perRootMateRescue
+                ? processMateRescueFile(path, options, baselineStats, referenceStats, baselineFile, referenceFile,
+                                        totalPositions, started)
+                : processReferenceFile(path, options, baselineStats, referenceStats, baselineFile, referenceFile,
+                                       totalPositions, started);
+            if (!processed) {
                 return 1;
             }
         }
@@ -857,7 +1158,8 @@ int main(int argc, char** argv) {
         baselineOptions.nodeLimit = options.baselineNodeLimit;
         baselineOptions.allRootScores = false;
         writeSummary(baselineFile, baselineOptions, baselineStats);
-        writeReferenceSummary(referenceFile, options, referenceStats);
+        if (options.perRootMateRescue) writeMateRescueSummary(referenceFile, options, referenceStats);
+        else writeReferenceSummary(referenceFile, options, referenceStats);
         if (!referenceFile || !baselineFile) {
             std::cerr << "fatal: failed while writing per-root reference JSON Lines output\n";
             return 1;

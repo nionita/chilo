@@ -299,6 +299,38 @@ higher-`R`, rejected-only rerun remains the control comparison: it retains the
 ordinary uniform contract and reveals whether the specialized rescue is worth
 its additional complexity.
 
+### Implemented Post-anchor Mate Rescue
+
+`futility_probe --per-root-mate-rescue` implements the separate
+`per_root_mate_rescue_v1` contract. It is run only on a masked copy of the
+already rejected input rows and writes separate rescue reference/baseline JSONL
+files; it never changes the completed anchor pair.
+
+For every supplied rejection it repeats the normal root sequence. A rescue is
+eligible only when a completed root has established a **winning reference
+mate** before the first normal root failure. A baseline mate alone is not an
+eligibility signal. The probe records the first completed depth `D_found` at
+which that root established the mate and sets the rescue target to
+`D_found + gap`. Roots already searched at least that deep retain their score;
+the failed and remaining roots are searched to the rescue target with the same
+per-root cap. The result is rescued only when every legal root has a score.
+
+Each rescued record carries the exact all-root score map plus
+`root_score_depths`, `mate_found_depth`, `normal_target_depth`, and
+`rescue_target_depth`. This makes the deliberately heterogeneous provenance
+visible instead of silently treating it as a uniform reference. Non-eligible
+and rescue-cap-failed rows remain durable diagnostics but are not admitted.
+
+`scripts/rescue_futility_mates.py` masks original rejected rows, invokes this
+mode, persists an artifact-locked manifest, and can score listed existing
+candidate outputs both on the rescue-only population and on the combined
+ordinary-trusted-plus-rescued population. The example is
+`scripts/futility_mate_rescue.example.json`. Use a new rescue run directory
+per anchor. The first real smoke test rescued a G3-SR4 row whose ordinary
+reference failed at target depth 12: a reference root proved mate at depth 1,
+so the rescue target was 3 and all 46 legal roots completed there. This is the
+intended distinction from merely trusting the baseline's mate score.
+
 ### G3-SR3 Old-versus-New Reference Report
 
 The old shared-budget and new per-root G3-SR3 anchors use the same input FENs,
