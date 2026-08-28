@@ -1,0 +1,20 @@
+{
+  "candidate_nodes": 120000,
+  "baseline_margins": [120, 240, 360],
+  "score_scale": 600,
+  "development": {
+    "reference_dir": "/home/nicu/Tune/futility/g3-sr4",
+    "contract": "per_root_v1"
+  },
+  "variants": [
+    {"id": "f01", "margins": [120, 240, 360], "output": "/home/nicu/Tune/futility/g3-sr4/probes/baseline.jsonl"},
+    {"id": "d3-40-160-280", "margins": [40, 160, 280], "output": "/home/nicu/Tune/futility/g3-sr4/optimizer-smoke-1/development/probes/candidate-d3-fac83fd861.jsonl"},
+    {"id": "d3-120-160-280", "margins": [120, 160, 280], "output": "/home/nicu/Tune/futility/g3-sr4/optimizer-smoke-1/development/probes/candidate-d3-5080195b50.jsonl"},
+    {"id": "d3-200-320-440", "margins": [200, 320, 440], "output": "/home/nicu/Tune/futility/g3-sr4/optimizer-smoke-1/development/probes/candidate-d3-3a4ce73947.jsonl"}
+  ],
+  "sampling": {
+    "seed": 20260827,
+    "fractions": [0.05, 0.10, 0.20],
+    "replicates": 3
+  }
+}

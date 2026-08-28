@@ -24,7 +24,7 @@
     "gain_alpha": 0.602,
     "perturbation_c": 40.0,
     "perturbation_gamma": 0.101,
-    "objective_scale": 1000.0,
+    "objective_scale": 200000.0,
     "max_margin": 2000
   }
 }

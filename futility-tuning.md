@@ -168,7 +168,7 @@ depth is a reference-quality gate, never a candidate ranking objective.
 | Anchor | Corpus | Status | Contract |
 |---|---|---|---|
 | G3-SR4 | seed 990319, 25k FENs | Windows anchor complete; development anchor | f01 120k, `B + 2`, 2M/root |
-| G3-SR3-R2M | seed 990318, 25k FENs | serial cloud anchor running | f01 120k, `B + 2`, 2M/root |
+| G3-SR3-R2M | seed 990318, 25k FENs | Cloud anchor complete; untouched selection anchor | f01 120k, `B + 2`, 2M/root |
 
 The earlier 480k/root SR4 calibration completed 411 and rejected 393 of 804
 non-terminal positions; 392 failures exhausted the cap and 320 were only one
@@ -182,19 +182,22 @@ G3-SR2/SR3 FEN set. Its provenance JSON records 25,000 unique FENs and zero
 overlap. The sampler itself remains single-input; do not introduce generic
 multi-shard sampling merely to support these two anchors.
 
-Keep every anchor as its own paired raw JSONL evidence and manifest. After the
-two per-root runs complete, treat one shard as optimizer development evidence
-and the other as an untouched selection shard until an explicit aggregation
-design is reviewed.
+Keep every anchor as its own paired raw JSONL evidence and manifest. G3-SR4
+has 22,723 ordinary trusted positions and is the optimizer development shard;
+G3-SR3-R2M has 22,829 ordinary trusted positions and is the untouched
+selection shard. Do not pool them until an explicit aggregation design is
+reviewed. The pending full-corpus selection comparison of the two SPSA
+endpoints belongs to G3-SR3-R2M and must be recorded from its durable output,
+not inferred from development results.
 
-## Discrete Margin Optimizer
+## Historical Coordinate Optimizer
 
-`scripts/optimize_futility.py` runs a dependency-free, deterministic
-coordinate search over explicit nondecreasing margin tuples. Its generic
+`scripts/optimize_futility.py` is the original dependency-free, deterministic
+coordinate-search path over explicit nondecreasing margin tuples. Its generic
 search core only handles ordered integer vectors and lexicographic objective
 tuples; the futility adapter alone reads probe JSONL and calculates score
-regret. No SciPy or other optimizer package is required, and the existing
-`~/Sources/chilo/.venv` can run the script from this worktree.
+regret. It remains usable as a small deterministic fallback and as the source
+of the SR4 smoke outputs, but SPSA is now the primary broad-search path.
 
 The optimizer configuration names a development and validation reference
 directory independently. Its first intended experiment uses G3-SR4 as the
@@ -214,17 +217,15 @@ The ordering remains mean normalized regret, then P90, median, and the margin
 tuple; depth and all other probe metrics remain diagnostics.
 
 The reference directory and its declared contract are part of the strict
-optimizer manifest. `per_root_v1` is the future contract; `shared_budget_v1`
-can be named for a separately labelled historical G3-SR3 experiment, but must
-never be pooled with per-root results. Existing valid JSONL candidate outputs
-and state entries are reused; an anchor, probe, input, net, budget, or config
-hash mismatch requires a new optimizer run directory. The example is
+optimizer manifest. Existing valid JSONL candidate outputs and state entries
+are reused; an anchor, probe, input, net, budget, or config hash mismatch
+requires a new optimizer run directory. The example is
 `scripts/futility_optimizer.example.json`.
 
 ## SPSA Margin Optimizer and Subset Sensitivity
 
-`scripts/optimize_futility_spsa.py` adds a separate, dependency-free SPSA
-path; it does not change the coordinate optimizer.  A track starts from one
+`scripts/optimize_futility_spsa.py` is the primary dependency-free SPSA
+search path. A track starts from one
 fixed-depth tuple represented as first margin plus nonnegative increments.
 At iteration `k`, it creates a random ±1 direction, probes `theta + c_k delta`
 and `theta - c_k delta`, then updates all continuous increment coordinates
@@ -253,7 +254,9 @@ position, filtering the raw JSONL to a deterministic trusted subset is exactly
 the candidate comparison on that smaller corpus—no probe needs to rerun. The
 example evaluates 5%, 10%, and 20%, with three replicates each, and reports
 per-sample rankings, aggregate rank/winner stability, and paired mean-regret
-deltas versus f01. See `scripts/futility_subset_analysis.example.json`.
+deltas versus f01. `scripts/futility_subset_analysis.example.json` is a
+portable template; the exact historical SR4 smoke configuration is retained
+as `scripts/futility_subset_analysis.g3-sr4-smoke.json`.
 
 The initial read-only SR4 check confirms why a tiny SPSA subset needs care. At
 5% (about 1,125 trusted positions), the winner varied: f01 won two samples
@@ -263,7 +266,25 @@ samples and beat f01 by mean-regret deltas of roughly `-0.00063` and
 existing smoke outputs, not a strength claim; begin SPSA at 10% or higher
 unless a deliberately noisier experiment is wanted.
 
-### Future: Post-anchor Mate Rescue
+The first real SPSA run used 15% deterministic subsets, two tracks, four
+workers, and 100 iterations: d3 started at f01 and d5 started at f21. Its
+full-G3-SR4 endpoint probes established two development improvements over
+f01; neither is selected until the untouched G3-SR3-R2M comparison completes.
+
+| Variant | Margins | Mean regret | P90 regret | Move agreement | Mean depth |
+|---|---|---:|---:|---:|---:|
+| f01 | `120,240,360` | 0.014838 | 0.043224 | 56.498% | 9.121 |
+| SPSA d3 endpoint | `23,62,194` | 0.014321 | **0.040663** | 56.850% | 9.461 |
+| SPSA d5 endpoint | `10,54,175,264,503` | **0.014221** | 0.041042 | **57.101%** | 9.690 |
+
+The d5 endpoint improves mean regret by about 4.2% versus f01 and is the
+primary candidate; the d3 endpoint improves it by about 3.5% and is the
+structurally distinct alternate. These are development-proxy results, not Elo
+claims. Their increase in mean depth is diagnostic only.
+
+## Post-anchor Mate Rescue
+
+### Rationale and policy
 
 Do not discard every reference rejection whose f01 baseline eventually reports
 mate. In fixed-node PVS, a short forced mate can make later iterations cheap,
@@ -274,32 +295,16 @@ forced mates are valuable futility tests: a radically pruned candidate that
 misses one must not gain an advantage merely because the position was removed
 from score-regret ranking.
 
-After G3-SR4 completes, inspect only the rejected records and run a separate
-mate-rescue pass; do not change or repeat the full anchor. The **reference**,
-not the baseline alone, triggers rescue: it must establish a winning mate on a
-root before the normal `R` failure. Let `D_found` be the completed iterative
-search depth at which that mate was established (not the displayed mate-in-N
-distance), then use a fixed rescue target of `D_found + gap`.
-
-Roots already searched beyond that target retain their stronger score and
-record their individual score depth; later roots are searched to the rescue
-target. A heterogeneous map is acceptable for this mate-specific contract,
-but its depth provenance must be retained. Its regret is defined from the
-exact best reference value `+1`: a candidate selecting a certified winning
-mate has regret zero; for each distinct non-mating root selected by any
-evaluated candidate, refine that root to the fixed rescue target when its
-available score is shallower, then calculate `1 - transformed(selected-root
-score)`. Deduplicate these selected-root refinements across candidates and
-retain the rescue contract, root scores, depths, cap, and mate metadata in
-separate durable artifacts.
-
-First measure the number and type of G3-SR4 rejections, including how many
-are mate-interesting, before implementing this new contract. A simple
-higher-`R`, rejected-only rerun remains the control comparison: it retains the
-ordinary uniform contract and reveals whether the specialized rescue is worth
+The **reference**, not the baseline alone, triggers rescue: it must establish
+a winning mate on a root before the normal `R` failure. Let `D_found` be the
+completed iterative search depth at which that root established the mate (not
+the displayed mate-in-N distance), then use a rescue target of `D_found +
+gap`. A heterogeneous map is acceptable only with explicit per-root depth
+provenance. A higher-`R`, rejected-only rerun remains the control: it retains
+the ordinary uniform contract and shows whether specialized rescue is worth
 its additional complexity.
 
-### Implemented Post-anchor Mate Rescue
+### Implemented contract
 
 `futility_probe --per-root-mate-rescue` implements the separate
 `per_root_mate_rescue_v1` contract. It is run only on a masked copy of the
@@ -331,12 +336,12 @@ reference failed at target depth 12: a reference root proved mate at depth 1,
 so the rescue target was 3 and all 46 legal roots completed there. This is the
 intended distinction from merely trusting the baseline's mate score.
 
-### G3-SR3 Old-versus-New Reference Report
+## Optional Historical G3-SR3 Contract Report
 
 The old shared-budget and new per-root G3-SR3 anchors use the same input FENs,
-which makes them a controlled reference-design experiment. On
-`futility-score-regret`, add a read-only report that matches records by input
-basename, line, and FEN and reports:
+which makes them a controlled reference-design experiment. If useful, add a
+read-only report that matches records by input basename, line, and FEN and
+reports:
 
 1. deterministic agreement of the repeated 120k f01 baselines;
 2. old depth separation against new per-root acceptance/rejection;
@@ -347,9 +352,22 @@ basename, line, and FEN and reports:
 5. f01/f21 and later candidate-regret/ranking agreement under both contracts.
 
 This report extracts value from the historical anchor without treating it as a
-per-root shard. Keep `futility-score-regret` available until it and any desired
-old-contract candidate probes are complete. Before merging the per-root branch,
-tag the old-contract tip so the analysis remains reproducible.
+per-root shard. The per-root work is already merged into
+`futility-score-regret`; no branch preservation or merge step is required.
+
+## Deferred Cleanup Candidates
+
+These are intentionally retained until the optional historical G3-SR3 report
+is either completed or explicitly abandoned. They must not be used for new
+per-root tuning runs.
+
+- `shared_budget_v1` support in `scripts/optimize_futility.py` and its
+  historical-only tests. It exists solely to analyse the old G3-SR3 anchor;
+  remove the branch and tests once that comparison no longer has value.
+- `scripts/optimize_futility.py`, `scripts/discrete_optimizer.py`, and
+  `scripts/futility_optimizer.example.json`, the original coordinate-search
+  path. Keep the completed smoke artifacts and documentation, but remove this
+  execution path if SPSA remains the only optimizer we intend to support.
 
 ## Current SPRT Status
 
