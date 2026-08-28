@@ -305,6 +305,53 @@ candidate and d3 is the retained structural alternate. This is two-shard
 proxy evidence only; f21 has not yet been measured under this exact per-root
 selection contract.
 
+## Future: General Search-Pruning Optimization
+
+The score-regret proxy is not inherently a futility-pruning measure. Given a
+fixed high-quality reference-root map, the same candidate node budget, and a
+candidate-selected root move, it measures the quality of any changed search
+policy through the normalized reference score of that move. It can therefore
+screen LMR, null-move pruning, razoring, and similar pruning/reduction
+techniques, provided the net, corpus, node budget, reference contract, and all
+non-tuned search settings remain fixed.
+
+Do **not** generalize the implementation before selecting the next technique.
+When that happens, retain the durable reference/proxy/evaluation machinery and
+add a small technique adapter. The adapter owns the candidate CLI mapping,
+parameter validation, legal constraints, and decoding; the optimizer only sees
+an objective over a numeric latent vector. This keeps the reference format and
+mean normalized score-regret objective shared rather than copying the futility
+workflow for every pruning family.
+
+Raw SPSA coordinates must not be assumed comparable across mixed parameters.
+Futility margins happen to have similar native units, but LMR coefficients,
+depth thresholds, null-move reductions, and guards do not. For a future
+adapter, optimize normalized latent coordinates and decode each coordinate into
+the engine parameter:
+
+```text
+normalized coordinate -> technique-specific scale/transform -> legal native value
+```
+
+Each coordinate should declare a start, a meaningful perturbation scale, a
+safe feasible range, and any integer rounding or coupled constraints. Bounds
+are a deliberate definition of the policy family being searched, not a claim
+that the optimum lies at a boundary. Start with projection/clamping after
+decoding; a sigmoid makes SPSA ineffective near a bound. Strongly coupled
+parameters should use a constrained representation (for example a base value
+plus nonnegative increments). Categorical choices and booleans should be
+separate tracks or outer experiments, not forced into a continuous SPSA
+direction. If needed later, coordinate-specific SPSA gains and perturbations
+can reflect differing sensitivities.
+
+Initially tune one pruning technique at a time. Its optimum is conditional on
+the fixed settings of all the other pruning mechanisms; only after trustworthy
+single-technique results exist should a deliberately scoped joint optimization
+be considered. Keep missed reference-winning mates, candidate mate claims,
+completed depth, speed, and futility-style counts as safety diagnostics. Mean
+score regret remains the ranking objective, while diagnostics and final SPRT
+guard against a proxy blind spot.
+
 ## Post-anchor Mate Rescue
 
 ### Rationale and policy
