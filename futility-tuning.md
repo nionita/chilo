@@ -413,6 +413,55 @@ classify each event as a pruning/horizon miss, an evaluation correction, or an
 ordinary depth limitation. A sufficiently large target-time-control failure
 corpus can later calibrate risk metrics against actual score collapses.
 
+## Gated Random Hill Climb — 2026-08-30
+
+`scripts/optimize_futility_gated.py` is a separate development-only optimizer
+for the case where mean normalized regret is useful but insufficient. It does
+not replace the historical SPSA runner or reinterpret old runs. Each attempt
+uses one fresh deterministic common-random-number subset and runs exactly two
+ordinary candidate probes in parallel: the current incumbent and one signed
+random perturbation in margin-increment coordinates. A proposal replaces the
+incumbent only if it improves the sampled mean normalized regret by the
+track's configured `min_mean_improvement` **and** passes its configured risk
+gate. This makes a current best point and lack-of-progress meaningful despite
+the discrete projected tuples.
+
+Each track must explicitly provide these gate hyperparameters; there are no
+hidden safety defaults:
+
+```json
+"gate": {
+  "mode": "downside | cvar1 | both",
+  "max_squared_positive_excess": 0.000250,
+  "max_cvar1_excess": 0.120000,
+  "min_mean_improvement": 0.000020,
+  "max_stalled_attempts": 20
+}
+```
+
+The two gate statistics use the same f01-relative calculation as
+`scripts/analyze_futility_risk.py` on the attempt subset:
+
+- **downside** is mean squared `max(0, candidate_regret - f01_regret)`;
+- **cvar1** is the mean of the worst `ceil(1% * sample_count)` raw
+  candidate-minus-f01 regret excesses; and
+- **both** enforces both caps. Inactive limits are still recorded, allowing
+  like-for-like comparison of the three modes.
+
+The initial tuple must pass its selected gate on its first sampled evaluation.
+Afterward every accepted tuple has passed that gate when selected. A rejected
+proposal (gate failure or insufficient mean improvement) increments the
+stalled count; an accepted proposal resets it. A track stops as `stalled` at
+`max_stalled_attempts`, or as `max_attempts` at the run-wide cap. The durable
+state records the two metric sets, gate decision, subset hash, and probe hashes
+for every attempt; a matching manifest is mandatory for resume.
+
+Use `scripts/futility_gated_hillclimb.example.json` as the portable template.
+The illustrative f21-derived limits are only a calibration hypothesis from
+the current small set of SPRT-labelled candidates. They are not proven safety
+thresholds. Full-development ranking, untouched G3-SR3-R2M evaluation, and
+then SPRT remain mandatory before promotion.
+
 ## Future: General Search-Pruning Optimization
 
 The score-regret proxy is not inherently a futility-pruning measure. Given a

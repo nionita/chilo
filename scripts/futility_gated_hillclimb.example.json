@@ -1,0 +1,58 @@
+{
+  "probe": "/path/to/futility_probe-avx2",
+  "inputs": ["/path/to/g3-25k.csv"],
+  "weights": "/path/to/chilo-g4t1-64x8.bin",
+  "candidate_nodes": 120000,
+  "baseline_margins": [120, 240, 360],
+  "score_scale": 600,
+  "probe_report_every": 1000,
+  "development": {
+    "reference_dir": "/path/to/g3-sr4",
+    "contract": "per_root_v1",
+    "rescue_dir": "/path/to/g3-sr4-mate-rescue/run"
+  },
+  "gated_hillclimb": {
+    "tracks": [
+      {
+        "id": "f21-downside",
+        "margins": [75, 212, 390, 600, 839],
+        "gate": {
+          "mode": "downside",
+          "max_squared_positive_excess": 0.000250,
+          "max_cvar1_excess": 0.120000,
+          "min_mean_improvement": 0.000020,
+          "max_stalled_attempts": 20
+        }
+      },
+      {
+        "id": "f21-cvar1",
+        "margins": [75, 212, 390, 600, 839],
+        "gate": {
+          "mode": "cvar1",
+          "max_squared_positive_excess": 0.000250,
+          "max_cvar1_excess": 0.120000,
+          "min_mean_improvement": 0.000020,
+          "max_stalled_attempts": 20
+        }
+      },
+      {
+        "id": "f21-both",
+        "margins": [75, 212, 390, 600, 839],
+        "gate": {
+          "mode": "both",
+          "max_squared_positive_excess": 0.000250,
+          "max_cvar1_excess": 0.120000,
+          "min_mean_improvement": 0.000020,
+          "max_stalled_attempts": 20
+        }
+      }
+    ],
+    "max_attempts": 150,
+    "workers": 4,
+    "subset_fraction": 0.20,
+    "seed": 20260830,
+    "perturbation_c": 40.0,
+    "perturbation_gamma": 0.101,
+    "max_margin": 2000
+  }
+}
