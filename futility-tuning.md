@@ -305,6 +305,114 @@ candidate and d3 is the retained structural alternate. This is two-shard
 proxy evidence only; f21 has not yet been measured under this exact per-root
 selection contract.
 
+## SPSA-150 Holdout Failure and Tail-Risk Diagnostics — 2026-08-30
+
+A second SPSA run used 150 iterations, 20% deterministic subsets, and two
+five-depth tracks. Its SR4 development endpoints were `0,40,98,202,424`
+(center) and `0,40,158,488,754` (nearby, later called `spsa150b`). Both drove
+the first margin to zero. Full SR4 combined-population probes made the nearby
+endpoint the nominal mean-regret winner:
+
+| Variant | SR4 combined mean regret | SR4 P90 regret | SR4 move agreement |
+|---|---:|---:|---:|
+| f01 | 0.014772 | 0.043051 | 56.683% |
+| previous D5 `10,54,175,264,503` | 0.014157 | 0.040669 | 57.284% |
+| center | 0.014082 | 0.041145 | **57.336%** |
+| nearby / `spsa150b` | **0.014074** | **0.040416** | 57.306% |
+
+The untouched G3-SR3-R2M combined selection population rejected both new
+endpoints. The earlier D5 tuple is the winner and remains the proxy candidate;
+do not promote either SPSA-150 endpoint to SPRT. Manual GUI inspection also
+made `spsa150b` look implausibly aggressive, but that observation is
+diagnostic only, not a controlled strength result.
+
+| Variant | SR3-R2M combined mean regret | SR3-R2M P90 regret | SR3-R2M move agreement |
+|---|---:|---:|---:|
+| f01 | 0.015140 | 0.045296 | 56.841% |
+| previous D5 `10,54,175,264,503` | **0.014233** | **0.041414** | 57.609% |
+| nearby / `spsa150b` | 0.014452 | 0.043125 | 57.661% |
+| center | 0.014582 | 0.042412 | **57.683%** |
+
+This is adaptive development overfitting and/or corpus-distribution shift, not
+an argument that seven physical margins alone are too many parameters for
+25,000 positions. SPSA adaptively sampled and compared many perturbations on
+SR4 before its endpoints were selected. The independent selection shard is
+therefore essential. It remains unclear whether the main cause is optimizer
+noise, SR4-specific structure, or a mismatch between fixed-node root regret
+and real-game loss; do not change the optimizer on this evidence alone.
+
+### Read-only risk analysis
+
+`scripts/analyze_futility_risk.py` calculates additional candidate diagnostics
+from completed JSONL only; it does not run the engine. It uses the shared
+anchor/rescue adapter, so all ordinary trusted and certified mate-rescue
+positions are included. The portable configuration is
+`scripts/futility_risk_analysis.example.json`.
+
+For each candidate it reports absolute normalized-regret tails and its
+position-by-position downside relative to a declared control (normally f01):
+
+```text
+CVaR top q% = mean regret of the worst ceil(q% * position_count) positions
+excess      = candidate regret - control regret
+positive downside = max(0, excess)
+```
+
+P99 is only the cutoff below which 99% of the regrets lie; CVaR top 1% is the
+average severity of the worst 1%. With SR4's 22,825 combined positions, that
+tail contains 229 positions. The tool also reports mean positive downside,
+mean squared positive downside, tail excess, regret-threshold rates, and
+reference-score semantic regressions. The initial semantic thresholds are
+tentative: a clear non-mate advantage is at least +150 cp and a clear loss is
+at most -150 cp. Winning-mate loss is counted separately, so categories do not
+double-count those positions.
+
+The completed SR4/SR3-R2M comparison used f01, the earlier D3/D5 endpoints,
+and both SPSA-150 endpoints. It provides useful diagnostics but no new ranking
+rule yet:
+
+| Variant | SR4 CVaR top 1% | SR4 squared downside | SR3 CVaR top 1% | SR3 squared downside |
+|---|---:|---:|---:|---:|
+| previous D3 | 0.340163 | **0.000477** | **0.314329** | **0.000428** |
+| previous D5 | 0.330943 | 0.000498 | 0.323791 | 0.000526 |
+| nearby / `spsa150b` | **0.329445** | 0.000542 | 0.321794 | 0.000520 |
+| center | 0.331604 | 0.000606 | 0.336676 | 0.000640 |
+
+Absolute CVaR alone would not have rejected `spsa150b`: on SR4 it is the best
+tail and on SR3 it is still better than f01. Relative downside is more
+suggestive—nearby is worse than the previous D5 on SR4's squared downside and
+top-1% excess—but it does not reproduce every cross-shard ordering either.
+The D3 tuple has the consistently smallest downside but not the best mean
+regret. These diagnostics expose a real mean-versus-risk trade-off; they do
+not yet justify a numerical safety threshold or a replacement objective.
+
+The eventual policy may be to reject candidates outside a calibrated risk
+envelope (for example, control-relative squared downside and CVaR) and rank
+the survivors by mean regret. First calibrate any such gate retrospectively on
+more known candidates and out-of-sample results. In particular, do not use a
+literal maximum-regret rule: a single unusually difficult or imperfectly
+referenced position would dominate it.
+
+### Future: real-game score-swing telemetry
+
+Static root regret cannot identify every practical failure. A collection build
+should record a **suspect** after an engine move whose final completed root
+score later falls sharply when the engine searches again after the opponent
+reply. Store both searches from the engine's fixed-color point of view:
+pre-move FEN, selected and opponent moves, scores/mate classes, completed
+depths/nodes, PVs, interruption status, time allocation, engine/net identity,
+and pruning counters.
+
+An initial trigger is a score drop of roughly 150--200 cp, both searches having
+completed a reasonable depth (initially 8--9), and the later depth no more
+than one ply below the first. Winning-mate to non-winning-mate and
+non-losing-to-losing-mate transitions always trigger. This is not an in-game
+proof of a blunder and must not spend extra game time. Offline re-search of the
+saved pre-move position, its selected child, and a less aggressive control can
+classify each event as a pruning/horizon miss, an evaluation correction, or an
+ordinary depth limitation. A sufficiently large target-time-control failure
+corpus can later calibrate risk metrics against actual score collapses.
+
 ## Future: General Search-Pruning Optimization
 
 The score-regret proxy is not inherently a futility-pruning measure. Given a
