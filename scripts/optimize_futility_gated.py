@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Relative-risk random hill-climb for futility margins.
+"""Full-development Pareto search for futility margins.
 
-Each attempt probes a current incumbent and one deterministic random
-perturbation on the same fresh trusted-set sample. A proposal is accepted only
-when it makes the selected incumbent-relative safety progress while staying
-inside its predeclared mean-regret concession budget. Optional absolute limits
-are backstops, never the progress objective. This is deliberately
-development-only; full-development and untouched selection evaluation remain
-separate decisions.
+Every tuple is evaluated on the fixed complete development population. The
+primary archive contains the non-dominated tuples on mean normalized regret,
+reference-relative squared regret, and reference-relative CVaR-1%. At the end
+of a fixed proposal budget, configured semantic metrics decimate that archive
+sequentially; ties at a cutoff are retained.
 """
 
 from __future__ import annotations
@@ -30,31 +28,22 @@ import spsa_optimizer
 import tune_futility
 
 
-SCHEMA = "chilo.futility_relative_risk_hillclimb.v3"
-STATE_SCHEMA = "chilo.futility_relative_risk_hillclimb_state.v3"
+SCHEMA = "chilo.futility_pareto_search.v4"
+STATE_SCHEMA = "chilo.futility_pareto_search_state.v4"
 Margins = Tuple[int, ...]
 Key = Tuple[str, int, str]
-ACCEPTANCE_MODES = {"squared", "cvar1", "both"}
+SEMANTIC_METRICS = {
+    "winning_mate_missed",
+    "clear_advantage_lost",
+    "clear_advantage_to_nonpositive",
+    "nonlosing_to_losing",
+}
 
 
 @dataclass(frozen=True)
-class Acceptance:
-    mode: str
-    max_mean_regret_concession: float
-    min_squared_regret_improvement: float
-    min_cvar1_regret_improvement: float
-    max_squared_regret_worsening: float
-    max_cvar1_regret_worsening: float
-    max_squared_regret: Optional[float]
-    max_cvar1_regret: Optional[float]
-    max_stalled_attempts: int
-
-
-@dataclass(frozen=True)
-class Track:
-    identifier: str
-    margins: Margins
-    acceptance: Acceptance
+class SemanticFilter:
+    metric: str
+    discard_worst_fraction: float
 
 
 @dataclass(frozen=True)
@@ -69,14 +58,14 @@ class Settings:
     score_scale: float
     probe_report_every: int
     anchor: optimize_futility.AnchorContext
-    tracks: Tuple[Track, ...]
-    max_attempts: int
+    initial_margins: Margins
+    max_proposals: int
     workers: int
-    subset_fraction: float
     seed: int
     perturbation_c: float
     perturbation_gamma: float
     max_margin: int
+    semantic_filters: Tuple[SemanticFilter, ...]
 
 
 def atomic_write(path: Path, value: Any) -> None:
@@ -95,79 +84,40 @@ def require_number(value: Any, name: str, minimum: float, inclusive: bool = Fals
     return numeric
 
 
-def require_optional_number(value: Any, name: str) -> Optional[float]:
-    if value is None:
-        return None
-    return require_number(value, name, 0, True)
-
-
-def parse_acceptance(value: Any, label: str) -> Acceptance:
-    if not isinstance(value, dict):
-        raise optimize_futility.OptimizationError(f"{label} must be an object")
-    allowed = {
-        "mode",
-        "max_mean_regret_concession",
-        "min_squared_regret_improvement",
-        "min_cvar1_regret_improvement",
-        "max_squared_regret_worsening",
-        "max_cvar1_regret_worsening",
-        "max_squared_regret",
-        "max_cvar1_regret",
-        "max_stalled_attempts",
-    }
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise optimize_futility.OptimizationError(f"unknown {label} field(s): {', '.join(unknown)}")
-    required = allowed - {"max_squared_regret", "max_cvar1_regret"}
-    if not required.issubset(value):
-        missing = sorted(required - set(value))
-        raise optimize_futility.OptimizationError(f"{label} missing required field(s): {', '.join(missing)}")
-    mode = optimize_futility.require_string(value.get("mode"), f"{label}.mode")
-    if mode not in ACCEPTANCE_MODES:
-        raise optimize_futility.OptimizationError(f"{label}.mode must be squared, cvar1, or both")
-    squared_improvement = require_number(
-        value.get("min_squared_regret_improvement"), f"{label}.min_squared_regret_improvement", 0, True
-    )
-    cvar1_improvement = require_number(
-        value.get("min_cvar1_regret_improvement"), f"{label}.min_cvar1_regret_improvement", 0, True
-    )
-    if mode in {"squared", "both"} and squared_improvement <= 0:
-        raise optimize_futility.OptimizationError(f"{label}.min_squared_regret_improvement must be > 0 for {mode} mode")
-    if mode in {"cvar1", "both"} and cvar1_improvement <= 0:
-        raise optimize_futility.OptimizationError(f"{label}.min_cvar1_regret_improvement must be > 0 for {mode} mode")
-    return Acceptance(
-        mode=mode,
-        max_mean_regret_concession=require_number(
-            value.get("max_mean_regret_concession"), f"{label}.max_mean_regret_concession", 0, True
-        ),
-        min_squared_regret_improvement=squared_improvement,
-        min_cvar1_regret_improvement=cvar1_improvement,
-        max_squared_regret_worsening=require_number(
-            value.get("max_squared_regret_worsening"), f"{label}.max_squared_regret_worsening", 0, True
-        ),
-        max_cvar1_regret_worsening=require_number(
-            value.get("max_cvar1_regret_worsening"), f"{label}.max_cvar1_regret_worsening", 0, True
-        ),
-        max_squared_regret=require_optional_number(value.get("max_squared_regret"), f"{label}.max_squared_regret"),
-        max_cvar1_regret=require_optional_number(value.get("max_cvar1_regret"), f"{label}.max_cvar1_regret"),
-        max_stalled_attempts=optimize_futility.require_int(
-            value.get("max_stalled_attempts"), f"{label}.max_stalled_attempts", 1
-        ),
-    )
+def parse_semantic_filters(value: Any) -> Tuple[SemanticFilter, ...]:
+    if not isinstance(value, list) or not value:
+        raise optimize_futility.OptimizationError("pareto_search.semantic_filters must be a non-empty list")
+    filters = []
+    seen = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != {"metric", "discard_worst_fraction"}:
+            raise optimize_futility.OptimizationError(
+                "each pareto_search.semantic_filters item must contain only metric and discard_worst_fraction"
+            )
+        metric = optimize_futility.require_string(item.get("metric"), f"pareto_search.semantic_filters[{index}].metric")
+        if metric not in SEMANTIC_METRICS:
+            raise optimize_futility.OptimizationError(
+                f"pareto_search.semantic_filters[{index}].metric must be one of: {', '.join(sorted(SEMANTIC_METRICS))}"
+            )
+        if metric in seen:
+            raise optimize_futility.OptimizationError(f"duplicate pareto semantic filter metric {metric}")
+        seen.add(metric)
+        fraction = require_number(item.get("discard_worst_fraction"), f"pareto_search.semantic_filters[{index}].discard_worst_fraction", 0)
+        if fraction >= 1:
+            raise optimize_futility.OptimizationError(f"pareto_search.semantic_filters[{index}].discard_worst_fraction must be < 1")
+        filters.append(SemanticFilter(metric, fraction))
+    return tuple(filters)
 
 
 def load_settings(config_path: Path) -> Settings:
     raw_bytes = config_path.read_bytes()
     raw = json.loads(raw_bytes)
     if not isinstance(raw, dict):
-        raise optimize_futility.OptimizationError("gated hill-climb config root must be an object")
-    allowed = {
-        "probe", "inputs", "weights", "candidate_nodes", "baseline_margins", "score_scale",
-        "probe_report_every", "development", "gated_hillclimb",
-    }
+        raise optimize_futility.OptimizationError("Pareto futility config root must be an object")
+    allowed = {"probe", "inputs", "weights", "candidate_nodes", "baseline_margins", "score_scale", "probe_report_every", "development", "pareto_search"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
-        raise optimize_futility.OptimizationError(f"unknown gated hill-climb config field(s): {', '.join(unknown)}")
+        raise optimize_futility.OptimizationError(f"unknown Pareto futility config field(s): {', '.join(unknown)}")
     probe = optimize_futility.resolve_path(config_path, optimize_futility.require_string(raw.get("probe"), "probe"))
     if not probe.is_file():
         raise optimize_futility.OptimizationError(f"probe does not exist: {probe}")
@@ -189,70 +139,31 @@ def load_settings(config_path: Path) -> Settings:
     if not isinstance(development, dict):
         raise optimize_futility.OptimizationError("development must be an object")
     anchor = optimize_futility.load_anchor(config_path, "development", development, nodes, baseline)
-    hillclimb = raw.get("gated_hillclimb")
-    if not isinstance(hillclimb, dict):
-        raise optimize_futility.OptimizationError("gated_hillclimb must be an object")
-    allowed_hillclimb = {
-        "tracks", "max_attempts", "workers", "subset_fraction", "seed",
-        "perturbation_c", "perturbation_gamma", "max_margin",
-    }
-    unknown = sorted(set(hillclimb) - allowed_hillclimb)
+    pareto = raw.get("pareto_search")
+    if not isinstance(pareto, dict):
+        raise optimize_futility.OptimizationError("pareto_search must be an object")
+    allowed_pareto = {"initial_margins", "max_proposals", "workers", "seed", "perturbation_c", "perturbation_gamma", "max_margin", "semantic_filters"}
+    unknown = sorted(set(pareto) - allowed_pareto)
     if unknown:
-        raise optimize_futility.OptimizationError(f"unknown gated_hillclimb field(s): {', '.join(unknown)}")
-    tracks_raw = hillclimb.get("tracks")
-    if not isinstance(tracks_raw, list) or not tracks_raw:
-        raise optimize_futility.OptimizationError("gated_hillclimb.tracks must be a non-empty list")
-    tracks: List[Track] = []
-    identifiers = set()
-    for index, item in enumerate(tracks_raw):
-        if not isinstance(item, dict) or set(item) != {"id", "margins", "acceptance"}:
-            raise optimize_futility.OptimizationError("each gated_hillclimb track must contain only id, margins, and acceptance")
-        identifier = optimize_futility.require_string(item.get("id"), "gated_hillclimb track id")
-        if identifier in identifiers:
-            raise optimize_futility.OptimizationError(f"duplicate gated_hillclimb track id {identifier}")
-        identifiers.add(identifier)
-        margins = tune_futility.validate_margins(item.get("margins"), f"gated_hillclimb track {identifier} margins")
-        tracks.append(Track(identifier, margins, parse_acceptance(item.get("acceptance"), f"gated_hillclimb track {identifier}.acceptance")))
-    max_margin = optimize_futility.require_int(hillclimb.get("max_margin"), "gated_hillclimb.max_margin", 0)
-    if any(max(track.margins) > max_margin for track in tracks):
-        raise optimize_futility.OptimizationError("gated_hillclimb track margins exceed gated_hillclimb.max_margin")
-    subset_fraction = require_number(hillclimb.get("subset_fraction"), "gated_hillclimb.subset_fraction", 0)
-    if subset_fraction > 1:
-        raise optimize_futility.OptimizationError("gated_hillclimb.subset_fraction must be <= 1")
+        raise optimize_futility.OptimizationError(f"unknown pareto_search field(s): {', '.join(unknown)}")
+    if set(pareto) != allowed_pareto:
+        missing = sorted(allowed_pareto - set(pareto))
+        raise optimize_futility.OptimizationError(f"pareto_search missing required field(s): {', '.join(missing)}")
+    initial = tune_futility.validate_margins(pareto.get("initial_margins"), "pareto_search.initial_margins")
+    max_margin = optimize_futility.require_int(pareto.get("max_margin"), "pareto_search.max_margin", 0)
+    if max(initial) > max_margin:
+        raise optimize_futility.OptimizationError("pareto_search.initial_margins exceed pareto_search.max_margin")
     return Settings(
-        config_path=config_path,
-        config_sha256=hashlib.sha256(raw_bytes).hexdigest(),
-        probe=probe,
-        inputs=inputs,
-        weights=weights,
-        candidate_nodes=nodes,
-        baseline_margins=baseline,
-        score_scale=score_scale,
-        probe_report_every=report_every,
-        anchor=anchor,
-        tracks=tuple(tracks),
-        max_attempts=optimize_futility.require_int(hillclimb.get("max_attempts"), "gated_hillclimb.max_attempts", 1),
-        workers=optimize_futility.require_int(hillclimb.get("workers"), "gated_hillclimb.workers", 1),
-        subset_fraction=subset_fraction,
-        seed=optimize_futility.require_int(hillclimb.get("seed"), "gated_hillclimb.seed", 0),
-        perturbation_c=require_number(hillclimb.get("perturbation_c"), "gated_hillclimb.perturbation_c", 0),
-        perturbation_gamma=require_number(hillclimb.get("perturbation_gamma"), "gated_hillclimb.perturbation_gamma", 0),
-        max_margin=max_margin,
+        config_path=config_path, config_sha256=hashlib.sha256(raw_bytes).hexdigest(), probe=probe, inputs=inputs, weights=weights,
+        candidate_nodes=nodes, baseline_margins=baseline, score_scale=score_scale, probe_report_every=report_every, anchor=anchor,
+        initial_margins=initial,
+        max_proposals=optimize_futility.require_int(pareto.get("max_proposals"), "pareto_search.max_proposals", 1),
+        workers=optimize_futility.require_int(pareto.get("workers"), "pareto_search.workers", 1),
+        seed=optimize_futility.require_int(pareto.get("seed"), "pareto_search.seed", 0),
+        perturbation_c=require_number(pareto.get("perturbation_c"), "pareto_search.perturbation_c", 0),
+        perturbation_gamma=require_number(pareto.get("perturbation_gamma"), "pareto_search.perturbation_gamma", 0),
+        max_margin=max_margin, semantic_filters=parse_semantic_filters(pareto.get("semantic_filters")),
     )
-
-
-def acceptance_json(acceptance: Acceptance) -> Dict[str, Any]:
-    return {
-        "mode": acceptance.mode,
-        "max_mean_regret_concession": acceptance.max_mean_regret_concession,
-        "min_squared_regret_improvement": acceptance.min_squared_regret_improvement,
-        "min_cvar1_regret_improvement": acceptance.min_cvar1_regret_improvement,
-        "max_squared_regret_worsening": acceptance.max_squared_regret_worsening,
-        "max_cvar1_regret_worsening": acceptance.max_cvar1_regret_worsening,
-        "max_squared_regret": acceptance.max_squared_regret,
-        "max_cvar1_regret": acceptance.max_cvar1_regret,
-        "max_stalled_attempts": acceptance.max_stalled_attempts,
-    }
 
 
 def manifest(settings: Settings) -> Dict[str, Any]:
@@ -262,29 +173,12 @@ def manifest(settings: Settings) -> Dict[str, Any]:
         "probe": tune_futility.file_identity(settings.probe),
         "inputs": [tune_futility.file_identity(path) for path in settings.inputs],
         "weights": tune_futility.file_identity(settings.weights) if settings.weights else None,
-        "candidate_nodes": settings.candidate_nodes,
-        "baseline_margins": list(settings.baseline_margins),
-        "score_scale": settings.score_scale,
-        "probe_report_every": settings.probe_report_every,
-        "development": {
-            "contract": settings.anchor.contract,
-            "reference": settings.anchor.reference_identity,
-            "baseline": settings.anchor.baseline_identity,
-            "trusted_set": settings.anchor.trusted_set,
-            "rescue": dict(settings.anchor.rescue) if settings.anchor.rescue is not None else None,
-        },
-        "gated_hillclimb": {
-            "tracks": [
-                {"id": track.identifier, "margins": list(track.margins), "acceptance": acceptance_json(track.acceptance)}
-                for track in settings.tracks
-            ],
-            "max_attempts": settings.max_attempts,
-            "workers": settings.workers,
-            "subset_fraction": settings.subset_fraction,
-            "seed": settings.seed,
-            "perturbation_c": settings.perturbation_c,
-            "perturbation_gamma": settings.perturbation_gamma,
-            "max_margin": settings.max_margin,
+        "candidate_nodes": settings.candidate_nodes, "baseline_margins": list(settings.baseline_margins), "score_scale": settings.score_scale, "probe_report_every": settings.probe_report_every,
+        "development": {"contract": settings.anchor.contract, "reference": settings.anchor.reference_identity, "baseline": settings.anchor.baseline_identity, "trusted_set": settings.anchor.trusted_set, "rescue": dict(settings.anchor.rescue) if settings.anchor.rescue is not None else None},
+        "pareto_search": {
+            "initial_margins": list(settings.initial_margins), "max_proposals": settings.max_proposals, "workers": settings.workers,
+            "seed": settings.seed, "perturbation_c": settings.perturbation_c, "perturbation_gamma": settings.perturbation_gamma, "max_margin": settings.max_margin,
+            "semantic_filters": [{"metric": item.metric, "discard_worst_fraction": item.discard_worst_fraction} for item in settings.semantic_filters],
         },
     }
 
@@ -293,371 +187,208 @@ def prepare(run_dir: Path, value: Mapping[str, Any]) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / "optimizer_manifest.json"
     if path.exists():
-        existing = optimize_futility.read_json(path, "gated hill-climb manifest")
-        if existing.get("schema") in {"chilo.futility_gated_hillclimb.v1", "chilo.futility_gated_hillclimb.v2"}:
-            raise optimize_futility.OptimizationError(
-                "v1/v2 gated hill-climb manifest cannot resume under the v3 relative-risk contract; use a new run directory"
-            )
+        existing = optimize_futility.read_json(path, "Pareto futility manifest")
+        if existing.get("schema") in {"chilo.futility_gated_hillclimb.v1", "chilo.futility_gated_hillclimb.v2", "chilo.futility_relative_risk_hillclimb.v3"}:
+            raise optimize_futility.OptimizationError("an earlier sampled/single-incumbent manifest cannot resume under the v4 full-development Pareto contract; use a new run directory")
         if existing != value:
-            raise optimize_futility.OptimizationError("gated hill-climb manifest does not match configured artifacts or anchor; use a new run directory")
+            raise optimize_futility.OptimizationError("Pareto futility manifest does not match configured artifacts or anchor; use a new run directory")
     else:
         atomic_write(path, value)
-    for track in value["gated_hillclimb"]["tracks"]:
-        root = run_dir / "tracks" / track["id"]
-        (root / "probes").mkdir(parents=True, exist_ok=True)
-        (root / "logs").mkdir(parents=True, exist_ok=True)
-    (run_dir / "subsets").mkdir(parents=True, exist_ok=True)
+    (run_dir / "probes").mkdir(parents=True, exist_ok=True)
+    (run_dir / "logs").mkdir(parents=True, exist_ok=True)
 
 
-def sample_keys(settings: Settings, track: str, attempt: int) -> List[Key]:
-    population = list(settings.anchor.trusted_keys)
-    count = max(1, int(math.ceil(len(population) * settings.subset_fraction)))
-    rng = random.Random(f"{settings.seed}:subset:{track}:{attempt}")
-    return sorted(rng.sample(population, count))
+def perturbation(settings: Settings, proposal_index: int) -> float:
+    return settings.perturbation_c / ((proposal_index + 1) ** settings.perturbation_gamma)
 
 
-def keys_hash(keys: Sequence[Key]) -> str:
-    digest = hashlib.sha256()
-    for key in keys:
-        digest.update(json.dumps(key, separators=(",", ":")).encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
-
-
-def write_masked_inputs(settings: Settings, run_dir: Path, track: str, attempt: int, keys: Sequence[Key]) -> Tuple[Path, ...]:
-    selected = {(source, line) for source, line, _ in keys}
-    target_dir = run_dir / "subsets" / f"{track}-{attempt:04d}"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    outputs = []
-    for input_path in settings.inputs:
-        output = target_dir / input_path.name
-        lines = input_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        contents = "".join(line if line_number == 1 or (input_path.name, line_number) in selected else "\n" for line_number, line in enumerate(lines, 1))
-        if not output.exists() or output.read_text(encoding="utf-8") != contents:
-            output.write_text(contents, encoding="utf-8")
-        outputs.append(output)
-    return tuple(outputs)
-
-
-def subset_context(anchor: optimize_futility.AnchorContext, keys: Sequence[Key]) -> Tuple[Mapping[str, Any], Mapping[str, Any]]:
-    wanted = set(keys)
-    reference = {"positions": {key: value for key, value in anchor.reference["positions"].items() if key in wanted}, "summary": anchor.reference["summary"]}
-    baseline = {"positions": {key: value for key, value in anchor.baseline["positions"].items() if key in wanted}, "summary": anchor.baseline["summary"]}
-    if len(reference["positions"]) != len(wanted) or len(baseline["positions"]) != len(wanted):
-        raise optimize_futility.OptimizationError("sampled trusted key absent from anchor")
-    return reference, baseline
-
-
-def perturbation(settings: Settings, track: str, attempt: int) -> float:
-    return settings.perturbation_c / ((attempt + 1) ** settings.perturbation_gamma)
-
-
-def make_proposal(current: Margins, settings: Settings, track: str, attempt: int) -> Tuple[Margins, Tuple[int, ...], float]:
-    vector = spsa_optimizer.to_vector(current)
-    size = perturbation(settings, track, attempt)
-    rng = random.Random(f"{settings.seed}:direction:{track}:{attempt}")
+def make_proposal(parent: Margins, settings: Settings, proposal_index: int) -> Tuple[Margins, Tuple[int, ...], float]:
+    vector = spsa_optimizer.to_vector(parent)
+    size = perturbation(settings, proposal_index)
+    rng = random.Random(f"{settings.seed}:direction:{proposal_index}:{','.join(map(str, parent))}")
     for _ in range(100):
         direction = tuple(1 if rng.randrange(2) else -1 for _ in vector)
-        proposal = spsa_optimizer.project(
-            tuple(value + size * sign for value, sign in zip(vector, direction)), settings.max_margin
-        )
-        if proposal != current:
+        proposal = spsa_optimizer.project(tuple(value + size * sign for value, sign in zip(vector, direction)), settings.max_margin)
+        if proposal != parent:
             return proposal, direction, size
-    raise optimize_futility.OptimizationError("hill-climb perturbation collapses after projection; increase perturbation_c or move away from bounds")
+    raise optimize_futility.OptimizationError("Pareto perturbation collapses after projection; increase perturbation_c or move away from bounds")
 
 
-def probe_one(
-    settings: Settings,
-    run_dir: Path,
-    track: str,
-    attempt: int,
-    role: str,
-    margins: Margins,
-    masked_inputs: Sequence[Path],
-) -> Mapping[str, Any]:
-    root = run_dir / "tracks" / track
-    output = root / "probes" / f"attempt-{attempt:04d}-{role}.jsonl"
-    log = root / "logs" / f"attempt-{attempt:04d}-{role}.log"
+def select_parent(frontier: Sequence[Mapping[str, Any]], settings: Settings, proposal_index: int) -> Mapping[str, Any]:
+    if not frontier:
+        raise optimize_futility.OptimizationError("cannot select a parent from an empty Pareto frontier")
+    ordered = sorted(frontier, key=lambda item: (tuple(item["margins"]), str(item["id"])))
+    return ordered[random.Random(f"{settings.seed}:parent:{proposal_index}").randrange(len(ordered))]
+
+
+def probe_one(settings: Settings, run_dir: Path, identifier: str, margins: Margins) -> Mapping[str, Any]:
+    output = run_dir / "probes" / f"{identifier}.jsonl"
+    log = run_dir / "logs" / f"{identifier}.log"
     try:
         if output.is_file():
             return tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
     except tune_futility.TuningError:
         pass
-    command = tune_futility.build_probe_command(
-        settings.probe, masked_inputs, settings.weights, settings.candidate_nodes,
-        margins, output, settings.probe_report_every,
-    )
+    command = tune_futility.build_probe_command(settings.probe, settings.inputs, settings.weights, settings.candidate_nodes, margins, output, settings.probe_report_every)
     with log.open("w", encoding="utf-8") as handle:
         handle.write("command=" + json.dumps(command) + "\n")
         handle.flush()
         completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, text=True, check=False)
         handle.write(f"exit_code={completed.returncode}\n")
     if completed.returncode:
-        raise optimize_futility.OptimizationError(f"gated hill-climb {track} attempt {attempt} {role} probe failed; see {log}")
+        raise optimize_futility.OptimizationError(f"Pareto futility {identifier} probe failed; see {log}")
     return tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
 
 
 def risk_metrics(reference: Mapping[str, Any], candidate: Mapping[str, Any], keys: Sequence[Key], score_scale: float) -> Dict[str, Any]:
-    return futility_risk.compute_risk_metrics(
-        reference, candidate, keys, score_scale, [0.01], [], 150, -150,
-    )
+    return futility_risk.compute_risk_metrics(reference, candidate, keys, score_scale, [0.01], [], 150, -150)
 
 
-def risk_values(metrics: Mapping[str, Any]) -> Dict[str, float]:
-    absolute = metrics["absolute_regret"]
-    return {
-        "mean_squared_regret": float(absolute["mean_squared"]),
-        "cvar1_regret": float(absolute["tail_mean"]["top_0.01"]),
-    }
+def evaluate(settings: Settings, run_dir: Path, identifier: str, margins: Margins, candidate: Mapping[str, Any]) -> Dict[str, Any]:
+    keys = settings.anchor.trusted_keys
+    metrics = tune_futility.compute_metrics(settings.anchor.reference, settings.anchor.baseline, candidate, settings.candidate_nodes, settings.score_scale, keys)
+    risk = risk_metrics(settings.anchor.reference, candidate, keys, settings.score_scale)
+    semantic = risk["semantic_regressions_vs_reference"]
+    return {"id": identifier, "margins": list(margins), "metrics": metrics, "risk": risk, "semantic": {metric: int(semantic[metric]) for metric in sorted(SEMANTIC_METRICS)}, "output": tune_futility.file_identity(run_dir / "probes" / f"{identifier}.jsonl")}
 
 
-def evaluate_absolute_backstops(metrics: Mapping[str, Any], acceptance: Acceptance) -> Dict[str, Any]:
-    values = risk_values(metrics)
-    failures = []
-    if acceptance.max_squared_regret is not None and values["mean_squared_regret"] > acceptance.max_squared_regret:
-        failures.append("max_squared_regret")
-    if acceptance.max_cvar1_regret is not None and values["cvar1_regret"] > acceptance.max_cvar1_regret:
-        failures.append("max_cvar1_regret")
-    return {
-        "passed": not failures,
-        "failures": failures,
-        **values,
-        "limits": {
-            "max_squared_regret": acceptance.max_squared_regret,
-            "max_cvar1_regret": acceptance.max_cvar1_regret,
-        },
-    }
+def primary_values(item: Mapping[str, Any]) -> Tuple[float, float, float]:
+    return float(item["metrics"]["mean_normalized_regret"]), float(item["risk"]["absolute_regret"]["mean_squared"]), float(item["risk"]["absolute_regret"]["tail_mean"]["top_0.01"])
 
 
-def evaluate_acceptance(
-    current_metrics: Mapping[str, Any], proposal_metrics: Mapping[str, Any],
-    current_risk: Mapping[str, Any], proposal_risk: Mapping[str, Any], acceptance: Acceptance,
-) -> Dict[str, Any]:
-    """Evaluate paired deltas; negative risk deltas are safer."""
-    current = risk_values(current_risk)
-    proposal = risk_values(proposal_risk)
-    deltas = {
-        "mean_normalized_regret": float(proposal_metrics["mean_normalized_regret"]) - float(current_metrics["mean_normalized_regret"]),
-        "mean_squared_regret": proposal["mean_squared_regret"] - current["mean_squared_regret"],
-        "cvar1_regret": proposal["cvar1_regret"] - current["cvar1_regret"],
-    }
-    failures = []
-    if deltas["mean_normalized_regret"] > acceptance.max_mean_regret_concession:
-        failures.append("mean_regret_concession_exceeded")
-    if acceptance.mode in {"squared", "both"}:
-        if deltas["mean_squared_regret"] > -acceptance.min_squared_regret_improvement:
-            failures.append("squared_regret_not_improved")
-    elif deltas["mean_squared_regret"] > acceptance.max_squared_regret_worsening:
-        failures.append("squared_regret_worsened")
-    if acceptance.mode in {"cvar1", "both"}:
-        if deltas["cvar1_regret"] > -acceptance.min_cvar1_regret_improvement:
-            failures.append("cvar1_regret_not_improved")
-    elif deltas["cvar1_regret"] > acceptance.max_cvar1_regret_worsening:
-        failures.append("cvar1_regret_worsened")
-    return {
-        "mode": acceptance.mode,
-        "passed": not failures,
-        "failures": failures,
-        "deltas": deltas,
-        "thresholds": {
-            "max_mean_regret_concession": acceptance.max_mean_regret_concession,
-            "min_squared_regret_improvement": acceptance.min_squared_regret_improvement,
-            "min_cvar1_regret_improvement": acceptance.min_cvar1_regret_improvement,
-            "max_squared_regret_worsening": acceptance.max_squared_regret_worsening,
-            "max_cvar1_regret_worsening": acceptance.max_cvar1_regret_worsening,
-        },
-    }
+def dominates(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """True only for strict Pareto dominance on the three primary minimization metrics."""
+    left_values, right_values = primary_values(left), primary_values(right)
+    return all(a <= b for a, b in zip(left_values, right_values)) and any(a < b for a, b in zip(left_values, right_values))
 
 
-def new_state(settings: Settings) -> Dict[str, Any]:
-    return {
-        "schema": STATE_SCHEMA,
-        "tracks": {
-            track.identifier: {
-                "current_margins": list(track.margins),
-                "status": "running",
-                "stalled_attempts": 0,
-                "accepted_improvements": 0,
-                "completed_attempts": [],
-            }
-            for track in settings.tracks
-        },
-    }
+def archive_update(frontier: Sequence[Mapping[str, Any]], candidate: Mapping[str, Any]) -> Tuple[List[Mapping[str, Any]], Dict[str, Any]]:
+    dominators = [str(item["id"]) for item in frontier if dominates(item, candidate)]
+    if dominators:
+        return list(frontier), {"action": "dominated", "dominators": dominators, "removed": []}
+    removed = [str(item["id"]) for item in frontier if dominates(candidate, item)]
+    removed_set = set(removed)
+    return [*([item for item in frontier if str(item["id"]) not in removed_set]), candidate], {"action": "admitted", "dominators": [], "removed": removed}
+
+
+def decimate_semantic_frontier(frontier: Sequence[Mapping[str, Any]], filters: Sequence[SemanticFilter]) -> Tuple[List[Mapping[str, Any]], List[Dict[str, Any]]]:
+    """Sequentially discard the worst fraction, retaining all ties at the cutoff."""
+    survivors = list(frontier)
+    history: List[Dict[str, Any]] = []
+    for item in filters:
+        before = len(survivors)
+        desired_discard = min(before - 1, int(math.ceil(before * item.discard_worst_fraction)))
+        if desired_discard <= 0:
+            history.append({"metric": item.metric, "before": before, "desired_discard": 0, "cutoff": None, "discarded": [], "after": before, "ties_at_cutoff_retained": True})
+            continue
+        sorted_values = sorted(int(candidate["semantic"][item.metric]) for candidate in survivors)
+        cutoff = sorted_values[before - desired_discard - 1]
+        discarded = [str(candidate["id"]) for candidate in survivors if int(candidate["semantic"][item.metric]) > cutoff]
+        survivors = [candidate for candidate in survivors if int(candidate["semantic"][item.metric]) <= cutoff]
+        history.append({"metric": item.metric, "before": before, "desired_discard": desired_discard, "cutoff": cutoff, "discarded": discarded, "after": len(survivors), "ties_at_cutoff_retained": True})
+    return survivors, history
+
+
+def new_state() -> Dict[str, Any]:
+    return {"schema": STATE_SCHEMA, "status": "running", "next_proposal": 0, "evaluations": [], "frontier_ids": []}
 
 
 def validate_state(state: Mapping[str, Any], settings: Settings) -> None:
-    if state.get("schema") != STATE_SCHEMA or not isinstance(state.get("tracks"), dict):
-        raise optimize_futility.OptimizationError("invalid gated hill-climb state")
-    expected = {track.identifier for track in settings.tracks}
-    if set(state["tracks"]) != expected:
-        raise optimize_futility.OptimizationError("gated hill-climb state track set does not match configuration")
-    for track in settings.tracks:
-        record = state["tracks"][track.identifier]
-        if not isinstance(record, dict):
-            raise optimize_futility.OptimizationError("invalid gated hill-climb track state")
-        current = tune_futility.validate_margins(record.get("current_margins"), f"state {track.identifier} current_margins")
-        if len(current) != len(track.margins):
-            raise optimize_futility.OptimizationError("gated hill-climb state current_margins depth does not match track")
-        if record.get("status") not in {"running", "stalled", "initial_backstop_failed", "max_attempts"}:
-            raise optimize_futility.OptimizationError("invalid gated hill-climb track status")
-        if not isinstance(record.get("stalled_attempts"), int) or record["stalled_attempts"] < 0:
-            raise optimize_futility.OptimizationError("invalid gated hill-climb stalled_attempts")
-        if not isinstance(record.get("accepted_improvements"), int) or record["accepted_improvements"] < 0:
-            raise optimize_futility.OptimizationError("invalid gated hill-climb accepted_improvements")
-        history = record.get("completed_attempts")
-        if not isinstance(history, list) or len(history) > settings.max_attempts:
-            raise optimize_futility.OptimizationError("invalid gated hill-climb attempt history")
-        for index, item in enumerate(history):
-            if not isinstance(item, dict) or item.get("attempt") != index:
-                raise optimize_futility.OptimizationError("gated hill-climb state has a gap in attempt history")
+    if state.get("schema") != STATE_SCHEMA:
+        raise optimize_futility.OptimizationError("invalid Pareto futility state")
+    if state.get("status") not in {"running", "max_proposals"}:
+        raise optimize_futility.OptimizationError("invalid Pareto futility state status")
+    if not isinstance(state.get("next_proposal"), int) or not 0 <= state["next_proposal"] <= settings.max_proposals:
+        raise optimize_futility.OptimizationError("invalid Pareto next_proposal")
+    if not isinstance(state.get("evaluations"), list) or not isinstance(state.get("frontier_ids"), list):
+        raise optimize_futility.OptimizationError("invalid Pareto state evaluations or frontier")
+    identifiers = [item.get("id") for item in state["evaluations"] if isinstance(item, dict)]
+    if len(identifiers) != len(state["evaluations"]) or len(set(identifiers)) != len(identifiers):
+        raise optimize_futility.OptimizationError("invalid Pareto evaluation identifiers")
+    if not set(state["frontier_ids"]).issubset(set(identifiers)):
+        raise optimize_futility.OptimizationError("Pareto frontier references an unknown evaluation")
 
 
 def load_state(path: Path, settings: Settings) -> Dict[str, Any]:
     if not path.exists():
-        return new_state(settings)
-    state = optimize_futility.read_json(path, "gated hill-climb state")
-    if state.get("schema") in {
-        "chilo.futility_gated_hillclimb_state.v1",
-        "chilo.futility_gated_hillclimb_state.v2",
-    }:
-        raise optimize_futility.OptimizationError(
-            "v1/v2 gated hill-climb state cannot resume under the v3 relative-risk contract; use a new run directory"
-        )
+        return new_state()
+    state = optimize_futility.read_json(path, "Pareto futility state")
+    if state.get("schema") in {"chilo.futility_gated_hillclimb_state.v1", "chilo.futility_gated_hillclimb_state.v2", "chilo.futility_relative_risk_hillclimb_state.v3"}:
+        raise optimize_futility.OptimizationError("an earlier sampled/single-incumbent state cannot resume under the v4 full-development Pareto contract; use a new run directory")
     validate_state(state, settings)
     return state
 
 
-def record_output(run_dir: Path, track: str, attempt: int, role: str) -> Dict[str, Any]:
-    return tune_futility.file_identity(run_dir / "tracks" / track / "probes" / f"attempt-{attempt:04d}-{role}.jsonl")
+def evaluation_index(state: Mapping[str, Any]) -> Dict[str, Mapping[str, Any]]:
+    return {str(item["id"]): item for item in state["evaluations"]}
+
+
+def current_frontier(state: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+    indexed = evaluation_index(state)
+    return [indexed[str(identifier)] for identifier in state["frontier_ids"]]
 
 
 def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
     state_path = run_dir / "state.json"
     state = load_state(state_path, settings)
-    atomic_write(state_path, state)
-    for attempt in range(settings.max_attempts):
-        jobs = []
-        for track in settings.tracks:
-            record = state["tracks"][track.identifier]
-            if record["status"] != "running":
-                continue
-            history = record["completed_attempts"]
-            if len(history) > attempt:
-                continue
-            if len(history) != attempt:
-                raise optimize_futility.OptimizationError("gated hill-climb state has a gap in attempt history")
-            current = tune_futility.validate_margins(record["current_margins"], f"state {track.identifier} current_margins")
-            proposal, direction, size = make_proposal(current, settings, track.identifier, attempt)
-            keys = sample_keys(settings, track.identifier, attempt)
-            masked = write_masked_inputs(settings, run_dir, track.identifier, attempt, keys)
-            jobs.append((track, current, proposal, direction, size, keys, masked))
-        if not jobs:
-            break
+    if "initial" not in evaluation_index(state):
+        initial_candidate = probe_one(settings, run_dir, "initial", settings.initial_margins)
+        initial = evaluate(settings, run_dir, "initial", settings.initial_margins, initial_candidate)
+        initial["kind"] = "initial"
+        state["evaluations"].append(initial)
+        state["frontier_ids"] = ["initial"]
         atomic_write(state_path, state)
-        results: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+    while state["next_proposal"] < settings.max_proposals:
+        frontier_snapshot = current_frontier(state)
+        batch_start = state["next_proposal"]
+        batch_count = min(settings.workers, settings.max_proposals - batch_start)
+        jobs = []
+        for offset in range(batch_count):
+            proposal_index = batch_start + offset
+            parent = select_parent(frontier_snapshot, settings, proposal_index)
+            parent_margins = tune_futility.validate_margins(parent["margins"], "Pareto parent margins")
+            margins, direction, size = make_proposal(parent_margins, settings, proposal_index)
+            jobs.append((proposal_index, parent, margins, direction, size))
+        candidates: Dict[int, Mapping[str, Any]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=settings.workers) as executor:
-            futures = {
-                executor.submit(probe_one, settings, run_dir, track.identifier, attempt, role, margins, masked): (track.identifier, role)
-                for track, current, proposal, _, _, _, masked in jobs
-                for role, margins in (("current", current), ("proposal", proposal))
-            }
+            futures = {executor.submit(probe_one, settings, run_dir, f"candidate-{index:04d}", margins): index for index, _, margins, _, _ in jobs}
             for future in concurrent.futures.as_completed(futures):
-                track, role = futures[future]
-                results[(track, role)] = future.result()
-                print(f"gated hill-climb progress: attempt {attempt + 1}/{settings.max_attempts} {track} {role} ready", file=sys.stderr, flush=True)
-        for track, current, proposal, direction, size, keys, _ in sorted(jobs, key=lambda item: item[0].identifier):
-            reference, baseline = subset_context(settings.anchor, keys)
-            current_candidate = results[(track.identifier, "current")]
-            proposal_candidate = results[(track.identifier, "proposal")]
-            current_metrics = tune_futility.compute_metrics(reference, baseline, current_candidate, settings.candidate_nodes, settings.score_scale, keys)
-            proposal_metrics = tune_futility.compute_metrics(reference, baseline, proposal_candidate, settings.candidate_nodes, settings.score_scale, keys)
-            current_risk = risk_metrics(reference, current_candidate, keys, settings.score_scale)
-            proposal_risk = risk_metrics(reference, proposal_candidate, keys, settings.score_scale)
-            current_backstop = evaluate_absolute_backstops(current_risk, track.acceptance)
-            proposal_backstop = evaluate_absolute_backstops(proposal_risk, track.acceptance)
-            paired_acceptance = evaluate_acceptance(
-                current_metrics, proposal_metrics, current_risk, proposal_risk, track.acceptance
-            )
-            record = state["tracks"][track.identifier]
-            accepted = False
-            if attempt == 0 and not current_backstop["passed"]:
-                decision = "initial_backstop_failed"
-                record["status"] = "initial_backstop_failed"
-            elif not proposal_backstop["passed"]:
-                decision = "absolute_backstop_rejected"
-                record["stalled_attempts"] += 1
-            elif not paired_acceptance["passed"]:
-                decision = paired_acceptance["failures"][0]
-                record["stalled_attempts"] += 1
-            else:
-                decision = "accepted"
-                accepted = True
-                record["current_margins"] = list(proposal)
-                record["stalled_attempts"] = 0
-                record["accepted_improvements"] += 1
-            if record["status"] == "running" and record["stalled_attempts"] >= track.acceptance.max_stalled_attempts:
-                record["status"] = "stalled"
-            record["completed_attempts"].append({
-                "attempt": attempt,
-                "subset_position_count": len(keys),
-                "subset_keys_sha256": keys_hash(keys),
-                "current_margins": list(current),
-                "proposal_margins": list(proposal),
-                "direction": list(direction),
-                "perturbation": size,
-                "current": {
-                    "metrics": current_metrics,
-                    "risk": current_risk,
-                    "absolute_backstop": current_backstop,
-                    "output": record_output(run_dir, track.identifier, attempt, "current"),
-                },
-                "proposal": {
-                    "metrics": proposal_metrics,
-                    "risk": proposal_risk,
-                    "absolute_backstop": proposal_backstop,
-                    "output": record_output(run_dir, track.identifier, attempt, "proposal"),
-                },
-                "acceptance": paired_acceptance,
-                "mean_regret_improvement": -paired_acceptance["deltas"]["mean_normalized_regret"],
-                "accepted": accepted,
-                "decision": decision,
-                "stalled_attempts_after": record["stalled_attempts"],
-                "status_after": record["status"],
-                "current_margins_after": list(record["current_margins"]),
-            })
-            atomic_write(state_path, state)
-    for track in settings.tracks:
-        record = state["tracks"][track.identifier]
-        if record["status"] == "running":
-            record["status"] = "max_attempts"
+                index = futures[future]
+                candidates[index] = future.result()
+                print(f"Pareto futility progress: proposal {index + 1}/{settings.max_proposals} ready", file=sys.stderr, flush=True)
+        for index, parent, margins, direction, size in jobs:
+            identifier = f"candidate-{index:04d}"
+            record = evaluate(settings, run_dir, identifier, margins, candidates[index])
+            record.update({"kind": "proposal", "proposal_index": index, "parent_id": parent["id"], "parent_margins": list(parent["margins"]), "direction": list(direction), "perturbation": size, "batch_start": batch_start})
+            frontier, update = archive_update(current_frontier(state), record)
+            record["archive_update"] = update
+            state["evaluations"].append(record)
+            state["frontier_ids"] = [item["id"] for item in frontier]
+        state["next_proposal"] += batch_count
+        atomic_write(state_path, state)
+    state["status"] = "max_proposals"
     atomic_write(state_path, state)
-    finalists = []
-    for track in settings.tracks:
-        record = state["tracks"][track.identifier]
-        finalists.append({
-            "track": track.identifier,
-            "start_margins": list(track.margins),
-            "final_margins": list(record["current_margins"]),
-            "status": record["status"],
-            "attempted_count": len(record["completed_attempts"]),
-            "accepted_improvements": record["accepted_improvements"],
-            "stalled_attempts": record["stalled_attempts"],
-        })
-    result = {
-        "schema": SCHEMA,
-        "finalists": finalists,
-        "note": "Final tuples are development-only constrained hill-climb outputs; they require full-development and untouched selection evaluation before promotion.",
-    }
-    atomic_write(run_dir / "finalists.json", result)
-    lines = ["# Gated hill-climb finalists", "", "| Track | Start | Final | Status | Attempts | Accepted |", "|---|---|---|---|---:|---:|"]
-    for item in finalists:
-        lines.append(f"| {item['track']} | `{','.join(str(value) for value in item['start_margins'])}` | `{','.join(str(value) for value in item['final_margins'])}` | {item['status']} | {item['attempted_count']} | {item['accepted_improvements']} |")
+    frontier = current_frontier(state)
+    shortlisted, filtering = decimate_semantic_frontier(frontier, settings.semantic_filters)
+    result = {"schema": SCHEMA, "status": state["status"], "initial": next(item for item in state["evaluations"] if item["id"] == "initial"), "evaluated_count": len(state["evaluations"]), "proposal_count": state["next_proposal"], "numeric_pareto_frontier": frontier, "semantic_filtering": filtering, "selection_shortlist": shortlisted, "note": "All metrics are fixed full-development-population values. The selection_shortlist remains development-only and requires one full untouched-selection evaluation before promotion."}
+    atomic_write(run_dir / "pareto_frontier.json", result)
+    lines = ["# Full-development futility Pareto frontier", "", "Every evaluated tuple used the complete fixed development population. The primary frontier minimizes mean regret, squared regret, and CVaR-1%.", "", "## Numeric Pareto frontier", "", "| ID | Margins | Mean regret | Squared regret | CVaR-1% | Mate misses | Nonlosing to losing |", "|---|---|---:|---:|---:|---:|---:|"]
+    for item in frontier:
+        absolute, semantic = item["risk"]["absolute_regret"], item["semantic"]
+        lines.append(f"| {item['id']} | `{','.join(str(value) for value in item['margins'])}` | {item['metrics']['mean_normalized_regret']:.6f} | {absolute['mean_squared']:.6f} | {absolute['tail_mean']['top_0.01']:.6f} | {semantic['winning_mate_missed']} | {semantic['nonlosing_to_losing']} |")
+    lines.extend(["", "## Sequential semantic filtering", "", "Worst configured fractions are discarded sequentially; ties at each cutoff are retained.", "", "| Metric | Before | Cutoff retained | Discarded | After |", "|---|---:|---:|---:|---:|"])
+    for item in filtering:
+        cutoff = "-" if item["cutoff"] is None else str(item["cutoff"])
+        lines.append(f"| {item['metric']} | {item['before']} | {cutoff} | {len(item['discarded'])} | {item['after']} |")
+    lines.extend(["", "## Untouched-selection shortlist", "", "| ID | Margins |", "|---|---|"])
+    for item in shortlisted:
+        lines.append(f"| {item['id']} | `{','.join(str(value) for value in item['margins'])}` |")
     (run_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run development-only gated futility-margin hill climbing.")
+    parser = argparse.ArgumentParser(description="Run full-development Pareto futility-margin search.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--dry-run", action="store_true")
@@ -671,7 +402,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         run_dir = Path(args.run_dir).resolve()
         prepare(run_dir, value)
         result = run(settings, run_dir)
-        print(f"gated hill-climb finished tracks={len(result['finalists'])} max_attempts={settings.max_attempts}")
+        print(f"Pareto futility finished proposals={result['proposal_count']} frontier={len(result['numeric_pareto_frontier'])} shortlist={len(result['selection_shortlist'])}")
         return 0
     except (json.JSONDecodeError, OSError, optimize_futility.OptimizationError, spsa_optimizer.OptimizationError, tune_futility.TuningError) as exc:
         print(f"fatal: {exc}", file=sys.stderr)

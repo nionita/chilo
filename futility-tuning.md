@@ -639,30 +639,42 @@ do not copy numeric limits from this failed absolute-cap test. Only then run a
 short development-only trial, full-SR4-evaluate its durable endpoints, and
 send at most the preselected development winner to untouched SR3-R2M.
 
-### Relative-risk v3 implementation — 2026-08-31
+### Full-development Pareto search v4 — 2026-09-01
 
-`scripts/optimize_futility_gated.py` now writes a separate v3 manifest and
-state schema (`chilo.futility_relative_risk_hillclimb.v3`). It cannot resume a
-v1/v2 state: a fresh run directory is required because the acceptance
-semantics changed. The name remains for continuity with the earlier operator
-workflow, but v3 is not an absolute-gate optimizer.
+The initially implemented sampled relative-risk v3 contract is superseded
+without being run. `scripts/optimize_futility_gated.py` now writes the
+separate `chilo.futility_pareto_search.v4` manifest/state contract and refuses
+to resume v1/v2/v3 state or manifests. Its retained name is only operator
+continuity; it is neither a fixed-gate optimizer nor a single-incumbent hill
+climb.
 
-Each track has an `acceptance` object with one of three modes:
+Every proposal is evaluated on the complete fixed SR4 development population.
+The initial tuple is evaluated once and retained. Thereafter each proposal
+needs one full probe; it is compared with the current numeric Pareto archive,
+not a freshly re-probed incumbent. This is about 2.5 times the steady-state
+cost of the former two-20%-probe step, but removes development-sampling drift.
 
-| Mode | Required same-sample safety progress | Other safety metric | Mean regret |
-|---|---|---|---|
-| `squared` | squared-regret delta at most `-min_squared_regret_improvement` | CVaR-1% may worsen only within its configured tolerance | may worsen only through `max_mean_regret_concession` |
-| `cvar1` | CVaR-1% delta at most `-min_cvar1_regret_improvement` | squared regret may worsen only within its configured tolerance | same bounded concession |
-| `both` | both squared and CVaR-1% meet their required negative deltas | neither condition is waived | same bounded concession |
+The archive minimizes three primary metrics: mean normalized regret,
+reference-relative mean squared regret, and reference-relative CVaR-1%. A
+proposal is discarded only when an archived tuple is no worse on all three
+and strictly better on at least one; otherwise it is admitted and removes any
+tuples it strictly dominates. Thus the archive is a set of development
+trade-offs, not an implicitly scalar-ranked winner.
 
-Here a delta is `proposal - incumbent`; negative is safer and positive mean
-delta is a mean-regret concession. The optimizer persists the paired deltas,
-thresholds, backstop result, and specific rejection reason for every attempt.
-This makes the intended mean-for-safety trade observable instead of rejecting
-it by construction. `max_squared_regret` and `max_cvar1_regret` are optional
-nullable hard backstops. They can exclude a catastrophic candidate, but never
-count as safety progress and should normally remain `null` until separately
-justified.
+Workers are part of the search contract. For each batch, every worker samples
+one parent uniformly from the same frozen archive snapshot, creates its
+deterministic perturbation, and evaluates it in parallel. Completed proposals
+are then applied to the archive in proposal-index order; the next batch sees
+the resulting archive.
+
+After the fixed `max_proposals` budget, configured secondary semantic metrics
+decimate the final primary frontier sequentially. Each filter requests a
+fraction of the worst current survivors (for example, 25% by
+`winning_mate_missed`); all candidates tied at the cutoff are retained. The
+supported direct-reference counts are `winning_mate_missed`,
+`nonlosing_to_losing`, `clear_advantage_to_nonpositive`, and
+`clear_advantage_lost`. These filters mechanically reduce candidates for
+SR3-R2M without claiming that the semantic counts define a total order.
 
 `scripts/analyze_futility_gated_calibration.py` is the required read-only
 preflight. Its config explicitly maps every retained v1/v2 run to a matching
@@ -670,14 +682,14 @@ anchor and every promoted tuple to its completed full-development and
 selection outputs. It validates the state-recorded attempt JSONL identities,
 recomputes their direct-reference paired deltas, and writes JSON plus a short
 Markdown report. It reports empirical distributions only; it deliberately
-does not generate a runnable v3 configuration or recommend thresholds.
+does not generate a runnable Pareto configuration or recommend thresholds.
 See `scripts/futility_gated_calibration.example.json` and
 `scripts/futility_gated_hillclimb.example.json` for schemas, not approved
 numeric settings.
 
-Implementation does not authorize a calibration run, package, optimizer run,
-full evaluation, or SPRT. Review the resulting report and set the three
-tracks' thresholds explicitly before any new development-only experiment.
+Implementation does not authorize a package, optimizer run, full evaluation,
+or SPRT. Review the source/weights/anchor contract and the exact proposal
+budget before any new development-only experiment.
 
 ### Old gated-D3 endpoint comparison — 2026-08-31
 

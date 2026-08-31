@@ -11,60 +11,31 @@
     "contract": "per_root_v1",
     "rescue_dir": "/path/to/g3-sr4-mate-rescue/run"
   },
-  "gated_hillclimb": {
-    "tracks": [
-      {
-        "id": "squared-risk",
-        "margins": [75, 212, 390, 600, 839],
-        "acceptance": {
-          "mode": "squared",
-          "max_mean_regret_concession": 0.000020,
-          "min_squared_regret_improvement": 0.000010,
-          "min_cvar1_regret_improvement": 0.000000,
-          "max_squared_regret_worsening": 0.000000,
-          "max_cvar1_regret_worsening": 0.000010,
-          "max_squared_regret": null,
-          "max_cvar1_regret": null,
-          "max_stalled_attempts": 20
-        }
-      },
-      {
-        "id": "cvar1-risk",
-        "margins": [75, 212, 390, 600, 839],
-        "acceptance": {
-          "mode": "cvar1",
-          "max_mean_regret_concession": 0.000020,
-          "min_squared_regret_improvement": 0.000000,
-          "min_cvar1_regret_improvement": 0.000010,
-          "max_squared_regret_worsening": 0.000010,
-          "max_cvar1_regret_worsening": 0.000000,
-          "max_squared_regret": null,
-          "max_cvar1_regret": null,
-          "max_stalled_attempts": 20
-        }
-      },
-      {
-        "id": "both-risk",
-        "margins": [75, 212, 390, 600, 839],
-        "acceptance": {
-          "mode": "both",
-          "max_mean_regret_concession": 0.000020,
-          "min_squared_regret_improvement": 0.000010,
-          "min_cvar1_regret_improvement": 0.000010,
-          "max_squared_regret_worsening": 0.000000,
-          "max_cvar1_regret_worsening": 0.000000,
-          "max_squared_regret": null,
-          "max_cvar1_regret": null,
-          "max_stalled_attempts": 20
-        }
-      }
-    ],
-    "max_attempts": 150,
+  "pareto_search": {
+    "initial_margins": [23, 62, 194],
+    "max_proposals": 30,
     "workers": 4,
-    "subset_fraction": 0.20,
-    "seed": 20260830,
+    "seed": 20260901,
     "perturbation_c": 40.0,
     "perturbation_gamma": 0.101,
-    "max_margin": 2000
+    "max_margin": 2000,
+    "semantic_filters": [
+      {
+        "metric": "winning_mate_missed",
+        "discard_worst_fraction": 0.25
+      },
+      {
+        "metric": "nonlosing_to_losing",
+        "discard_worst_fraction": 0.25
+      },
+      {
+        "metric": "clear_advantage_to_nonpositive",
+        "discard_worst_fraction": 0.25
+      },
+      {
+        "metric": "clear_advantage_lost",
+        "discard_worst_fraction": 0.25
+      }
+    ]
   }
 }

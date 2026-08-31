@@ -12,187 +12,122 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import optimize_futility_gated as gated
+import optimize_futility_gated as pareto
 from test_optimize_futility import OptimizerAdapterTest
 
 
-class GatedHillClimbTest(unittest.TestCase):
-    def write_config(self, root: Path, anchor: Path, max_attempts: int = 3, stalled: int = 2) -> Path:
+class ParetoSearchTest(unittest.TestCase):
+    def write_anchor(self, root: Path) -> Path:
+        anchor = root / "anchor"
+        OptimizerAdapterTest().write_per_root_anchor(anchor)
+        reference = anchor / "probes" / "reference.jsonl"
+        rows = [json.loads(line) for line in reference.read_text(encoding="utf-8").splitlines()]
+        rows[0]["root_scores"] = {"e2e4": 30, "d2d4": 0}
+        rows[0]["legal_root_moves"] = 2
+        rows[0]["completed_root_moves"] = 2
+        reference.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+        return anchor
+
+    def write_config(self, root: Path, anchor: Path, proposals: int = 3, workers: int = 2) -> Path:
         probe, inputs, weights = root / "probe", root / "positions.csv", root / "net.bin"
         probe.write_text("test", encoding="utf-8")
         inputs.write_text("header\nfen\n", encoding="utf-8")
         weights.write_text("test", encoding="utf-8")
         config = {
-            "probe": str(probe),
-            "inputs": [str(inputs)],
-            "weights": str(weights),
-            "candidate_nodes": 100,
-            "baseline_margins": [120, 240, 360],
+            "probe": str(probe), "inputs": [str(inputs)], "weights": str(weights),
+            "candidate_nodes": 100, "baseline_margins": [120, 240, 360],
             "development": {"reference_dir": str(anchor), "contract": "per_root_v1"},
-            "gated_hillclimb": {
-                "tracks": [{
-                    "id": "trial",
-                    "margins": [120, 240, 360],
-                    "acceptance": {
-                        "mode": "both",
-                        "max_mean_regret_concession": 0.001,
-                        "min_squared_regret_improvement": 0.0001,
-                        "min_cvar1_regret_improvement": 0.0001,
-                        "max_squared_regret_worsening": 0.001,
-                        "max_cvar1_regret_worsening": 0.001,
-                        "max_squared_regret": None,
-                        "max_cvar1_regret": None,
-                        "max_stalled_attempts": stalled,
-                    },
-                }],
-                "max_attempts": max_attempts,
-                "workers": 2,
-                "subset_fraction": 1.0,
-                "seed": 7,
-                "perturbation_c": 40,
-                "perturbation_gamma": 0.101,
-                "max_margin": 1000,
+            "pareto_search": {
+                "initial_margins": [120, 240, 360], "max_proposals": proposals, "workers": workers,
+                "seed": 7, "perturbation_c": 40, "perturbation_gamma": 0.101, "max_margin": 1000,
+                "semantic_filters": [
+                    {"metric": "winning_mate_missed", "discard_worst_fraction": 0.25},
+                    {"metric": "nonlosing_to_losing", "discard_worst_fraction": 0.25},
+                ],
             },
         }
-        path = root / "gated.json"
+        path = root / "pareto.json"
         path.write_text(json.dumps(config), encoding="utf-8")
         return path
 
-    def write_anchor(self, root: Path) -> Path:
-        helper = OptimizerAdapterTest()
-        anchor = root / "anchor"
-        helper.write_per_root_anchor(anchor)
-        reference_path = anchor / "probes" / "reference.jsonl"
-        rows = [json.loads(line) for line in reference_path.read_text(encoding="utf-8").splitlines()]
-        rows[0]["root_scores"] = {"e2e4": 30, "d2d4": 0}
-        rows[0]["legal_root_moves"] = 2
-        rows[0]["completed_root_moves"] = 2
-        reference_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
-        return anchor
-
     @staticmethod
-    def risk(downside: float, cvar1: float) -> dict:
-        return {"absolute_regret": {"mean_squared": downside, "tail_mean": {"top_0.01": cvar1}}}
+    def record(identifier: str, values: tuple[float, float, float], mates: int, losses: int) -> dict:
+        return {
+            "id": identifier, "margins": [1, 2, 3],
+            "metrics": {"mean_normalized_regret": values[0]},
+            "risk": {"absolute_regret": {"mean_squared": values[1], "tail_mean": {"top_0.01": values[2]}}},
+            "semantic": {"winning_mate_missed": mates, "nonlosing_to_losing": losses, "clear_advantage_lost": 0, "clear_advantage_to_nonpositive": 0},
+        }
 
-    def acceptance(self, mode: str) -> gated.Acceptance:
-        return gated.Acceptance(mode, 0.01, 0.01, 0.01, 0.02, 0.02, None, None, 1)
+    def test_strict_primary_dominance_updates_archive(self) -> None:
+        initial = self.record("initial", (0.2, 0.2, 0.2), 0, 0)
+        tradeoff = self.record("tradeoff", (0.1, 0.3, 0.3), 0, 0)
+        dominated = self.record("dominated", (0.3, 0.3, 0.3), 0, 0)
+        frontier, update = pareto.archive_update([initial], tradeoff)
+        self.assertEqual(update["action"], "admitted")
+        self.assertEqual([row["id"] for row in frontier], ["initial", "tradeoff"])
+        frontier, update = pareto.archive_update(frontier, dominated)
+        self.assertEqual(update["action"], "dominated")
+        self.assertEqual([row["id"] for row in frontier], ["initial", "tradeoff"])
 
-    @staticmethod
-    def mean(value: float) -> dict:
-        return {"mean_normalized_regret": value}
+    def test_semantic_filters_are_sequential_and_keep_cutoff_ties(self) -> None:
+        frontier = [
+            self.record("a", (0.0, 3.0, 3.0), 0, 0),
+            self.record("b", (1.0, 2.0, 2.0), 1, 2),
+            self.record("c", (2.0, 1.0, 1.0), 2, 1),
+            self.record("d", (3.0, 0.0, 0.0), 3, 1),
+        ]
+        filters = (pareto.SemanticFilter("winning_mate_missed", 0.25), pareto.SemanticFilter("nonlosing_to_losing", 0.25))
+        survivors, history = pareto.decimate_semantic_frontier(frontier, filters)
+        self.assertEqual(history[0]["discarded"], ["d"])
+        self.assertEqual(history[1]["discarded"], ["b"])
+        self.assertEqual([row["id"] for row in survivors], ["a", "c"])
 
-    def test_pareto_tracks_allow_bounded_mean_concession(self) -> None:
-        current_risk = self.risk(0.20, 0.30)
-        proposal_risk = self.risk(0.18, 0.28)
-        self.assertTrue(gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, proposal_risk, self.acceptance("squared"))["passed"])
-        self.assertTrue(gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, proposal_risk, self.acceptance("cvar1"))["passed"])
-        self.assertTrue(gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, proposal_risk, self.acceptance("both"))["passed"])
+    def test_semantic_cutoff_ties_are_retained(self) -> None:
+        frontier = [
+            self.record("a", (0.0, 3.0, 3.0), 0, 0),
+            self.record("b", (1.0, 2.0, 2.0), 1, 0),
+            self.record("c", (2.0, 1.0, 1.0), 2, 0),
+            self.record("d", (3.0, 0.0, 0.0), 2, 0),
+        ]
+        survivors, history = pareto.decimate_semantic_frontier(frontier, (pareto.SemanticFilter("winning_mate_missed", 0.25),))
+        self.assertEqual(history[0]["cutoff"], 2)
+        self.assertEqual(history[0]["discarded"], [])
+        self.assertEqual([row["id"] for row in survivors], ["a", "b", "c", "d"])
 
-    def test_pareto_tracks_reject_missing_required_safety_or_excess_mean(self) -> None:
-        current_risk = self.risk(0.20, 0.30)
-        cvar_only = self.risk(0.205, 0.28)
-        result = gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, cvar_only, self.acceptance("squared"))
-        self.assertFalse(result["passed"])
-        self.assertIn("squared_regret_not_improved", result["failures"])
-        result = gated.evaluate_acceptance(self.mean(0.10), self.mean(0.111), current_risk, self.risk(0.18, 0.28), self.acceptance("both"))
-        self.assertFalse(result["passed"])
-        self.assertIn("mean_regret_concession_exceeded", result["failures"])
-
-    def test_absolute_backstops_are_optional_and_do_not_define_progress(self) -> None:
-        acceptance = self.acceptance("squared")
-        self.assertTrue(gated.evaluate_absolute_backstops(self.risk(100.0, 100.0), acceptance)["passed"])
-        capped = gated.Acceptance("squared", 0.01, 0.01, 0.0, 1.0, 1.0, 0.1, None, 1)
-        self.assertFalse(gated.evaluate_absolute_backstops(self.risk(0.2, 0.01), capped)["passed"])
-
-    def test_proposal_is_deterministic_and_changes_tuple(self) -> None:
+    def test_parent_selection_is_deterministic_for_a_frontier_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            settings = gated.load_settings(self.write_config(root, self.write_anchor(root)))
-            first = gated.make_proposal((120, 240, 360), settings, "trial", 0)
-            second = gated.make_proposal((120, 240, 360), settings, "trial", 0)
-            self.assertEqual(first, second)
-            self.assertNotEqual(first[0], (120, 240, 360))
+            settings = pareto.load_settings(self.write_config(root, self.write_anchor(root)))
+            frontier = [self.record("a", (0, 1, 2), 0, 0), self.record("b", (1, 0, 2), 0, 0)]
+            self.assertEqual(pareto.select_parent(frontier, settings, 9)["id"], pareto.select_parent(frontier, settings, 9)["id"])
 
-    def test_acceptance_resets_stall_then_later_failure_stops_track(self) -> None:
+    def test_full_population_batches_reuse_frontier_parents_without_current_probe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            settings = gated.load_settings(self.write_config(root, self.write_anchor(root), max_attempts=3, stalled=1))
+            settings = pareto.load_settings(self.write_config(root, self.write_anchor(root), proposals=3, workers=2))
             run_dir = root / "run"
-            gated.prepare(run_dir, gated.manifest(settings))
+            pareto.prepare(run_dir, pareto.manifest(settings))
             key = ("positions.csv", 1, "fen")
 
-            def fake_probe(_settings, _run_dir, _track, attempt, role, _margins, _masked):
-                move = "d2d4" if attempt == 0 and role == "current" else "e2e4"
-                return {"positions": {key: {
-                    "bestmove": move,
-                    "score": 0 if move == "d2d4" else 30,
-                    "completed_depth": 6,
-                    "nodes": 100,
-                    "iteration_interrupted": True,
-                }}, "summary": {}}
+            def fake_probe(_settings, _run_dir, identifier, _margins):
+                move = "e2e4" if identifier == "initial" else "d2d4"
+                return {"positions": {key: {"bestmove": move, "score": 30 if move == "e2e4" else 0, "completed_depth": 6, "nodes": 100, "iteration_interrupted": True}}, "summary": {}}
 
-            with patch.object(gated, "probe_one", side_effect=fake_probe), patch.object(
-                gated, "record_output", return_value={"path": "synthetic", "sha256": "0", "size": 0}
-            ):
-                result = gated.run(settings, run_dir)
-            finalist = result["finalists"][0]
-            self.assertEqual(finalist["status"], "stalled")
-            self.assertEqual(finalist["accepted_improvements"], 1)
-            self.assertEqual(finalist["attempted_count"], 2)
+            with patch.object(pareto, "probe_one", side_effect=fake_probe), patch.object(pareto.tune_futility, "file_identity", return_value={"path": "synthetic", "sha256": "0", "size": 0}):
+                result = pareto.run(settings, run_dir)
+            self.assertEqual(result["proposal_count"], 3)
+            self.assertEqual(result["evaluated_count"], 4)
+            self.assertEqual([row["id"] for row in result["numeric_pareto_frontier"]], ["initial"])
 
-    def test_missing_per_track_acceptance_field_is_rejected(self) -> None:
+    def test_v3_state_cannot_resume_under_v4_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            path = self.write_config(root, self.write_anchor(root))
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            del raw["gated_hillclimb"]["tracks"][0]["acceptance"]["max_mean_regret_concession"]
-            path.write_text(json.dumps(raw), encoding="utf-8")
-            with self.assertRaisesRegex(gated.optimize_futility.OptimizationError, "missing required"):
-                gated.load_settings(path)
-
-    def test_initial_backstop_failure_is_terminal(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = self.write_config(root, self.write_anchor(root))
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            raw["gated_hillclimb"]["tracks"][0]["acceptance"]["max_squared_regret"] = 0.0
-            path.write_text(json.dumps(raw), encoding="utf-8")
-            settings = gated.load_settings(path)
-            run_dir = root / "run"
-            gated.prepare(run_dir, gated.manifest(settings))
-            key = ("positions.csv", 1, "fen")
-
-            def fake_probe(_settings, _run_dir, _track, _attempt, _role, _margins, _masked):
-                return {"positions": {key: {"bestmove": "d2d4", "score": 0, "completed_depth": 6, "nodes": 100, "iteration_interrupted": True}}, "summary": {}}
-
-            with patch.object(gated, "probe_one", side_effect=fake_probe), patch.object(
-                gated, "record_output", return_value={"path": "synthetic", "sha256": "0", "size": 0}
-            ):
-                result = gated.run(settings, run_dir)
-            finalist = result["finalists"][0]
-            self.assertEqual(finalist["status"], "initial_backstop_failed")
-            self.assertEqual(finalist["attempted_count"], 1)
-
-    def test_v2_state_cannot_resume_under_v3_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            settings = gated.load_settings(self.write_config(root, self.write_anchor(root)))
+            settings = pareto.load_settings(self.write_config(root, self.write_anchor(root)))
             state = root / "state.json"
-            state.write_text(json.dumps({"schema": "chilo.futility_gated_hillclimb_state.v2", "tracks": {}}), encoding="utf-8")
-            with self.assertRaisesRegex(gated.optimize_futility.OptimizationError, "cannot resume"):
-                gated.load_state(state, settings)
-
-    def test_v2_manifest_cannot_resume_under_v3_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            settings = gated.load_settings(self.write_config(root, self.write_anchor(root)))
-            run_dir = root / "run"
-            run_dir.mkdir()
-            (run_dir / "optimizer_manifest.json").write_text(
-                json.dumps({"schema": "chilo.futility_gated_hillclimb.v2"}), encoding="utf-8"
-            )
-            with self.assertRaisesRegex(gated.optimize_futility.OptimizationError, "cannot resume"):
-                gated.prepare(run_dir, gated.manifest(settings))
+            state.write_text(json.dumps({"schema": "chilo.futility_relative_risk_hillclimb_state.v3"}), encoding="utf-8")
+            with self.assertRaisesRegex(pareto.optimize_futility.OptimizationError, "cannot resume"):
+                pareto.load_state(state, settings)
 
 
 if __name__ == "__main__":
