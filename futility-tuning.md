@@ -513,10 +513,166 @@ because its incumbent and proposal probes run concurrently.
 
 The package `g3-sr4-gated-v2-d3-win.zip` is a development-only test of this
 corrected optimizer. Separately, the serial Linux package
-`g3-sr4-gated-d3-endpoints-linux.tgz` is running the three old-run incumbents
+`g3-sr4-gated-d3-endpoints-linux.tgz` completed the three old-run incumbents
 at 120k on both G3-SR4 and untouched G3-SR3-R2M, with the v2 read-only risk
-analysis. The SR3-R2M result, not the adaptive SR4 trajectory, determines
-whether an endpoint merits SPRT consideration.
+analysis; its result is recorded below. The SR3-R2M result, not the adaptive
+SR4 trajectory, determines whether an endpoint merits SPRT consideration.
+
+### Corrected-gate D3 result and full-evaluation package — 2026-08-31
+
+The completed Windows result archive is `g3-sr4-gated-v2-d3-win-rez.zip`
+(SHA-256 `1a84a6365fe3c6d9f3a7e549bba7750ef68dfe1b8d474b65169b820f286deab2`).
+Its sole `both`-gate track ran all 30 fresh 20% SR4 subsets and committed 11
+improvements, finishing at `69,83,207`. The final accepted subset was not a
+full-evaluation result: it had mean regret 0.014511, squared regret 0.002148,
+and CVaR-1% 0.332051 on 4,565 positions, passing the buffered 0.002800 and
+0.380000 direct-reference gates. Treat it as an optimizer endpoint only.
+
+The v2 trajectory is still useful diagnostic evidence. Across its 30 paired
+fresh-subset attempts, 11 proposals were accepted, 16 failed the minimum mean
+improvement, and 3 were gate-rejected. The accepted transitions were:
+
+| Attempt | Incumbent -> accepted margins | Paired mean-regret improvement |
+|---:|---|---:|
+| 1 | `23,62,194` -> `42,62,213` | 0.000283 |
+| 5 | `42,62,213` -> `25,28,196` | 0.000109 |
+| 13 | `25,28,196` -> `40,40,223` | 0.000441 |
+| 14 | `40,40,223` -> `55,55,253` | 0.000327 |
+| 15 | `55,55,253` -> `70,85,268` | 0.000642 |
+| 17 | `70,85,268` -> `55,85,253` | 0.000411 |
+| 18 | `55,85,253` -> `70,85,238` | 0.000339 |
+| 23 | `70,85,238` -> `55,55,193` | 0.000308 |
+| 25 | `55,55,193` -> `41,41,165` | 0.000058 |
+| 28 | `41,41,165` -> `55,55,165` | 0.000250 |
+| 29 | `55,55,165` -> `69,83,207` | 0.000214 |
+
+Each delta is a valid same-subset paired comparison, but the subsets differ
+between attempts, so their 0.003382 sum is not a whole-corpus improvement.
+All three gate-rejected proposals also had negative paired mean improvement;
+the corrected risk caps therefore did not change an otherwise acceptable
+incumbent decision in this short trajectory. They were feasibility limits, not
+a monotonic tail-risk objective: accepted attempt 17 worsened both squared
+regret and CVaR while remaining below the caps. The complete full-population
+comparison eventually shows the endpoint slightly worse than the D3 start on
+SR4 (0.014275 versus 0.014258) and materially worse on SR3-R2M (0.014867
+versus 0.014378), which is exactly why fresh optimizer improvements need both
+full development and untouched-selection evaluation.
+
+`g3-sr4-gated-v2-d3-full-eval-win.zip` is the self-contained Windows package
+for its fixed 120k full evaluation. It uses the same committed probe
+(`5483f2a6...acd2ea50`), g4t1 weights, immutable anchors, and mate-rescue
+sidecars as the prior comparable runs. `run-full-evaluation.cmd` starts the
+SR4 development and SR3-R2M untouched-selection probes concurrently and then
+writes a direct-reference risk report for each. The configuration has a
+four-worker ceiling, but exactly two independent jobs, so it deliberately
+uses two workers rather than rerunning already comparable controls to fill
+the machine. The launcher never overwrites a `run/` directory; return the
+whole extracted directory when complete.
+
+### Corrected-gate D3 full evaluation — 2026-08-31
+
+The completed return archive is
+`g3-sr4-gated-v2-d3-full-eval-win-rez.zip` (SHA-256
+`dd7524d3943ea0caa708de5b00ebd51af57159b237e990ca38b10d40264eb032`).
+Its two complete normal-PVS 120k outputs have the same g4t1 weights,
+`per_root_v1` anchors, rescue sidecars, 22,825 SR4 positions, and 22,934
+SR3-R2M positions as the comparison set.
+
+| Candidate | Margins | SR4 mean / squared / CVaR-1% | SR3-R2M mean / squared / CVaR-1% |
+|---|---|---|---|
+| corrected-gate D3 | `69,83,207` | 0.014275 / 0.002263 / 0.333735 | 0.014867 / 0.002226 / 0.322232 |
+| f01 | `120,240,360` | 0.014772 / 0.002415 / 0.346279 | 0.015140 / 0.002343 / 0.330023 |
+| previous D5 | `10,54,175,264,503` | 0.014157 / 0.002223 / 0.330943 | **0.014233 / 0.002191 / 0.323791** |
+
+The direct start-versus-end gate comparison makes the intended trade explicit:
+
+| Population | Tuple | Mean regret | Squared regret gate | CVaR-1% gate | P95 / P99 |
+|---|---|---:|---:|---:|---:|
+| SR4 | start `23,62,194` | **0.014258** | 0.002322 | 0.340163 | **0.079745 / 0.200100** |
+| SR4 | end `69,83,207` | 0.014275 | **0.002263** | **0.333735** | 0.081001 / 0.202626 |
+| SR3-R2M | start `23,62,194` | **0.014378** | **0.002104** | **0.314329** | **0.084530 / 0.203463** |
+| SR3-R2M | end `69,83,207` | 0.014867 | 0.002226 | 0.322232 | 0.086597 / 0.206783 |
+
+Thus SR4 shows the desired limited trade: mean regret worsens by 0.000017
+(0.12%) while squared regret improves by 2.57% and CVaR-1% by 1.89%; its P95
+and P99 nevertheless worsen. On untouched SR3-R2M there is no safety gain:
+mean regret worsens by 3.40%, squared regret by 5.81%, CVaR-1% by 2.51%, and
+both P95/P99 worsen. Semantic diagnostics agree: relative to the start, the
+endpoint has SR4 +7 winning-mate misses, +11 clear-advantage losses, and +2
+non-losing-to-losing transitions; SR3-R2M has +11, +14, and +0 respectively.
+Passing an absolute cap therefore means only that the candidate is allowed,
+not that it is safer than the start or that its safety trade generalizes.
+
+The corrected-gate tuple improves on f01, but is sixth of nine candidates on
+SR4 and eighth of nine on untouched SR3-R2M by mean regret. Its SR3-R2M mean
+is 0.000634 worse than previous D5, despite slightly better CVaR-1%. It is
+therefore rejected as an endpoint and must not advance to SPRT. This one
+short corrected-gate trajectory is evidence about this calibration and start,
+not a reason to abandon the direct-reference gate design.
+
+### Conclusion: fixed per-sample absolute gates did not establish a safety trade
+
+The tested v2 rule—strict sampled mean-regret improvement subject to fixed
+absolute squared-regret and CVaR-1% caps—did not produce an out-of-sample
+safety trade. Its three gate rejections were already mean regressions, so the
+caps did not reject any otherwise acceptable step; the selected endpoint then
+lost both mean and safety metrics on SR3-R2M. Do not use this exact
+per-sample constrained-mean rule or its `0.002800` / `0.380000` calibration
+to promote a candidate.
+
+This does not show that direct-reference safety metrics are unhelpful. It
+shows that absolute feasibility caps do not *reward* safer proposals, while
+the required positive mean improvement forbids an intentional mean-for-safety
+trade. A mere blind tightening is not the preferred next run: the D3 start
+itself reached 0.002689 squared regret and 0.365551 CVaR-1% on valid 20%
+samples, so substantially lower fixed caps would make start feasibility depend
+on subset luck and only modestly lower caps would probably remain inactive.
+
+Before another engine run, do a read-only calibration over the retained v1/v2
+paired attempt JSONL and completed full evaluations. Then review a new,
+versioned optimizer contract with incumbent-relative same-subset safety
+criteria: separate squared-risk, CVaR-risk, and both-risk tracks should
+require a predeclared safety improvement (or non-worsening within a calibrated
+tolerance) and allow only a predeclared bounded mean-regret concession. Use
+the paired sample differences to choose those tolerances and the mean budget;
+do not copy numeric limits from this failed absolute-cap test. Only then run a
+short development-only trial, full-SR4-evaluate its durable endpoints, and
+send at most the preselected development winner to untouched SR3-R2M.
+
+### Old gated-D3 endpoint comparison — 2026-08-31
+
+The completed cloud archive is retained as
+`g3-sr4-gated-d3-endpoints-linux-rez.tgz` (SHA-256
+`e5b02c3fd5de8ae41563e0dd2d0201c0bddf459f5a7bc12fca83b2efb3dec6a5`).
+It contains six complete normal-PVS 120k JSONL outputs: the three old-gate D3
+incumbents on every one of the 25,000 SR4 and SR3-R2M inputs. Its recorded
+anchor/reference and mate-rescue identities exactly match the retained local
+per-root combined populations: 22,825 SR4 and 22,934 SR3-R2M positions.
+
+A fresh v2 direct-reference risk pass compared those outputs with f01, the
+earlier D3/D5 endpoints, and both SPSA-150 endpoints on those exact complete
+populations. Mean normalized regret is the ranking objective:
+
+| Variant | Margins | SR4 mean regret | SR3-R2M mean regret |
+|---|---|---:|---:|
+| previous D5 | `10,54,175,264,503` | 0.014157 | **0.014233** |
+| previous D3 | `23,62,194` | 0.014258 | 0.014378 |
+| old-gate both | `31,104,198` | 0.014176 | 0.014398 |
+| old-gate downside | `55,69,169` | 0.014371 | 0.014428 |
+| SPSA-150 nearby | `0,40,158,488,754` | **0.014074** | 0.014452 |
+| old-gate cvar1 | `14,68,259` | 0.014396 | 0.014564 |
+| SPSA-150 center | `0,40,98,202,424` | 0.014082 | 0.014582 |
+| f01 | `120,240,360` | 0.014772 | 0.015140 |
+
+`31,104,198` is the best of the three promoted old-gate incumbents, but it is
+0.000165 worse than the previous D5 tuple on the untouched selection shard.
+It also trails the previous D3 tuple there by 0.000020. The downside tuple has
+the lowest old-gate SR3-R2M CVaR-1% (0.317197), while the previous D3 has the
+lowest SR3-R2M squared regret (0.002104); neither tail observation overrides
+the mean-regret ranking. None of the three old-gate incumbents becomes an
+SPRT candidate. The received archive records the net filename and matching
+anchor hashes, but lacks a standalone build/weights manifest; retain that
+provenance limitation with the result.
 
 ## Future: General Search-Pruning Optimization
 
