@@ -9,13 +9,13 @@ selects SPRT candidates; it does not establish playing strength.
 `f21` is the current practical playing basis: its 6+0.1 SPRT against `f01`
 accepted H1, and its longer-control SPRT against the source `g4t1-64x8`
 accepted H1. Future futility SPRTs compare candidates against f21. `f01`
-remains frozen only as the reference control for futility proxy optimization,
-baseline depth measurement, and candidate comparisons. Do not replace or
-overwrite either binary.
+remains frozen as the anchor baseline, baseline-depth measurement, and a
+stable comparison variant. The deep per-root reference, not f01, defines the
+current tail-risk safety gates. Do not replace or overwrite either binary.
 
 | Binary | Margins | Status |
 |---|---|---|
-| `chilo-0.7.5-f01-avx2` | `120,240,360` | Accepted previous basis; frozen proxy control. |
+| `chilo-0.7.5-f01-avx2` | `120,240,360` | Accepted previous basis; frozen anchor baseline. |
 | `chilo-0.7.5-f21-avx2` | `75,212,390,600,839` | H1 accepted versus f01 at 6+0.1 and source `g4t1-64x8` at longer control; practical SPRT basis. |
 
 The variant manifest for `f01` through `f06` is maintained externally at
@@ -468,6 +468,56 @@ the current small set of SPRT-labelled candidates. They are not proven safety
 thresholds. Full-development ranking, untouched G3-SR3-R2M evaluation, and
 then SPRT remain mandatory before promotion.
 
+### Corrected-gate calibration and active evaluations — 2026-08-31
+
+The first Windows gated hill climb used the now-obsolete f01-relative gates.
+That comparison can hide a shared tactical failure: if f01 and a candidate
+both choose the same bad move, candidate-minus-f01 excess is zero although
+both have substantial reference regret. The v2 gated optimizer and risk
+analysis now use only direct deep-reference quantities:
+
+- **squared regret** = mean of squared normalized reference regret;
+- **CVaR-1%** = mean reference regret among the worst 1% of positions; and
+- semantic diagnostics are direct reference-to-candidate transitions.
+
+This is an intentionally incompatible run contract. The old field names
+`max_squared_positive_excess` and `max_cvar1_excess`, and the v1 optimizer
+state schema, cannot resume under v2. The old f01-relative risk table above
+is historical evidence only.
+
+The interrupted Windows v1 run was retained in full and re-scored rather than
+discarded. It contains 47 committed fresh-20%-subset attempts for each of
+three D3 tracks (141 paired comparisons total), plus an uncommitted 48th
+attempt that is not used for decisions. Its durable old-gate incumbents are:
+
+| Old track | Accepted / attempts | Incumbent margins | Last accepted sample: mean / squared / CVaR-1% |
+|---|---:|---|---:|
+| downside | 14 / 47 | `55,69,169` | 0.013317 / 0.001625 / 0.272227 |
+| cvar1 | 19 / 47 | `14,68,259` | 0.014200 / 0.001998 / 0.305868 |
+| both | 16 / 47 | `31,104,198` | 0.013636 / 0.002384 / 0.328996 |
+
+The best single-subset proposals are not endpoint candidates: they have a
+winner's-curse selection bias. Tuple `45,160,240`, the best observation from
+the old `both` track, already has a full SR4/SR3-R2M evaluation and is not
+rerun. The three durable incumbents above are the only old-run tuples being
+promoted to full evaluation.
+
+The old-run re-score establishes practical v2 trial limits. The D3 start
+`23,62,194` had observed 20% samples through 0.002689 squared regret and
+0.365551 CVaR-1%; across all old-run proposals the corresponding 90th
+percentiles were 0.002778 and 0.370688. The prepared short v2 Windows trial
+therefore has one `both` stream with limits 0.002800 and 0.380000, 20% fresh
+samples, `c=20`, `gamma=0.101`, `min_mean_improvement=0.000050`, two workers,
+30 attempts, and early stop after 10 stalled attempts. Two workers are enough
+because its incumbent and proposal probes run concurrently.
+
+The package `g3-sr4-gated-v2-d3-win.zip` is a development-only test of this
+corrected optimizer. Separately, the serial Linux package
+`g3-sr4-gated-d3-endpoints-linux.tgz` is running the three old-run incumbents
+at 120k on both G3-SR4 and untouched G3-SR3-R2M, with the v2 read-only risk
+analysis. The SR3-R2M result, not the adaptive SR4 trajectory, determines
+whether an endpoint merits SPRT consideration.
+
 ## Future: General Search-Pruning Optimization
 
 The score-regret proxy is not inherently a futility-pruning measure. Given a
@@ -514,6 +564,20 @@ be considered. Keep missed reference-winning mates, candidate mate claims,
 completed depth, speed, and futility-style counts as safety diagnostics. Mean
 score regret remains the ranking objective, while diagnostics and final SPRT
 guard against a proxy blind spot.
+
+## Separate Search-Core Experiments
+
+The `history-saturating` branch is a separate future experiment, not a
+futility-margin candidate. It changes the quiet-history update itself, so its
+candidate probes cannot be pooled with the existing f01/f21/D3/D5/SPSA or
+gated evidence. Its initial 1,000-position, 256k fixed-node depth screen with
+f21 margins showed only a modest mean completed-depth increase (+0.075 ply).
+
+If that branch is pursued, use a clean paired experiment under the modified
+search: regenerate the matching anchor/reference and baseline/candidate probe
+outputs with the same source revision, net, corpus, and node budget. Do not
+reuse the present per-root reference maps as direct strength evidence across
+that search-core change.
 
 ## Post-anchor Mate Rescue
 
@@ -648,9 +712,9 @@ SPRT evidence.
 
 Validation plan:
 
-1. Confirm f21 against source futility `0.7.4` at a longer control. Do not
-   automatically consume time on f22/f23 unless later per-root evidence makes
-   one a useful structural control.
+1. `f21` already passed the longer-control SPRT against source futility
+   `0.7.4`; do not automatically consume time on f22/f23 unless later
+   per-root evidence makes one a useful structural control.
 2. Test promising static tuples at at least one much shorter and one much
    longer control, for example 1+0.01, 6+0.1, and 30+0.3. Keep the net,
    openings, adjudication, and other tournament settings fixed across those
