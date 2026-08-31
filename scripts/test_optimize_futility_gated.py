@@ -33,11 +33,15 @@ class GatedHillClimbTest(unittest.TestCase):
                 "tracks": [{
                     "id": "trial",
                     "margins": [120, 240, 360],
-                    "gate": {
+                    "acceptance": {
                         "mode": "both",
-                        "max_squared_regret": 1.0,
-                        "max_cvar1_regret": 1.0,
-                        "min_mean_improvement": 0.001,
+                        "max_mean_regret_concession": 0.001,
+                        "min_squared_regret_improvement": 0.0001,
+                        "min_cvar1_regret_improvement": 0.0001,
+                        "max_squared_regret_worsening": 0.001,
+                        "max_cvar1_regret_worsening": 0.001,
+                        "max_squared_regret": None,
+                        "max_cvar1_regret": None,
                         "max_stalled_attempts": stalled,
                     },
                 }],
@@ -70,14 +74,35 @@ class GatedHillClimbTest(unittest.TestCase):
     def risk(downside: float, cvar1: float) -> dict:
         return {"absolute_regret": {"mean_squared": downside, "tail_mean": {"top_0.01": cvar1}}}
 
-    def test_gate_modes_enforce_only_their_selected_limits(self) -> None:
-        downside = gated.Gate("downside", 0.1, 0.1, 0.0, 1)
-        cvar1 = gated.Gate("cvar1", 0.1, 0.1, 0.0, 1)
-        both = gated.Gate("both", 0.1, 0.1, 0.0, 1)
-        metrics = self.risk(0.2, 0.05)
-        self.assertFalse(gated.evaluate_gate(metrics, downside)["passed"])
-        self.assertTrue(gated.evaluate_gate(metrics, cvar1)["passed"])
-        self.assertFalse(gated.evaluate_gate(metrics, both)["passed"])
+    def acceptance(self, mode: str) -> gated.Acceptance:
+        return gated.Acceptance(mode, 0.01, 0.01, 0.01, 0.02, 0.02, None, None, 1)
+
+    @staticmethod
+    def mean(value: float) -> dict:
+        return {"mean_normalized_regret": value}
+
+    def test_pareto_tracks_allow_bounded_mean_concession(self) -> None:
+        current_risk = self.risk(0.20, 0.30)
+        proposal_risk = self.risk(0.18, 0.28)
+        self.assertTrue(gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, proposal_risk, self.acceptance("squared"))["passed"])
+        self.assertTrue(gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, proposal_risk, self.acceptance("cvar1"))["passed"])
+        self.assertTrue(gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, proposal_risk, self.acceptance("both"))["passed"])
+
+    def test_pareto_tracks_reject_missing_required_safety_or_excess_mean(self) -> None:
+        current_risk = self.risk(0.20, 0.30)
+        cvar_only = self.risk(0.205, 0.28)
+        result = gated.evaluate_acceptance(self.mean(0.10), self.mean(0.105), current_risk, cvar_only, self.acceptance("squared"))
+        self.assertFalse(result["passed"])
+        self.assertIn("squared_regret_not_improved", result["failures"])
+        result = gated.evaluate_acceptance(self.mean(0.10), self.mean(0.111), current_risk, self.risk(0.18, 0.28), self.acceptance("both"))
+        self.assertFalse(result["passed"])
+        self.assertIn("mean_regret_concession_exceeded", result["failures"])
+
+    def test_absolute_backstops_are_optional_and_do_not_define_progress(self) -> None:
+        acceptance = self.acceptance("squared")
+        self.assertTrue(gated.evaluate_absolute_backstops(self.risk(100.0, 100.0), acceptance)["passed"])
+        capped = gated.Acceptance("squared", 0.01, 0.01, 0.0, 1.0, 1.0, 0.1, None, 1)
+        self.assertFalse(gated.evaluate_absolute_backstops(self.risk(0.2, 0.01), capped)["passed"])
 
     def test_proposal_is_deterministic_and_changes_tuple(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -115,23 +140,22 @@ class GatedHillClimbTest(unittest.TestCase):
             self.assertEqual(finalist["accepted_improvements"], 1)
             self.assertEqual(finalist["attempted_count"], 2)
 
-    def test_missing_per_track_gate_field_is_rejected(self) -> None:
+    def test_missing_per_track_acceptance_field_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = self.write_config(root, self.write_anchor(root))
             raw = json.loads(path.read_text(encoding="utf-8"))
-            del raw["gated_hillclimb"]["tracks"][0]["gate"]["max_cvar1_regret"]
+            del raw["gated_hillclimb"]["tracks"][0]["acceptance"]["max_mean_regret_concession"]
             path.write_text(json.dumps(raw), encoding="utf-8")
             with self.assertRaisesRegex(gated.optimize_futility.OptimizationError, "missing required"):
                 gated.load_settings(path)
 
-    def test_initial_gate_failure_is_terminal(self) -> None:
+    def test_initial_backstop_failure_is_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = self.write_config(root, self.write_anchor(root))
             raw = json.loads(path.read_text(encoding="utf-8"))
-            raw["gated_hillclimb"]["tracks"][0]["gate"]["max_squared_regret"] = 0.0
-            raw["gated_hillclimb"]["tracks"][0]["gate"]["max_cvar1_regret"] = 0.0
+            raw["gated_hillclimb"]["tracks"][0]["acceptance"]["max_squared_regret"] = 0.0
             path.write_text(json.dumps(raw), encoding="utf-8")
             settings = gated.load_settings(path)
             run_dir = root / "run"
@@ -146,8 +170,29 @@ class GatedHillClimbTest(unittest.TestCase):
             ):
                 result = gated.run(settings, run_dir)
             finalist = result["finalists"][0]
-            self.assertEqual(finalist["status"], "initial_gate_failed")
+            self.assertEqual(finalist["status"], "initial_backstop_failed")
             self.assertEqual(finalist["attempted_count"], 1)
+
+    def test_v2_state_cannot_resume_under_v3_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = gated.load_settings(self.write_config(root, self.write_anchor(root)))
+            state = root / "state.json"
+            state.write_text(json.dumps({"schema": "chilo.futility_gated_hillclimb_state.v2", "tracks": {}}), encoding="utf-8")
+            with self.assertRaisesRegex(gated.optimize_futility.OptimizationError, "cannot resume"):
+                gated.load_state(state, settings)
+
+    def test_v2_manifest_cannot_resume_under_v3_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = gated.load_settings(self.write_config(root, self.write_anchor(root)))
+            run_dir = root / "run"
+            run_dir.mkdir()
+            (run_dir / "optimizer_manifest.json").write_text(
+                json.dumps({"schema": "chilo.futility_gated_hillclimb.v2"}), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(gated.optimize_futility.OptimizationError, "cannot resume"):
+                gated.prepare(run_dir, gated.manifest(settings))
 
 
 if __name__ == "__main__":

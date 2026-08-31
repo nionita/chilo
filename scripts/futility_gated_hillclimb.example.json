@@ -14,35 +14,47 @@
   "gated_hillclimb": {
     "tracks": [
       {
-        "id": "f21-downside",
+        "id": "squared-risk",
         "margins": [75, 212, 390, 600, 839],
-        "gate": {
-          "mode": "downside",
-          "max_squared_regret": 0.002500,
-          "max_cvar1_regret": 0.350000,
-          "min_mean_improvement": 0.000020,
+        "acceptance": {
+          "mode": "squared",
+          "max_mean_regret_concession": 0.000020,
+          "min_squared_regret_improvement": 0.000010,
+          "min_cvar1_regret_improvement": 0.000000,
+          "max_squared_regret_worsening": 0.000000,
+          "max_cvar1_regret_worsening": 0.000010,
+          "max_squared_regret": null,
+          "max_cvar1_regret": null,
           "max_stalled_attempts": 20
         }
       },
       {
-        "id": "f21-cvar1",
+        "id": "cvar1-risk",
         "margins": [75, 212, 390, 600, 839],
-        "gate": {
+        "acceptance": {
           "mode": "cvar1",
-          "max_squared_regret": 0.002500,
-          "max_cvar1_regret": 0.350000,
-          "min_mean_improvement": 0.000020,
+          "max_mean_regret_concession": 0.000020,
+          "min_squared_regret_improvement": 0.000000,
+          "min_cvar1_regret_improvement": 0.000010,
+          "max_squared_regret_worsening": 0.000010,
+          "max_cvar1_regret_worsening": 0.000000,
+          "max_squared_regret": null,
+          "max_cvar1_regret": null,
           "max_stalled_attempts": 20
         }
       },
       {
-        "id": "f21-both",
+        "id": "both-risk",
         "margins": [75, 212, 390, 600, 839],
-        "gate": {
+        "acceptance": {
           "mode": "both",
-          "max_squared_regret": 0.002500,
-          "max_cvar1_regret": 0.350000,
-          "min_mean_improvement": 0.000020,
+          "max_mean_regret_concession": 0.000020,
+          "min_squared_regret_improvement": 0.000010,
+          "min_cvar1_regret_improvement": 0.000010,
+          "max_squared_regret_worsening": 0.000000,
+          "max_cvar1_regret_worsening": 0.000000,
+          "max_squared_regret": null,
+          "max_cvar1_regret": null,
           "max_stalled_attempts": 20
         }
       }

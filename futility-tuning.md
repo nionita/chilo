@@ -639,6 +639,46 @@ do not copy numeric limits from this failed absolute-cap test. Only then run a
 short development-only trial, full-SR4-evaluate its durable endpoints, and
 send at most the preselected development winner to untouched SR3-R2M.
 
+### Relative-risk v3 implementation — 2026-08-31
+
+`scripts/optimize_futility_gated.py` now writes a separate v3 manifest and
+state schema (`chilo.futility_relative_risk_hillclimb.v3`). It cannot resume a
+v1/v2 state: a fresh run directory is required because the acceptance
+semantics changed. The name remains for continuity with the earlier operator
+workflow, but v3 is not an absolute-gate optimizer.
+
+Each track has an `acceptance` object with one of three modes:
+
+| Mode | Required same-sample safety progress | Other safety metric | Mean regret |
+|---|---|---|---|
+| `squared` | squared-regret delta at most `-min_squared_regret_improvement` | CVaR-1% may worsen only within its configured tolerance | may worsen only through `max_mean_regret_concession` |
+| `cvar1` | CVaR-1% delta at most `-min_cvar1_regret_improvement` | squared regret may worsen only within its configured tolerance | same bounded concession |
+| `both` | both squared and CVaR-1% meet their required negative deltas | neither condition is waived | same bounded concession |
+
+Here a delta is `proposal - incumbent`; negative is safer and positive mean
+delta is a mean-regret concession. The optimizer persists the paired deltas,
+thresholds, backstop result, and specific rejection reason for every attempt.
+This makes the intended mean-for-safety trade observable instead of rejecting
+it by construction. `max_squared_regret` and `max_cvar1_regret` are optional
+nullable hard backstops. They can exclude a catastrophic candidate, but never
+count as safety progress and should normally remain `null` until separately
+justified.
+
+`scripts/analyze_futility_gated_calibration.py` is the required read-only
+preflight. Its config explicitly maps every retained v1/v2 run to a matching
+anchor and every promoted tuple to its completed full-development and
+selection outputs. It validates the state-recorded attempt JSONL identities,
+recomputes their direct-reference paired deltas, and writes JSON plus a short
+Markdown report. It reports empirical distributions only; it deliberately
+does not generate a runnable v3 configuration or recommend thresholds.
+See `scripts/futility_gated_calibration.example.json` and
+`scripts/futility_gated_hillclimb.example.json` for schemas, not approved
+numeric settings.
+
+Implementation does not authorize a calibration run, package, optimizer run,
+full evaluation, or SPRT. Review the resulting report and set the three
+tracks' thresholds explicitly before any new development-only experiment.
+
 ### Old gated-D3 endpoint comparison — 2026-08-31
 
 The completed cloud archive is retained as

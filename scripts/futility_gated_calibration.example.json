@@ -1,0 +1,56 @@
+{
+  "attempt_runs": [
+    {
+      "id": "old-v1",
+      "run_dir": "/path/to/g3-sr4-gated-d3-endpoints-linux/run",
+      "anchor": {
+        "reference_dir": "/path/to/g3-sr4",
+        "contract": "per_root_v1",
+        "rescue_dir": "/path/to/g3-sr4-mate-rescue/run"
+      }
+    },
+    {
+      "id": "corrected-v2",
+      "run_dir": "/path/to/g3-sr4-gated-v2-d3-win/run",
+      "anchor": {
+        "reference_dir": "/path/to/g3-sr4",
+        "contract": "per_root_v1",
+        "rescue_dir": "/path/to/g3-sr4-mate-rescue/run"
+      }
+    }
+  ],
+  "full_evaluations": [
+    {
+      "id": "corrected-v2-endpoint",
+      "attempt_run": "corrected-v2",
+      "track": "d3-both",
+      "margins": [69, 83, 207],
+      "populations": [
+        {
+          "id": "sr4-development",
+          "candidate_nodes": 120000,
+          "baseline_margins": [120, 240, 360],
+          "score_scale": 600,
+          "anchor": {
+            "reference_dir": "/path/to/g3-sr4",
+            "contract": "per_root_v1",
+            "rescue_dir": "/path/to/g3-sr4-mate-rescue/run"
+          },
+          "output": "/path/to/full-eval/sr4-candidate.jsonl"
+        },
+        {
+          "id": "sr3-r2m-selection",
+          "candidate_nodes": 120000,
+          "baseline_margins": [120, 240, 360],
+          "score_scale": 600,
+          "anchor": {
+            "reference_dir": "/path/to/g3-sr3-r2m",
+            "contract": "per_root_v1",
+            "rescue_dir": "/path/to/g3-sr3-r2m-mate-rescue/run"
+          },
+          "output": "/path/to/full-eval/sr3-r2m-candidate.jsonl"
+        }
+      ]
+    }
+  ]
+}

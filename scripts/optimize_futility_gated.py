@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Constrained random hill-climb for futility margins.
+"""Relative-risk random hill-climb for futility margins.
 
 Each attempt probes a current incumbent and one deterministic random
 perturbation on the same fresh trusted-set sample. A proposal is accepted only
-when it improves mean normalized regret and passes its deep-reference risk
-gate. This is deliberately development-only; full-development and untouched
-selection evaluation remain separate decisions.
+when it makes the selected incumbent-relative safety progress while staying
+inside its predeclared mean-regret concession budget. Optional absolute limits
+are backstops, never the progress objective. This is deliberately
+development-only; full-development and untouched selection evaluation remain
+separate decisions.
 """
 
 from __future__ import annotations
@@ -28,19 +30,23 @@ import spsa_optimizer
 import tune_futility
 
 
-SCHEMA = "chilo.futility_gated_hillclimb.v2"
-STATE_SCHEMA = "chilo.futility_gated_hillclimb_state.v2"
+SCHEMA = "chilo.futility_relative_risk_hillclimb.v3"
+STATE_SCHEMA = "chilo.futility_relative_risk_hillclimb_state.v3"
 Margins = Tuple[int, ...]
 Key = Tuple[str, int, str]
-GATE_MODES = {"downside", "cvar1", "both"}
+ACCEPTANCE_MODES = {"squared", "cvar1", "both"}
 
 
 @dataclass(frozen=True)
-class Gate:
+class Acceptance:
     mode: str
-    max_squared_regret: float
-    max_cvar1_regret: float
-    min_mean_improvement: float
+    max_mean_regret_concession: float
+    min_squared_regret_improvement: float
+    min_cvar1_regret_improvement: float
+    max_squared_regret_worsening: float
+    max_cvar1_regret_worsening: float
+    max_squared_regret: Optional[float]
+    max_cvar1_regret: Optional[float]
     max_stalled_attempts: int
 
 
@@ -48,7 +54,7 @@ class Gate:
 class Track:
     identifier: str
     margins: Margins
-    gate: Gate
+    acceptance: Acceptance
 
 
 @dataclass(frozen=True)
@@ -89,32 +95,61 @@ def require_number(value: Any, name: str, minimum: float, inclusive: bool = Fals
     return numeric
 
 
-def parse_gate(value: Any, label: str) -> Gate:
+def require_optional_number(value: Any, name: str) -> Optional[float]:
+    if value is None:
+        return None
+    return require_number(value, name, 0, True)
+
+
+def parse_acceptance(value: Any, label: str) -> Acceptance:
     if not isinstance(value, dict):
         raise optimize_futility.OptimizationError(f"{label} must be an object")
     allowed = {
         "mode",
+        "max_mean_regret_concession",
+        "min_squared_regret_improvement",
+        "min_cvar1_regret_improvement",
+        "max_squared_regret_worsening",
+        "max_cvar1_regret_worsening",
         "max_squared_regret",
         "max_cvar1_regret",
-        "min_mean_improvement",
         "max_stalled_attempts",
     }
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise optimize_futility.OptimizationError(f"unknown {label} field(s): {', '.join(unknown)}")
-    if set(value) != allowed:
-        missing = sorted(allowed - set(value))
+    required = allowed - {"max_squared_regret", "max_cvar1_regret"}
+    if not required.issubset(value):
+        missing = sorted(required - set(value))
         raise optimize_futility.OptimizationError(f"{label} missing required field(s): {', '.join(missing)}")
     mode = optimize_futility.require_string(value.get("mode"), f"{label}.mode")
-    if mode not in GATE_MODES:
-        raise optimize_futility.OptimizationError(f"{label}.mode must be downside, cvar1, or both")
-    return Gate(
+    if mode not in ACCEPTANCE_MODES:
+        raise optimize_futility.OptimizationError(f"{label}.mode must be squared, cvar1, or both")
+    squared_improvement = require_number(
+        value.get("min_squared_regret_improvement"), f"{label}.min_squared_regret_improvement", 0, True
+    )
+    cvar1_improvement = require_number(
+        value.get("min_cvar1_regret_improvement"), f"{label}.min_cvar1_regret_improvement", 0, True
+    )
+    if mode in {"squared", "both"} and squared_improvement <= 0:
+        raise optimize_futility.OptimizationError(f"{label}.min_squared_regret_improvement must be > 0 for {mode} mode")
+    if mode in {"cvar1", "both"} and cvar1_improvement <= 0:
+        raise optimize_futility.OptimizationError(f"{label}.min_cvar1_regret_improvement must be > 0 for {mode} mode")
+    return Acceptance(
         mode=mode,
-        max_squared_regret=require_number(
-            value.get("max_squared_regret"), f"{label}.max_squared_regret", 0, True
+        max_mean_regret_concession=require_number(
+            value.get("max_mean_regret_concession"), f"{label}.max_mean_regret_concession", 0, True
         ),
-        max_cvar1_regret=require_number(value.get("max_cvar1_regret"), f"{label}.max_cvar1_regret", 0, True),
-        min_mean_improvement=require_number(value.get("min_mean_improvement"), f"{label}.min_mean_improvement", 0, True),
+        min_squared_regret_improvement=squared_improvement,
+        min_cvar1_regret_improvement=cvar1_improvement,
+        max_squared_regret_worsening=require_number(
+            value.get("max_squared_regret_worsening"), f"{label}.max_squared_regret_worsening", 0, True
+        ),
+        max_cvar1_regret_worsening=require_number(
+            value.get("max_cvar1_regret_worsening"), f"{label}.max_cvar1_regret_worsening", 0, True
+        ),
+        max_squared_regret=require_optional_number(value.get("max_squared_regret"), f"{label}.max_squared_regret"),
+        max_cvar1_regret=require_optional_number(value.get("max_cvar1_regret"), f"{label}.max_cvar1_regret"),
         max_stalled_attempts=optimize_futility.require_int(
             value.get("max_stalled_attempts"), f"{label}.max_stalled_attempts", 1
         ),
@@ -170,14 +205,14 @@ def load_settings(config_path: Path) -> Settings:
     tracks: List[Track] = []
     identifiers = set()
     for index, item in enumerate(tracks_raw):
-        if not isinstance(item, dict) or set(item) != {"id", "margins", "gate"}:
-            raise optimize_futility.OptimizationError("each gated_hillclimb track must contain only id, margins, and gate")
+        if not isinstance(item, dict) or set(item) != {"id", "margins", "acceptance"}:
+            raise optimize_futility.OptimizationError("each gated_hillclimb track must contain only id, margins, and acceptance")
         identifier = optimize_futility.require_string(item.get("id"), "gated_hillclimb track id")
         if identifier in identifiers:
             raise optimize_futility.OptimizationError(f"duplicate gated_hillclimb track id {identifier}")
         identifiers.add(identifier)
         margins = tune_futility.validate_margins(item.get("margins"), f"gated_hillclimb track {identifier} margins")
-        tracks.append(Track(identifier, margins, parse_gate(item.get("gate"), f"gated_hillclimb track {identifier}.gate")))
+        tracks.append(Track(identifier, margins, parse_acceptance(item.get("acceptance"), f"gated_hillclimb track {identifier}.acceptance")))
     max_margin = optimize_futility.require_int(hillclimb.get("max_margin"), "gated_hillclimb.max_margin", 0)
     if any(max(track.margins) > max_margin for track in tracks):
         raise optimize_futility.OptimizationError("gated_hillclimb track margins exceed gated_hillclimb.max_margin")
@@ -206,13 +241,17 @@ def load_settings(config_path: Path) -> Settings:
     )
 
 
-def gate_json(gate: Gate) -> Dict[str, Any]:
+def acceptance_json(acceptance: Acceptance) -> Dict[str, Any]:
     return {
-        "mode": gate.mode,
-        "max_squared_regret": gate.max_squared_regret,
-        "max_cvar1_regret": gate.max_cvar1_regret,
-        "min_mean_improvement": gate.min_mean_improvement,
-        "max_stalled_attempts": gate.max_stalled_attempts,
+        "mode": acceptance.mode,
+        "max_mean_regret_concession": acceptance.max_mean_regret_concession,
+        "min_squared_regret_improvement": acceptance.min_squared_regret_improvement,
+        "min_cvar1_regret_improvement": acceptance.min_cvar1_regret_improvement,
+        "max_squared_regret_worsening": acceptance.max_squared_regret_worsening,
+        "max_cvar1_regret_worsening": acceptance.max_cvar1_regret_worsening,
+        "max_squared_regret": acceptance.max_squared_regret,
+        "max_cvar1_regret": acceptance.max_cvar1_regret,
+        "max_stalled_attempts": acceptance.max_stalled_attempts,
     }
 
 
@@ -236,7 +275,7 @@ def manifest(settings: Settings) -> Dict[str, Any]:
         },
         "gated_hillclimb": {
             "tracks": [
-                {"id": track.identifier, "margins": list(track.margins), "gate": gate_json(track.gate)}
+                {"id": track.identifier, "margins": list(track.margins), "acceptance": acceptance_json(track.acceptance)}
                 for track in settings.tracks
             ],
             "max_attempts": settings.max_attempts,
@@ -254,7 +293,12 @@ def prepare(run_dir: Path, value: Mapping[str, Any]) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / "optimizer_manifest.json"
     if path.exists():
-        if optimize_futility.read_json(path, "gated hill-climb manifest") != value:
+        existing = optimize_futility.read_json(path, "gated hill-climb manifest")
+        if existing.get("schema") in {"chilo.futility_gated_hillclimb.v1", "chilo.futility_gated_hillclimb.v2"}:
+            raise optimize_futility.OptimizationError(
+                "v1/v2 gated hill-climb manifest cannot resume under the v3 relative-risk contract; use a new run directory"
+            )
+        if existing != value:
             raise optimize_futility.OptimizationError("gated hill-climb manifest does not match configured artifacts or anchor; use a new run directory")
     else:
         atomic_write(path, value)
@@ -359,24 +403,68 @@ def risk_metrics(reference: Mapping[str, Any], candidate: Mapping[str, Any], key
     )
 
 
-def evaluate_gate(metrics: Mapping[str, Any], gate: Gate) -> Dict[str, Any]:
+def risk_values(metrics: Mapping[str, Any]) -> Dict[str, float]:
     absolute = metrics["absolute_regret"]
-    downside = float(absolute["mean_squared"])
-    cvar1 = float(absolute["tail_mean"]["top_0.01"])
-    failures = []
-    if gate.mode in {"downside", "both"} and downside > gate.max_squared_regret:
-        failures.append("downside")
-    if gate.mode in {"cvar1", "both"} and cvar1 > gate.max_cvar1_regret:
-        failures.append("cvar1")
     return {
-        "mode": gate.mode,
+        "mean_squared_regret": float(absolute["mean_squared"]),
+        "cvar1_regret": float(absolute["tail_mean"]["top_0.01"]),
+    }
+
+
+def evaluate_absolute_backstops(metrics: Mapping[str, Any], acceptance: Acceptance) -> Dict[str, Any]:
+    values = risk_values(metrics)
+    failures = []
+    if acceptance.max_squared_regret is not None and values["mean_squared_regret"] > acceptance.max_squared_regret:
+        failures.append("max_squared_regret")
+    if acceptance.max_cvar1_regret is not None and values["cvar1_regret"] > acceptance.max_cvar1_regret:
+        failures.append("max_cvar1_regret")
+    return {
         "passed": not failures,
         "failures": failures,
-        "mean_squared_regret": downside,
-        "cvar1_regret": cvar1,
+        **values,
         "limits": {
-            "max_squared_regret": gate.max_squared_regret,
-            "max_cvar1_regret": gate.max_cvar1_regret,
+            "max_squared_regret": acceptance.max_squared_regret,
+            "max_cvar1_regret": acceptance.max_cvar1_regret,
+        },
+    }
+
+
+def evaluate_acceptance(
+    current_metrics: Mapping[str, Any], proposal_metrics: Mapping[str, Any],
+    current_risk: Mapping[str, Any], proposal_risk: Mapping[str, Any], acceptance: Acceptance,
+) -> Dict[str, Any]:
+    """Evaluate paired deltas; negative risk deltas are safer."""
+    current = risk_values(current_risk)
+    proposal = risk_values(proposal_risk)
+    deltas = {
+        "mean_normalized_regret": float(proposal_metrics["mean_normalized_regret"]) - float(current_metrics["mean_normalized_regret"]),
+        "mean_squared_regret": proposal["mean_squared_regret"] - current["mean_squared_regret"],
+        "cvar1_regret": proposal["cvar1_regret"] - current["cvar1_regret"],
+    }
+    failures = []
+    if deltas["mean_normalized_regret"] > acceptance.max_mean_regret_concession:
+        failures.append("mean_regret_concession_exceeded")
+    if acceptance.mode in {"squared", "both"}:
+        if deltas["mean_squared_regret"] > -acceptance.min_squared_regret_improvement:
+            failures.append("squared_regret_not_improved")
+    elif deltas["mean_squared_regret"] > acceptance.max_squared_regret_worsening:
+        failures.append("squared_regret_worsened")
+    if acceptance.mode in {"cvar1", "both"}:
+        if deltas["cvar1_regret"] > -acceptance.min_cvar1_regret_improvement:
+            failures.append("cvar1_regret_not_improved")
+    elif deltas["cvar1_regret"] > acceptance.max_cvar1_regret_worsening:
+        failures.append("cvar1_regret_worsened")
+    return {
+        "mode": acceptance.mode,
+        "passed": not failures,
+        "failures": failures,
+        "deltas": deltas,
+        "thresholds": {
+            "max_mean_regret_concession": acceptance.max_mean_regret_concession,
+            "min_squared_regret_improvement": acceptance.min_squared_regret_improvement,
+            "min_cvar1_regret_improvement": acceptance.min_cvar1_regret_improvement,
+            "max_squared_regret_worsening": acceptance.max_squared_regret_worsening,
+            "max_cvar1_regret_worsening": acceptance.max_cvar1_regret_worsening,
         },
     }
 
@@ -410,7 +498,7 @@ def validate_state(state: Mapping[str, Any], settings: Settings) -> None:
         current = tune_futility.validate_margins(record.get("current_margins"), f"state {track.identifier} current_margins")
         if len(current) != len(track.margins):
             raise optimize_futility.OptimizationError("gated hill-climb state current_margins depth does not match track")
-        if record.get("status") not in {"running", "stalled", "initial_gate_failed", "max_attempts"}:
+        if record.get("status") not in {"running", "stalled", "initial_backstop_failed", "max_attempts"}:
             raise optimize_futility.OptimizationError("invalid gated hill-climb track status")
         if not isinstance(record.get("stalled_attempts"), int) or record["stalled_attempts"] < 0:
             raise optimize_futility.OptimizationError("invalid gated hill-climb stalled_attempts")
@@ -428,6 +516,13 @@ def load_state(path: Path, settings: Settings) -> Dict[str, Any]:
     if not path.exists():
         return new_state(settings)
     state = optimize_futility.read_json(path, "gated hill-climb state")
+    if state.get("schema") in {
+        "chilo.futility_gated_hillclimb_state.v1",
+        "chilo.futility_gated_hillclimb_state.v2",
+    }:
+        raise optimize_futility.OptimizationError(
+            "v1/v2 gated hill-climb state cannot resume under the v3 relative-risk contract; use a new run directory"
+        )
     validate_state(state, settings)
     return state
 
@@ -478,19 +573,21 @@ def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
             proposal_metrics = tune_futility.compute_metrics(reference, baseline, proposal_candidate, settings.candidate_nodes, settings.score_scale, keys)
             current_risk = risk_metrics(reference, current_candidate, keys, settings.score_scale)
             proposal_risk = risk_metrics(reference, proposal_candidate, keys, settings.score_scale)
-            current_gate = evaluate_gate(current_risk, track.gate)
-            proposal_gate = evaluate_gate(proposal_risk, track.gate)
-            improvement = current_metrics["mean_normalized_regret"] - proposal_metrics["mean_normalized_regret"]
+            current_backstop = evaluate_absolute_backstops(current_risk, track.acceptance)
+            proposal_backstop = evaluate_absolute_backstops(proposal_risk, track.acceptance)
+            paired_acceptance = evaluate_acceptance(
+                current_metrics, proposal_metrics, current_risk, proposal_risk, track.acceptance
+            )
             record = state["tracks"][track.identifier]
             accepted = False
-            if attempt == 0 and not current_gate["passed"]:
-                decision = "initial_gate_failed"
-                record["status"] = "initial_gate_failed"
-            elif not proposal_gate["passed"]:
-                decision = "gate_rejected"
+            if attempt == 0 and not current_backstop["passed"]:
+                decision = "initial_backstop_failed"
+                record["status"] = "initial_backstop_failed"
+            elif not proposal_backstop["passed"]:
+                decision = "absolute_backstop_rejected"
                 record["stalled_attempts"] += 1
-            elif not (improvement > 0.0 and improvement >= track.gate.min_mean_improvement):
-                decision = "mean_not_improved"
+            elif not paired_acceptance["passed"]:
+                decision = paired_acceptance["failures"][0]
                 record["stalled_attempts"] += 1
             else:
                 decision = "accepted"
@@ -498,7 +595,7 @@ def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
                 record["current_margins"] = list(proposal)
                 record["stalled_attempts"] = 0
                 record["accepted_improvements"] += 1
-            if record["status"] == "running" and record["stalled_attempts"] >= track.gate.max_stalled_attempts:
+            if record["status"] == "running" and record["stalled_attempts"] >= track.acceptance.max_stalled_attempts:
                 record["status"] = "stalled"
             record["completed_attempts"].append({
                 "attempt": attempt,
@@ -511,16 +608,17 @@ def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
                 "current": {
                     "metrics": current_metrics,
                     "risk": current_risk,
-                    "gate": current_gate,
+                    "absolute_backstop": current_backstop,
                     "output": record_output(run_dir, track.identifier, attempt, "current"),
                 },
                 "proposal": {
                     "metrics": proposal_metrics,
                     "risk": proposal_risk,
-                    "gate": proposal_gate,
+                    "absolute_backstop": proposal_backstop,
                     "output": record_output(run_dir, track.identifier, attempt, "proposal"),
                 },
-                "mean_regret_improvement": improvement,
+                "acceptance": paired_acceptance,
+                "mean_regret_improvement": -paired_acceptance["deltas"]["mean_normalized_regret"],
                 "accepted": accepted,
                 "decision": decision,
                 "stalled_attempts_after": record["stalled_attempts"],
