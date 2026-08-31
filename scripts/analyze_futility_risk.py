@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Read-only tail-risk analysis for fixed-node futility probe outputs.
 
-The score-regret proxy ranks by mean normalized regret.  This companion tool
-does not change that ranking rule; it measures absolute regret tails and the
-candidate's downside relative to a declared control from already completed
-JSONL outputs.
+The score-regret proxy ranks by mean normalized regret. This companion tool
+does not change that ranking rule; it measures candidate risk directly against
+the deep reference-root scores from already completed JSONL outputs.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import futility_risk
 import tune_futility
 
 
-SCHEMA = "chilo.futility_risk_analysis.v1"
+SCHEMA = "chilo.futility_risk_analysis.v2"
 
 
 def atomic_write(path: Path, value: Any) -> None:
@@ -57,10 +56,10 @@ def require_threshold_list(value: Any, label: str) -> List[float]:
     return result
 
 
-def parse_config(path: Path) -> Tuple[optimize_futility.AnchorContext, Dict[str, Any], List[Dict[str, Any]], str, List[float], List[float], int, int]:
+def parse_config(path: Path) -> Tuple[optimize_futility.AnchorContext, Dict[str, Any], List[Dict[str, Any]], List[float], List[float], int, int]:
     raw = optimize_futility.read_json(path, "risk-analysis config")
     allowed = {
-        "candidate_nodes", "baseline_margins", "score_scale", "development", "variants", "control",
+        "candidate_nodes", "baseline_margins", "score_scale", "development", "variants",
         "tail_fractions", "regret_thresholds", "semantic_thresholds",
     }
     unknown = sorted(set(raw) - allowed)
@@ -92,9 +91,6 @@ def parse_config(path: Path) -> Tuple[optimize_futility.AnchorContext, Dict[str,
         candidate = tune_futility.parse_probe_output(output, nodes, variant_margins)
         tune_futility.ensure_position_sets(anchor.reference, candidate, f"variant {identifier}")
         variants.append({"id": identifier, "margins": variant_margins, "output": tune_futility.file_identity(output), "candidate": candidate})
-    control = optimize_futility.require_string(raw.get("control"), "control")
-    if control not in identifiers:
-        raise optimize_futility.OptimizationError("control must identify one variant")
     tails = require_fraction_list(raw.get("tail_fractions", [0.05, 0.01]), "tail_fractions")
     thresholds = require_threshold_list(raw.get("regret_thresholds", [0.1, 0.25, 0.5, 1.0]), "regret_thresholds")
     semantic = raw.get("semantic_thresholds", {"advantage_cp": 150, "loss_cp": -150})
@@ -107,7 +103,7 @@ def parse_config(path: Path) -> Tuple[optimize_futility.AnchorContext, Dict[str,
     loss = loss_raw
     if loss >= 0:
         raise optimize_futility.OptimizationError("semantic_thresholds.loss_cp must be < 0")
-    return anchor, raw, variants, control, tails, thresholds, advantage, loss
+    return anchor, raw, variants, tails, thresholds, advantage, loss
 
 
 selected_reference_score = futility_risk.selected_reference_score
@@ -118,8 +114,7 @@ compute_risk_metrics = futility_risk.compute_risk_metrics
 
 
 def run(config_path: Path, output_dir: Path) -> Dict[str, Any]:
-    anchor, raw, variants, control_id, tail_fractions, thresholds, advantage, loss = parse_config(config_path)
-    control = next(item for item in variants if item["id"] == control_id)
+    anchor, raw, variants, tail_fractions, thresholds, advantage, loss = parse_config(config_path)
     scale = float(raw.get("score_scale", 600))
     rows = []
     for variant in variants:
@@ -128,7 +123,7 @@ def run(config_path: Path, output_dir: Path) -> Dict[str, Any]:
             "margins": list(variant["margins"]),
             "output": variant["output"],
             "metrics": compute_risk_metrics(
-                anchor.reference, control["candidate"], variant["candidate"], anchor.trusted_keys,
+                anchor.reference, variant["candidate"], anchor.trusted_keys,
                 scale, tail_fractions, thresholds, advantage, loss,
             ),
         })
@@ -142,7 +137,6 @@ def run(config_path: Path, output_dir: Path) -> Dict[str, Any]:
             "trusted_set": anchor.trusted_set,
             "rescue": dict(anchor.rescue) if anchor.rescue is not None else None,
         },
-        "control": control_id,
         "tail_fractions": list(tail_fractions),
         "regret_thresholds": list(thresholds),
         "semantic_thresholds": {"advantage_cp": advantage, "loss_cp": loss},
@@ -156,23 +150,21 @@ def run(config_path: Path, output_dir: Path) -> Dict[str, Any]:
     lines = [
         "# Futility proxy tail-risk analysis", "",
         "This is a read-only analysis of completed fixed-node probe JSONL; no engine was run.",
-        f"Control: `{control_id}`. Positive excess means a candidate is worse than that control on a position.", "",
-        f"| Variant | Margins | Mean regret | P95 | P99 | CVaR top {primary_tail_label} | Positive excess | Squared positive excess | CVaR top {primary_tail_label} excess |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "All statistics compare the candidate-selected move directly with the deep reference-root score.", "",
+        f"| Variant | Margins | Mean regret | Mean squared regret | P95 | P99 | CVaR top {primary_tail_label} |",
+        "|---|---|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         metrics = row["metrics"]
         absolute = metrics["absolute_regret"]
-        excess = metrics["excess_vs_control"]
         lines.append(
             f"| {row['id']} | `{','.join(str(value) for value in row['margins'])}` | "
-            f"{absolute['mean']:.6f} | {absolute['p95']:.6f} | {absolute['p99']:.6f} | "
-            f"{absolute['tail_mean'][primary_tail_key]:.6f} | {excess['mean_positive']:.6f} | "
-            f"{excess['mean_squared_positive']:.6f} | {excess['tail_mean'][primary_tail_key]:.6f} |"
+            f"{absolute['mean']:.6f} | {absolute['mean_squared']:.6f} | {absolute['p95']:.6f} | "
+            f"{absolute['p99']:.6f} | {absolute['tail_mean'][primary_tail_key]:.6f} |"
         )
-    lines.extend(["", "## Semantic regressions versus control", "", "| Variant | Winning mate missed | Clear advantage lost | Advantage to nonpositive | Nonlosing to losing |", "|---|---:|---:|---:|---:|"])
+    lines.extend(["", "## Semantic regressions versus reference", "", "| Variant | Winning mate missed | Clear advantage lost | Advantage to nonpositive | Nonlosing to losing |", "|---|---:|---:|---:|---:|"])
     for row in rows:
-        semantic = row["metrics"]["semantic_regressions_vs_control"]
+        semantic = row["metrics"]["semantic_regressions_vs_reference"]
         lines.append(f"| {row['id']} | {semantic['winning_mate_missed']} | {semantic['clear_advantage_lost']} | {semantic['clear_advantage_to_nonpositive']} | {semantic['nonlosing_to_losing']} |")
     (output_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result

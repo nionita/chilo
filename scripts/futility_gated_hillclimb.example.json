@@ -18,8 +18,8 @@
         "margins": [75, 212, 390, 600, 839],
         "gate": {
           "mode": "downside",
-          "max_squared_positive_excess": 0.000250,
-          "max_cvar1_excess": 0.120000,
+          "max_squared_regret": 0.002500,
+          "max_cvar1_regret": 0.350000,
           "min_mean_improvement": 0.000020,
           "max_stalled_attempts": 20
         }
@@ -29,8 +29,8 @@
         "margins": [75, 212, 390, 600, 839],
         "gate": {
           "mode": "cvar1",
-          "max_squared_positive_excess": 0.000250,
-          "max_cvar1_excess": 0.120000,
+          "max_squared_regret": 0.002500,
+          "max_cvar1_regret": 0.350000,
           "min_mean_improvement": 0.000020,
           "max_stalled_attempts": 20
         }
@@ -40,8 +40,8 @@
         "margins": [75, 212, 390, 600, 839],
         "gate": {
           "mode": "both",
-          "max_squared_positive_excess": 0.000250,
-          "max_cvar1_excess": 0.120000,
+          "max_squared_regret": 0.002500,
+          "max_cvar1_regret": 0.350000,
           "min_mean_improvement": 0.000020,
           "max_stalled_attempts": 20
         }

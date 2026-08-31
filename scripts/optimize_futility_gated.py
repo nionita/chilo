@@ -2,9 +2,9 @@
 """Constrained random hill-climb for futility margins.
 
 Each attempt probes a current incumbent and one deterministic random
-perturbation on the same fresh trusted-set sample.  A proposal is accepted
-only when it improves mean normalized regret and passes its f01-relative risk
-gate.  This is deliberately development-only; full-development and untouched
+perturbation on the same fresh trusted-set sample. A proposal is accepted only
+when it improves mean normalized regret and passes its deep-reference risk
+gate. This is deliberately development-only; full-development and untouched
 selection evaluation remain separate decisions.
 """
 
@@ -28,8 +28,8 @@ import spsa_optimizer
 import tune_futility
 
 
-SCHEMA = "chilo.futility_gated_hillclimb.v1"
-STATE_SCHEMA = "chilo.futility_gated_hillclimb_state.v1"
+SCHEMA = "chilo.futility_gated_hillclimb.v2"
+STATE_SCHEMA = "chilo.futility_gated_hillclimb_state.v2"
 Margins = Tuple[int, ...]
 Key = Tuple[str, int, str]
 GATE_MODES = {"downside", "cvar1", "both"}
@@ -38,8 +38,8 @@ GATE_MODES = {"downside", "cvar1", "both"}
 @dataclass(frozen=True)
 class Gate:
     mode: str
-    max_squared_positive_excess: float
-    max_cvar1_excess: float
+    max_squared_regret: float
+    max_cvar1_regret: float
     min_mean_improvement: float
     max_stalled_attempts: int
 
@@ -94,8 +94,8 @@ def parse_gate(value: Any, label: str) -> Gate:
         raise optimize_futility.OptimizationError(f"{label} must be an object")
     allowed = {
         "mode",
-        "max_squared_positive_excess",
-        "max_cvar1_excess",
+        "max_squared_regret",
+        "max_cvar1_regret",
         "min_mean_improvement",
         "max_stalled_attempts",
     }
@@ -110,10 +110,10 @@ def parse_gate(value: Any, label: str) -> Gate:
         raise optimize_futility.OptimizationError(f"{label}.mode must be downside, cvar1, or both")
     return Gate(
         mode=mode,
-        max_squared_positive_excess=require_number(
-            value.get("max_squared_positive_excess"), f"{label}.max_squared_positive_excess", 0, True
+        max_squared_regret=require_number(
+            value.get("max_squared_regret"), f"{label}.max_squared_regret", 0, True
         ),
-        max_cvar1_excess=require_number(value.get("max_cvar1_excess"), f"{label}.max_cvar1_excess", 0, True),
+        max_cvar1_regret=require_number(value.get("max_cvar1_regret"), f"{label}.max_cvar1_regret", 0, True),
         min_mean_improvement=require_number(value.get("min_mean_improvement"), f"{label}.min_mean_improvement", 0, True),
         max_stalled_attempts=optimize_futility.require_int(
             value.get("max_stalled_attempts"), f"{label}.max_stalled_attempts", 1
@@ -209,8 +209,8 @@ def load_settings(config_path: Path) -> Settings:
 def gate_json(gate: Gate) -> Dict[str, Any]:
     return {
         "mode": gate.mode,
-        "max_squared_positive_excess": gate.max_squared_positive_excess,
-        "max_cvar1_excess": gate.max_cvar1_excess,
+        "max_squared_regret": gate.max_squared_regret,
+        "max_cvar1_regret": gate.max_cvar1_regret,
         "min_mean_improvement": gate.min_mean_improvement,
         "max_stalled_attempts": gate.max_stalled_attempts,
     }
@@ -353,30 +353,30 @@ def probe_one(
     return tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
 
 
-def risk_metrics(reference: Mapping[str, Any], baseline: Mapping[str, Any], candidate: Mapping[str, Any], keys: Sequence[Key], score_scale: float) -> Dict[str, Any]:
+def risk_metrics(reference: Mapping[str, Any], candidate: Mapping[str, Any], keys: Sequence[Key], score_scale: float) -> Dict[str, Any]:
     return futility_risk.compute_risk_metrics(
-        reference, baseline, candidate, keys, score_scale, [0.01], [], 150, -150,
+        reference, candidate, keys, score_scale, [0.01], [], 150, -150,
     )
 
 
 def evaluate_gate(metrics: Mapping[str, Any], gate: Gate) -> Dict[str, Any]:
-    excess = metrics["excess_vs_control"]
-    downside = float(excess["mean_squared_positive"])
-    cvar1 = float(excess["tail_mean"]["top_0.01"])
+    absolute = metrics["absolute_regret"]
+    downside = float(absolute["mean_squared"])
+    cvar1 = float(absolute["tail_mean"]["top_0.01"])
     failures = []
-    if gate.mode in {"downside", "both"} and downside > gate.max_squared_positive_excess:
+    if gate.mode in {"downside", "both"} and downside > gate.max_squared_regret:
         failures.append("downside")
-    if gate.mode in {"cvar1", "both"} and cvar1 > gate.max_cvar1_excess:
+    if gate.mode in {"cvar1", "both"} and cvar1 > gate.max_cvar1_regret:
         failures.append("cvar1")
     return {
         "mode": gate.mode,
         "passed": not failures,
         "failures": failures,
-        "downside_squared_positive_excess": downside,
-        "cvar1_excess": cvar1,
+        "mean_squared_regret": downside,
+        "cvar1_regret": cvar1,
         "limits": {
-            "max_squared_positive_excess": gate.max_squared_positive_excess,
-            "max_cvar1_excess": gate.max_cvar1_excess,
+            "max_squared_regret": gate.max_squared_regret,
+            "max_cvar1_regret": gate.max_cvar1_regret,
         },
     }
 
@@ -476,8 +476,8 @@ def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
             proposal_candidate = results[(track.identifier, "proposal")]
             current_metrics = tune_futility.compute_metrics(reference, baseline, current_candidate, settings.candidate_nodes, settings.score_scale, keys)
             proposal_metrics = tune_futility.compute_metrics(reference, baseline, proposal_candidate, settings.candidate_nodes, settings.score_scale, keys)
-            current_risk = risk_metrics(reference, baseline, current_candidate, keys, settings.score_scale)
-            proposal_risk = risk_metrics(reference, baseline, proposal_candidate, keys, settings.score_scale)
+            current_risk = risk_metrics(reference, current_candidate, keys, settings.score_scale)
+            proposal_risk = risk_metrics(reference, proposal_candidate, keys, settings.score_scale)
             current_gate = evaluate_gate(current_risk, track.gate)
             proposal_gate = evaluate_gate(proposal_risk, track.gate)
             improvement = current_metrics["mean_normalized_regret"] - proposal_metrics["mean_normalized_regret"]

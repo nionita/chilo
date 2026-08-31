@@ -349,20 +349,21 @@ anchor/rescue adapter, so all ordinary trusted and certified mate-rescue
 positions are included. The portable configuration is
 `scripts/futility_risk_analysis.example.json`.
 
-For each candidate it reports absolute normalized-regret tails and its
-position-by-position downside relative to a declared control (normally f01):
+For each candidate it reports normalized-regret tails directly against the
+deep reference-root scores. The reference is the appropriate safety standard:
+a candidate and f01 can share the same tactical failure, so a candidate-only
+excess over f01 would incorrectly report no additional risk.
 
 ```text
 CVaR top q% = mean regret of the worst ceil(q% * position_count) positions
-excess      = candidate regret - control regret
-positive downside = max(0, excess)
+mean squared regret = mean(candidate regret ^ 2)
 ```
 
 P99 is only the cutoff below which 99% of the regrets lie; CVaR top 1% is the
 average severity of the worst 1%. With SR4's 22,825 combined positions, that
-tail contains 229 positions. The tool also reports mean positive downside,
-mean squared positive downside, tail excess, regret-threshold rates, and
-reference-score semantic regressions. The initial semantic thresholds are
+tail contains 229 positions. The tool also reports mean squared regret,
+regret-threshold rates, and semantic reference-to-candidate transitions. The
+initial semantic thresholds are
 tentative: a clear non-mate advantage is at least +150 cp and a clear loss is
 at most -150 cp. Winning-mate loss is counted separately, so categories do not
 double-count those positions.
@@ -378,20 +379,20 @@ rule yet:
 | nearby / `spsa150b` | **0.329445** | 0.000542 | 0.321794 | 0.000520 |
 | center | 0.331604 | 0.000606 | 0.336676 | 0.000640 |
 
-Absolute CVaR alone would not have rejected `spsa150b`: on SR4 it is the best
-tail and on SR3 it is still better than f01. Relative downside is more
-suggestive—nearby is worse than the previous D5 on SR4's squared downside and
-top-1% excess—but it does not reproduce every cross-shard ordering either.
-The D3 tuple has the consistently smallest downside but not the best mean
-regret. These diagnostics expose a real mean-versus-risk trade-off; they do
-not yet justify a numerical safety threshold or a replacement objective.
+This historical table used f01-relative downside and is retained only as
+evidence from the earlier inspection; it is not a valid future gate. Absolute
+CVaR alone would not have rejected `spsa150b`: on SR4 it is the best tail and
+on SR3 it is still better than f01. The D3 tuple has the consistently smallest
+historical relative downside but not the best mean regret. These diagnostics
+expose a real mean-versus-risk trade-off; they do not yet justify a numerical
+safety threshold or a replacement objective.
 
 The eventual policy may be to reject candidates outside a calibrated risk
-envelope (for example, control-relative squared downside and CVaR) and rank
-the survivors by mean regret. First calibrate any such gate retrospectively on
-more known candidates and out-of-sample results. In particular, do not use a
-literal maximum-regret rule: a single unusually difficult or imperfectly
-referenced position would dominate it.
+envelope (for example, reference-relative mean squared regret and CVaR) and
+rank the survivors by mean regret. First calibrate any such gate
+retrospectively on more known candidates and out-of-sample results. In
+particular, do not use a literal maximum-regret rule: a single unusually
+difficult or imperfectly referenced position would dominate it.
 
 ### Future: real-game score-swing telemetry
 
@@ -413,7 +414,7 @@ classify each event as a pruning/horizon miss, an evaluation correction, or an
 ordinary depth limitation. A sufficiently large target-time-control failure
 corpus can later calibrate risk metrics against actual score collapses.
 
-## Gated Random Hill Climb — 2026-08-30
+## Gated Random Hill Climb — 2026-08-30, revised 2026-08-31
 
 `scripts/optimize_futility_gated.py` is a separate development-only optimizer
 for the case where mean normalized regret is useful but insufficient. It does
@@ -432,21 +433,26 @@ hidden safety defaults:
 ```json
 "gate": {
   "mode": "downside | cvar1 | both",
-  "max_squared_positive_excess": 0.000250,
-  "max_cvar1_excess": 0.120000,
+  "max_squared_regret": 0.002500,
+  "max_cvar1_regret": 0.350000,
   "min_mean_improvement": 0.000020,
   "max_stalled_attempts": 20
 }
 ```
 
-The two gate statistics use the same f01-relative calculation as
+The two gate statistics use the same direct reference calculation as
 `scripts/analyze_futility_risk.py` on the attempt subset:
 
-- **downside** is mean squared `max(0, candidate_regret - f01_regret)`;
-- **cvar1** is the mean of the worst `ceil(1% * sample_count)` raw
-  candidate-minus-f01 regret excesses; and
+- **downside** is mean squared candidate regret;
+- **cvar1** is the mean regret of the worst `ceil(1% * sample_count)`
+  candidate positions; and
 - **both** enforces both caps. Inactive limits are still recorded, allowing
   like-for-like comparison of the three modes.
+
+This is deliberately a breaking optimizer-contract change. The schemas are
+versioned, so an old f01-relative run cannot resume under the absolute gates;
+start a new run directory and calibrate the two absolute limits from known
+candidates on the development and untouched selection populations.
 
 The initial tuple must pass its selected gate on its first sampled evaluation.
 Afterward every accepted tuple has passed that gate when selected. A rejected

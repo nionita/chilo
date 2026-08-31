@@ -35,8 +35,8 @@ class GatedHillClimbTest(unittest.TestCase):
                     "margins": [120, 240, 360],
                     "gate": {
                         "mode": "both",
-                        "max_squared_positive_excess": 1.0,
-                        "max_cvar1_excess": 1.0,
+                        "max_squared_regret": 1.0,
+                        "max_cvar1_regret": 1.0,
                         "min_mean_improvement": 0.001,
                         "max_stalled_attempts": stalled,
                     },
@@ -68,7 +68,7 @@ class GatedHillClimbTest(unittest.TestCase):
 
     @staticmethod
     def risk(downside: float, cvar1: float) -> dict:
-        return {"excess_vs_control": {"mean_squared_positive": downside, "tail_mean": {"top_0.01": cvar1}}}
+        return {"absolute_regret": {"mean_squared": downside, "tail_mean": {"top_0.01": cvar1}}}
 
     def test_gate_modes_enforce_only_their_selected_limits(self) -> None:
         downside = gated.Gate("downside", 0.1, 0.1, 0.0, 1)
@@ -120,7 +120,7 @@ class GatedHillClimbTest(unittest.TestCase):
             root = Path(temporary)
             path = self.write_config(root, self.write_anchor(root))
             raw = json.loads(path.read_text(encoding="utf-8"))
-            del raw["gated_hillclimb"]["tracks"][0]["gate"]["max_cvar1_excess"]
+            del raw["gated_hillclimb"]["tracks"][0]["gate"]["max_cvar1_regret"]
             path.write_text(json.dumps(raw), encoding="utf-8")
             with self.assertRaisesRegex(gated.optimize_futility.OptimizationError, "missing required"):
                 gated.load_settings(path)
@@ -130,8 +130,8 @@ class GatedHillClimbTest(unittest.TestCase):
             root = Path(temporary)
             path = self.write_config(root, self.write_anchor(root))
             raw = json.loads(path.read_text(encoding="utf-8"))
-            raw["gated_hillclimb"]["tracks"][0]["gate"]["max_squared_positive_excess"] = 0.0
-            raw["gated_hillclimb"]["tracks"][0]["gate"]["max_cvar1_excess"] = 0.0
+            raw["gated_hillclimb"]["tracks"][0]["gate"]["max_squared_regret"] = 0.0
+            raw["gated_hillclimb"]["tracks"][0]["gate"]["max_cvar1_regret"] = 0.0
             path.write_text(json.dumps(raw), encoding="utf-8")
             settings = gated.load_settings(path)
             run_dir = root / "run"
