@@ -131,14 +131,22 @@ def read_historical_run(config_path: Path, item: Any) -> Dict[str, Any]:
             keys = sorted(rows["current"]["positions"])
             if not set(keys).issubset(set(anchor.trusted_keys)):
                 raise optimize_futility.OptimizationError(f"attempt run {identifier} {track} probe contains a key outside its configured anchor")
+            subset_reference = {
+                "positions": {key: anchor.reference["positions"][key] for key in keys},
+                "summary": anchor.reference["summary"],
+            }
+            subset_baseline = {
+                "positions": {key: anchor.baseline["positions"][key] for key in keys},
+                "summary": anchor.baseline["summary"],
+            }
             current_metrics = tune_futility.compute_metrics(
-                anchor.reference, anchor.baseline, rows["current"], manifest["candidate_nodes"], float(manifest.get("score_scale", 600)), keys
+                subset_reference, subset_baseline, rows["current"], manifest["candidate_nodes"], float(manifest.get("score_scale", 600)), keys
             )
             proposal_metrics = tune_futility.compute_metrics(
-                anchor.reference, anchor.baseline, rows["proposal"], manifest["candidate_nodes"], float(manifest.get("score_scale", 600)), keys
+                subset_reference, subset_baseline, rows["proposal"], manifest["candidate_nodes"], float(manifest.get("score_scale", 600)), keys
             )
-            current_risk = futility_risk.compute_risk_metrics(anchor.reference, rows["current"], keys, float(manifest.get("score_scale", 600)), [0.01], [], 150, -150)
-            proposal_risk = futility_risk.compute_risk_metrics(anchor.reference, rows["proposal"], keys, float(manifest.get("score_scale", 600)), [0.01], [], 150, -150)
+            current_risk = futility_risk.compute_risk_metrics(subset_reference, rows["current"], keys, float(manifest.get("score_scale", 600)), [0.01], [], 150, -150)
+            proposal_risk = futility_risk.compute_risk_metrics(subset_reference, rows["proposal"], keys, float(manifest.get("score_scale", 600)), [0.01], [], 150, -150)
             deltas = {
                 "mean_normalized_regret": value_at(proposal_metrics, ("mean_normalized_regret",), "proposal metrics") - value_at(current_metrics, ("mean_normalized_regret",), "current metrics"),
                 "mean_squared_regret": value_at(proposal_risk, ("absolute_regret", "mean_squared"), "proposal risk") - value_at(current_risk, ("absolute_regret", "mean_squared"), "current risk"),
