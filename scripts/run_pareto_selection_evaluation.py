@@ -143,16 +143,23 @@ def required_config(root: Path, config: Mapping[str, Any]) -> Dict[str, Any]:
     probe = require_file(root, config["probe"], "probe")
     weights = require_file(root, config["weights"], "weights")
     expected = config["required_existing_artifacts"]
-    if not isinstance(expected, dict) or set(expected) != {"probe_sha256", "weights_sha256", "source_frontier_sha256"}:
-        raise RuntimeError("required_existing_artifacts must contain only probe_sha256, weights_sha256, and source_frontier_sha256")
+    required_hashes = {"probe_sha256", "weights_sha256"}
+    optional_hashes = {"source_frontier_sha256"}
+    if not isinstance(expected, dict) or not required_hashes <= set(expected) or not set(expected) <= (required_hashes | optional_hashes):
+        raise RuntimeError(
+            "required_existing_artifacts must contain probe_sha256 and weights_sha256, "
+            "with optional source_frontier_sha256"
+        )
     frontier_path = source_run / "pareto_frontier.json"
     if not frontier_path.is_file():
         raise RuntimeError(f"missing completed optimizer frontier: {frontier_path}")
-    for label, path, expected_hash in (
+    identities = (
         ("probe", probe, expected["probe_sha256"]),
         ("weights", weights, expected["weights_sha256"]),
-        ("source frontier", frontier_path, expected["source_frontier_sha256"]),
-    ):
+    )
+    if "source_frontier_sha256" in expected:
+        identities += (("source frontier", frontier_path, expected["source_frontier_sha256"]),)
+    for label, path, expected_hash in identities:
         if not isinstance(expected_hash, str) or len(expected_hash) != 64:
             raise RuntimeError(f"required {label} SHA-256 must be a 64-character string")
         actual_hash = file_identity(path)["sha256"]
