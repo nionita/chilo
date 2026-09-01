@@ -663,9 +663,12 @@ trade-offs, not an implicitly scalar-ranked winner.
 
 Workers are part of the search contract. For each batch, every worker samples
 one parent uniformly from the same frozen archive snapshot, creates its
-deterministic perturbation, and evaluates it in parallel. Completed proposals
-are then applied to the archive in proposal-index order; the next batch sees
-the resulting archive.
+deterministic perturbation, and evaluates it in parallel. A generated tuple
+that was already evaluated, or is already queued in that batch, is dismissed
+and deterministically replaced before any probe is started; its dismissal
+count is retained with the proposal record. Completed proposals are then
+applied to the archive in proposal-index order; the next batch sees the
+resulting archive.
 
 After the fixed `max_proposals` budget, configured secondary semantic metrics
 decimate the final primary frontier sequentially. Each filter requests a
@@ -686,6 +689,17 @@ does not generate a runnable Pareto configuration or recommend thresholds.
 See `scripts/futility_gated_calibration.example.json` and
 `scripts/futility_gated_hillclimb.example.json` for schemas, not approved
 numeric settings.
+
+Every Windows/Linux package for this Pareto optimizer must also contain the
+untouched SR3-R2M input, its exact per-root anchor and certified mate-rescue
+sidecars, and a selection-evaluation launcher. After the SR4 search finishes,
+the launcher may automatically evaluate the mechanically retained shortlist;
+it must also allow an operator to name any other final numeric-frontier ID
+for a separate SR3-R2M run. This manual path is necessary when a small
+frontier is reviewed and an otherwise semantically filtered candidate is
+deliberately retained. Selection output must live outside the optimizer's
+existing `run/` directory and be resumable candidate-by-candidate without
+overwriting completed probe JSONL.
 
 Implementation does not authorize a package, optimizer run, full evaluation,
 or SPRT. Review the source/weights/anchor contract and the exact proposal

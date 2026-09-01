@@ -102,6 +102,29 @@ class ParetoSearchTest(unittest.TestCase):
             frontier = [self.record("a", (0, 1, 2), 0, 0), self.record("b", (1, 0, 2), 0, 0)]
             self.assertEqual(pareto.select_parent(frontier, settings, 9)["id"], pareto.select_parent(frontier, settings, 9)["id"])
 
+    def test_duplicate_tuple_is_dismissed_and_replaced_before_a_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = pareto.load_settings(self.write_config(root, self.write_anchor(root)))
+            parent = {"id": "initial", "margins": [120, 240, 360]}
+            duplicate = (100, 220, 340)
+            replacement = (140, 260, 380)
+
+            def fake_proposal(_parent, _settings, _proposal_index, replacement_attempt=0):
+                if replacement_attempt == 0:
+                    return duplicate, (-1, -1, -1), 40.0
+                return replacement, (1, 1, 1), 40.0
+
+            with patch.object(pareto, "make_proposal", side_effect=fake_proposal):
+                actual_parent, margins, direction, size, dismissed = pareto.make_unique_proposal(
+                    [parent], settings, 0, {duplicate}
+                )
+            self.assertEqual(actual_parent, parent)
+            self.assertEqual(margins, replacement)
+            self.assertEqual(direction, (1, 1, 1))
+            self.assertEqual(size, 40.0)
+            self.assertEqual(dismissed, 1)
+
     def test_full_population_batches_reuse_frontier_parents_without_current_probe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

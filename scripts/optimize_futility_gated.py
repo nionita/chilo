@@ -38,6 +38,7 @@ SEMANTIC_METRICS = {
     "clear_advantage_to_nonpositive",
     "nonlosing_to_losing",
 }
+MAX_DUPLICATE_REPLACEMENTS = 1000
 
 
 @dataclass(frozen=True)
@@ -202,10 +203,12 @@ def perturbation(settings: Settings, proposal_index: int) -> float:
     return settings.perturbation_c / ((proposal_index + 1) ** settings.perturbation_gamma)
 
 
-def make_proposal(parent: Margins, settings: Settings, proposal_index: int) -> Tuple[Margins, Tuple[int, ...], float]:
+def make_proposal(parent: Margins, settings: Settings, proposal_index: int, replacement_attempt: int = 0) -> Tuple[Margins, Tuple[int, ...], float]:
     vector = spsa_optimizer.to_vector(parent)
     size = perturbation(settings, proposal_index)
-    rng = random.Random(f"{settings.seed}:direction:{proposal_index}:{','.join(map(str, parent))}")
+    rng = random.Random(
+        f"{settings.seed}:direction:{proposal_index}:{replacement_attempt}:{','.join(map(str, parent))}"
+    )
     for _ in range(100):
         direction = tuple(1 if rng.randrange(2) else -1 for _ in vector)
         proposal = spsa_optimizer.project(tuple(value + size * sign for value, sign in zip(vector, direction)), settings.max_margin)
@@ -214,11 +217,31 @@ def make_proposal(parent: Margins, settings: Settings, proposal_index: int) -> T
     raise optimize_futility.OptimizationError("Pareto perturbation collapses after projection; increase perturbation_c or move away from bounds")
 
 
-def select_parent(frontier: Sequence[Mapping[str, Any]], settings: Settings, proposal_index: int) -> Mapping[str, Any]:
+def select_parent(
+    frontier: Sequence[Mapping[str, Any]], settings: Settings, proposal_index: int, replacement_attempt: int = 0
+) -> Mapping[str, Any]:
     if not frontier:
         raise optimize_futility.OptimizationError("cannot select a parent from an empty Pareto frontier")
     ordered = sorted(frontier, key=lambda item: (tuple(item["margins"]), str(item["id"])))
-    return ordered[random.Random(f"{settings.seed}:parent:{proposal_index}").randrange(len(ordered))]
+    return ordered[
+        random.Random(f"{settings.seed}:parent:{proposal_index}:{replacement_attempt}").randrange(len(ordered))
+    ]
+
+
+def make_unique_proposal(
+    frontier: Sequence[Mapping[str, Any]], settings: Settings, proposal_index: int, considered: set[Margins]
+) -> Tuple[Mapping[str, Any], Margins, Tuple[int, ...], float, int]:
+    """Generate a deterministic, as-yet-unevaluated tuple from a frozen frontier."""
+    for replacement_attempt in range(MAX_DUPLICATE_REPLACEMENTS):
+        parent = select_parent(frontier, settings, proposal_index, replacement_attempt)
+        parent_margins = tune_futility.validate_margins(parent["margins"], "Pareto parent margins")
+        margins, direction, size = make_proposal(parent_margins, settings, proposal_index, replacement_attempt)
+        if margins not in considered:
+            return parent, margins, direction, size, replacement_attempt
+    raise optimize_futility.OptimizationError(
+        "could not generate an unevaluated Pareto tuple after "
+        f"{MAX_DUPLICATE_REPLACEMENTS} attempts; increase perturbation_c or enlarge the feasible margin space"
+    )
 
 
 def probe_one(settings: Settings, run_dir: Path, identifier: str, margins: Margins) -> Mapping[str, Any]:
@@ -342,24 +365,32 @@ def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
         frontier_snapshot = current_frontier(state)
         batch_start = state["next_proposal"]
         batch_count = min(settings.workers, settings.max_proposals - batch_start)
+        considered = {
+            tune_futility.validate_margins(item["margins"], "Pareto evaluated margins")
+            for item in state["evaluations"]
+        }
         jobs = []
         for offset in range(batch_count):
             proposal_index = batch_start + offset
-            parent = select_parent(frontier_snapshot, settings, proposal_index)
-            parent_margins = tune_futility.validate_margins(parent["margins"], "Pareto parent margins")
-            margins, direction, size = make_proposal(parent_margins, settings, proposal_index)
-            jobs.append((proposal_index, parent, margins, direction, size))
+            parent, margins, direction, size, duplicate_dismissals = make_unique_proposal(
+                frontier_snapshot, settings, proposal_index, considered
+            )
+            considered.add(margins)
+            jobs.append((proposal_index, parent, margins, direction, size, duplicate_dismissals))
         candidates: Dict[int, Mapping[str, Any]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=settings.workers) as executor:
-            futures = {executor.submit(probe_one, settings, run_dir, f"candidate-{index:04d}", margins): index for index, _, margins, _, _ in jobs}
+            futures = {
+                executor.submit(probe_one, settings, run_dir, f"candidate-{index:04d}", margins): index
+                for index, _, margins, _, _, _ in jobs
+            }
             for future in concurrent.futures.as_completed(futures):
                 index = futures[future]
                 candidates[index] = future.result()
                 print(f"Pareto futility progress: proposal {index + 1}/{settings.max_proposals} ready", file=sys.stderr, flush=True)
-        for index, parent, margins, direction, size in jobs:
+        for index, parent, margins, direction, size, duplicate_dismissals in jobs:
             identifier = f"candidate-{index:04d}"
             record = evaluate(settings, run_dir, identifier, margins, candidates[index])
-            record.update({"kind": "proposal", "proposal_index": index, "parent_id": parent["id"], "parent_margins": list(parent["margins"]), "direction": list(direction), "perturbation": size, "batch_start": batch_start})
+            record.update({"kind": "proposal", "proposal_index": index, "parent_id": parent["id"], "parent_margins": list(parent["margins"]), "direction": list(direction), "perturbation": size, "duplicate_tuple_dismissals": duplicate_dismissals, "batch_start": batch_start})
             frontier, update = archive_update(current_frontier(state), record)
             record["archive_update"] = update
             state["evaluations"].append(record)
