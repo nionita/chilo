@@ -113,7 +113,7 @@ def required_config(root: Path, config: Mapping[str, Any]) -> Dict[str, Any]:
         raise RuntimeError(f"unexpected selection-evaluation schema (expected {SCHEMA})")
     required = {
         "source_run_dir", "probe", "weights", "candidate_nodes", "baseline_margins", "score_scale",
-        "report_every", "worker_limit", "selection",
+        "report_every", "worker_limit", "selection", "required_existing_artifacts",
     }
     unknown = sorted(set(config) - (required | {"schema", "purpose"}))
     missing = sorted(required - set(config))
@@ -142,6 +142,22 @@ def required_config(root: Path, config: Mapping[str, Any]) -> Dict[str, Any]:
         raise RuntimeError(f"missing optimizer run directory: {source_run}")
     probe = require_file(root, config["probe"], "probe")
     weights = require_file(root, config["weights"], "weights")
+    expected = config["required_existing_artifacts"]
+    if not isinstance(expected, dict) or set(expected) != {"probe_sha256", "weights_sha256", "source_frontier_sha256"}:
+        raise RuntimeError("required_existing_artifacts must contain only probe_sha256, weights_sha256, and source_frontier_sha256")
+    frontier_path = source_run / "pareto_frontier.json"
+    if not frontier_path.is_file():
+        raise RuntimeError(f"missing completed optimizer frontier: {frontier_path}")
+    for label, path, expected_hash in (
+        ("probe", probe, expected["probe_sha256"]),
+        ("weights", weights, expected["weights_sha256"]),
+        ("source frontier", frontier_path, expected["source_frontier_sha256"]),
+    ):
+        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+            raise RuntimeError(f"required {label} SHA-256 must be a 64-character string")
+        actual_hash = file_identity(path)["sha256"]
+        if actual_hash != expected_hash:
+            raise RuntimeError(f"{label} SHA-256 does not match this selection package: expected {expected_hash}, got {actual_hash}")
     source = require_file(root, selection["input"], "selection input")
     anchor = package_path(root, selection["anchor_dir"], "selection anchor_dir")
     rescue = package_path(root, selection["rescue_dir"], "selection rescue_dir")
