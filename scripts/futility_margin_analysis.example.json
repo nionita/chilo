@@ -1,0 +1,11 @@
+{
+  "analyzer": "../build/release-avx2/futility_margin_analysis",
+  "input": "/home/nicu/Tune/futility/futility-site-corpora/g4-alpha21-d7-s5/sites.fen",
+  "weights": "/home/nicu/NNUE/Nets/chilo-g4t1-64x8.bin",
+  "target_depth": 1,
+  "previous_margins": [],
+  "max_fens": 10000,
+  "sample_seed": 2029991717,
+  "report_every": 100,
+  "mate_position_policy": "keep_finite_moves"
+}

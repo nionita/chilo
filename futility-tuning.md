@@ -758,9 +758,8 @@ largest safe depth-1 margin using exact, full-window searches of each relevant
 quiet move. Then enable that established depth-1 rule while measuring depth 2,
 and continue through the chosen maximum depth. Each stage therefore tests the
 same recursive search policy that the following stage will actually use. The
-margin analysis is still to be implemented; its input corpus must be broad
-normal-game search traffic rather than the quiet-position NNUE training shards
-used by SR4 and SR3-R2M.
+margin analysis uses broad normal-game search traffic rather than the
+quiet-position NNUE training shards used by SR4 and SR3-R2M.
 
 `futility_site_collect` is the opt-in collection half of that work. It sweeps
 root FENs from an external broad-game corpus at a fixed depth, with futility
@@ -813,6 +812,77 @@ eligibility contract, both sampling seeds and limits, deduplication method,
 and raw/unique/final collection counts. `make futility_site_collect_tests`
 checks the callback's ordinary, disabled-depth, strict-beta, and
 non-pawn-material gates without changing normal-engine test coverage.
+
+`futility_margin_analysis` is the exact-search half. It does not simulate a
+sampled alpha-beta interior node: for every selected parent FEN it considers
+all legal quiet, non-checking moves and searches each candidate as an isolated
+single-root full-window search at `target_depth`, with no node cap. The current
+static evaluation is the unpruned parent evaluation. Depths below the target
+use exactly the supplied already-established margins; the target depth is left
+disabled, so the finite result measures the score effect of pruning that move.
+The output deliberately preserves the raw values rather than choosing a margin:
+`move_score - static_eval` is calculated later with `jq`.
+
+The analyzer excludes a parent that is in check or has no non-pawn material for
+the moving side. It independently excludes captures, promotions, castling,
+en-passant, and checking moves. A mate-score move is written to
+`mate-risks.jsonl`, never folded into the finite tail. The required
+`mate_position_policy` config controls whether finite moves from a parent with
+at least one mate move are retained (`keep_finite_moves`) or discarded only
+after every qualifying move was searched (`exclude_position`). The default
+example uses the former so the raw evidence remains available.
+
+Build the matching analyzer, copy
+`scripts/futility_margin_analysis.example.json`, set its three artifact paths
+and stage settings, then create a run directory:
+
+```bash
+make futility_margin_analysis_avx2
+python3 scripts/run_futility_margin_analysis.py \
+  --config scripts/futility_margin_analysis.example.json \
+  --run-dir ~/Tune/futility/margin-analysis/g4-alpha21-d1 \
+  --new
+```
+
+`max_fens: 0` keeps the complete corpus; a positive value uses the documented
+deterministic reservoir selected by `sample_seed`. The runner requires the
+collector's adjacent `sites.fen.manifest.json` and verifies its output hash
+before it selects FENs. It freezes the exact selected FENs and identities of
+the input, collector manifest, analyzer, weights, and config in
+`analysis_manifest.json`. Restart an interrupted matching run with:
+
+```bash
+python3 scripts/run_futility_margin_analysis.py \
+  --config scripts/futility_margin_analysis.example.json \
+  --run-dir ~/Tune/futility/margin-analysis/g4-alpha21-d1 \
+  --resume
+```
+
+`completed.indices` is the authoritative resume journal. Each line also stores
+the committed byte lengths of the two JSONL streams. Each index is added only
+after all of its finite records and any separate mate records have been
+flushed; a restart trims unjournaled trailing bytes before continuing. A resume
+rejects changed artifacts or settings rather than mixing evidence.
+
+For a first tail inspection, flatten the per-position JSONL and calculate the
+delta on demand:
+
+```bash
+jq -c '. + {delta: (.move_score - .static_eval)}' \
+  ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl
+
+jq -c 'select((.move_score - .static_eval) >= 300) + {delta: (.move_score - .static_eval)}' \
+  ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl
+
+jq -c . ~/Tune/futility/margin-analysis/g4-alpha21-d1/mate-risks.jsonl
+```
+
+Every `positions.jsonl` line has exactly the five finite fields `fen`,
+`static_eval`, `move`, `moving_piece`, and `move_score`. This is intentional so
+new questions can be asked with `jq` without prejudging new conditions. The
+workflow only gathers evidence. Choosing a margin after examining its tail,
+adding an exclusion, packaging a large run, or changing the engine remains an
+explicit follow-up decision.
 
 ### Old gated-D3 endpoint comparison — 2026-08-31
 
