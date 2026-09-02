@@ -40,11 +40,14 @@ struct Options {
     int siteMaxDepth = DEFAULT_SITE_MAX_DEPTH;
     int minBeta = 0;
     uint64_t nodeLimit = 0;
+    uint64_t maxRoots = 0;
     uint64_t maxSites = 0;
     uint64_t reportEvery = DEFAULT_REPORT_EVERY;
     uint64_t seed = 0;
+    uint64_t rootSeed = 0;
     bool minBetaProvided = false;
     bool seedProvided = false;
+    bool rootSeedProvided = false;
     bool helpRequested = false;
 };
 
@@ -52,6 +55,8 @@ struct RunStats {
     uint64_t inputLines = 0;
     uint64_t skippedLines = 0;
     uint64_t parseErrors = 0;
+    uint64_t validInputRoots = 0;
+    uint64_t selectedRoots = 0;
     uint64_t acceptedRoots = 0;
     uint64_t completedRoots = 0;
     uint64_t interruptedRoots = 0;
@@ -81,6 +86,8 @@ void printUsage() {
         << "      --node-limit <N>        Optional node cap per root (default: 0 = none)\n"
         << "      --site-max-depth <N>    Collect only residual depths 1..N (default: 5)\n"
         << "      --min-beta <cp>         Required strict beta floor for a non-losing site\n"
+        << "      --max-roots <N>         Search at most N uniformly sampled input occurrences (default: 0 = all)\n"
+        << "      --root-seed <N>         Required seed when --max-roots is positive\n"
         << "      --max-sites <N>         Keep at most N uniformly sampled occurrences (default: 0 = all)\n"
         << "      --report-every <N>      Report after N accepted roots (default: 100)\n"
         << "  -s, --seed <N>              Reservoir seed (default: time/process-derived)\n"
@@ -153,6 +160,13 @@ bool parseArgs(int argc, char** argv, Options& options) {
             const char* value = requireValue("--min-beta");
             if (value == nullptr || !parseInt(value, options.minBeta)) return false;
             options.minBetaProvided = true;
+        } else if (argument == "--max-roots") {
+            const char* value = requireValue("--max-roots");
+            if (value == nullptr || !parseUInt64(value, options.maxRoots)) return false;
+        } else if (argument == "--root-seed") {
+            const char* value = requireValue("--root-seed");
+            if (value == nullptr || !parseUInt64(value, options.rootSeed)) return false;
+            options.rootSeedProvided = true;
         } else if (argument == "--max-sites") {
             const char* value = requireValue("--max-sites");
             if (value == nullptr || !parseUInt64(value, options.maxSites)) return false;
@@ -175,6 +189,14 @@ bool parseArgs(int argc, char** argv, Options& options) {
     }
     if (options.depth <= options.siteMaxDepth) {
         std::cerr << "--depth must exceed --site-max-depth so the requested residual depth is reachable\n";
+        return false;
+    }
+    if (options.maxRoots > 0 && !options.rootSeedProvided) {
+        std::cerr << "--root-seed is required when --max-roots is positive\n";
+        return false;
+    }
+    if (options.maxRoots == 0 && options.rootSeedProvided) {
+        std::cerr << "--root-seed requires a positive --max-roots\n";
         return false;
     }
     return true;
@@ -314,6 +336,31 @@ std::filesystem::path manifestPathFor(const std::filesystem::path& output) {
     return std::filesystem::path(output.string() + ".manifest.json");
 }
 
+class RootReservoir {
+public:
+    RootReservoir(uint64_t capacity, uint64_t seed) : capacity_(capacity), rng_(seed) {}
+
+    void add(const std::string& fen) {
+        seen_++;
+        if (roots_.size() < capacity_) {
+            roots_.push_back(fen);
+            return;
+        }
+        std::uniform_int_distribution<uint64_t> distribution(0, seen_ - 1);
+        uint64_t replacement = distribution(rng_);
+        if (replacement < capacity_) roots_[static_cast<std::size_t>(replacement)] = fen;
+    }
+
+    uint64_t seen() const { return seen_; }
+    const std::vector<std::string>& roots() const { return roots_; }
+
+private:
+    uint64_t capacity_ = 0;
+    uint64_t seen_ = 0;
+    std::mt19937_64 rng_;
+    std::vector<std::string> roots_;
+};
+
 class SiteReservoir {
 public:
     SiteReservoir(uint64_t capacity, uint64_t seed, const std::filesystem::path& temporaryOutput)
@@ -373,15 +420,35 @@ void collectFutilitySite(const std::string& fen, void* userData) {
     data->reservoir->add(fen);
 }
 
-void printProgress(const RunStats& stats, uint64_t totalRows, std::chrono::steady_clock::time_point started) {
+bool extractInputFen(const std::string& line, RunStats& stats, std::string& fen) {
+    stats.inputLines++;
+    std::string text = trim(line);
+    if (text.empty() || text[0] == '#') {
+        stats.skippedLines++;
+        return false;
+    }
+    fen = extractFenField(text);
+    if (isHeaderField(fen)) {
+        stats.skippedLines++;
+        return false;
+    }
+    if (!looksLikeFen(fen)) {
+        stats.parseErrors++;
+        return false;
+    }
+    stats.validInputRoots++;
+    return true;
+}
+
+void printProgress(const RunStats& stats, uint64_t totalRoots, std::chrono::steady_clock::time_point started) {
     uint64_t elapsedMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count());
     double rootsPerSecond = elapsedMs == 0 ? 0.0 : static_cast<double>(stats.acceptedRoots) * 1000.0 / elapsedMs;
-    std::cout << "Futility-site collection: roots " << stats.acceptedRoots << "/" << totalRows
+    std::cout << "Futility-site collection: roots " << stats.acceptedRoots << "/" << totalRoots
               << ", eligible " << stats.eligibleSites << ", retained " << stats.retainedSites
               << ", elapsed " << std::fixed << std::setprecision(1) << (elapsedMs / 1000.0) << "s";
-    if (rootsPerSecond > 0.0 && totalRows > stats.inputLines) {
-        std::cout << ", ETA " << std::setprecision(1) << ((totalRows - stats.inputLines) / rootsPerSecond) << "s";
+    if (rootsPerSecond > 0.0 && totalRoots > stats.acceptedRoots) {
+        std::cout << ", ETA " << std::setprecision(1) << ((totalRoots - stats.acceptedRoots) / rootsPerSecond) << "s";
     }
     std::cout << '\n';
 }
@@ -411,10 +478,15 @@ void writeManifest(const std::filesystem::path& path, const std::vector<FileIden
            << "  \"site_contract\": {\"non_root\": true, \"non_pv\": true, \"not_in_check\": true, \"has_nonpawn_material\": true, \"min_beta_exclusive\": " << options.minBeta
            << ", \"max_remaining_depth\": " << options.siteMaxDepth
            << ", \"later_quiet_nonchecking_move\": true, \"before_eval_alpha_margin_gate\": true},\n"
-           << "  \"sampling\": {\"seed\": " << options.seed << ", \"max_sites\": " << options.maxSites
+           << "  \"root_sampling\": {\"max_roots\": " << options.maxRoots << ", \"seed\": ";
+    if (options.maxRoots == 0) stream << "null";
+    else stream << options.rootSeed;
+    stream << ", \"method\": \"" << (options.maxRoots == 0 ? "all_valid_input_occurrences" : "reservoir_occurrences") << "\"},\n"
+           << "  \"site_sampling\": {\"seed\": " << options.seed << ", \"max_sites\": " << options.maxSites
            << ", \"method\": \"" << (options.maxSites == 0 ? "all_occurrences" : "reservoir_occurrences") << "\"},\n"
            << "  \"counts\": {\"input_lines\": " << stats.inputLines << ", \"skipped_lines\": " << stats.skippedLines
-           << ", \"parse_errors\": " << stats.parseErrors << ", \"accepted_roots\": " << stats.acceptedRoots
+           << ", \"parse_errors\": " << stats.parseErrors << ", \"valid_input_roots\": " << stats.validInputRoots
+           << ", \"selected_roots\": " << stats.selectedRoots << ", \"accepted_roots\": " << stats.acceptedRoots
            << ", \"completed_roots\": " << stats.completedRoots << ", \"interrupted_roots\": " << stats.interruptedRoots
            << ", \"eligible_sites\": " << stats.eligibleSites << ", \"retained_sites\": " << stats.retainedSites
            << ", \"search_nodes\": " << stats.searchNodes << ", \"elapsed_ms\": " << stats.elapsedMs << "},\n"
@@ -462,48 +534,60 @@ int main(int argc, char** argv) {
         RunStats stats;
         auto started = std::chrono::steady_clock::now();
 
-        for (const FileIdentity& inputIdentity : inputs) {
-            std::ifstream input(inputIdentity.path);
-            if (!input) throw std::runtime_error("failed to open input " + inputIdentity.path.string());
-            std::string line;
-            while (std::getline(input, line)) {
-                stats.inputLines++;
-                std::string text = trim(line);
-                if (text.empty() || text[0] == '#') {
-                    stats.skippedLines++;
-                    continue;
+        std::vector<std::string> sampledRoots;
+        if (options.maxRoots > 0) {
+            RootReservoir rootReservoir(options.maxRoots, options.rootSeed);
+            for (const FileIdentity& inputIdentity : inputs) {
+                std::ifstream input(inputIdentity.path);
+                if (!input) throw std::runtime_error("failed to open input " + inputIdentity.path.string());
+                std::string line;
+                while (std::getline(input, line)) {
+                    std::string fen;
+                    if (extractInputFen(line, stats, fen)) rootReservoir.add(fen);
                 }
-                std::string fen = extractFenField(text);
-                if (isHeaderField(fen)) {
-                    stats.skippedLines++;
-                    continue;
-                }
-                if (!looksLikeFen(fen)) {
-                    stats.parseErrors++;
-                    continue;
-                }
-
-                Position position = parseFEN(fen);
-                resetDrawHistory(position);
-                SearchLimits limits{};
-                limits.depth = options.depth;
-                limits.nodeLimit = options.nodeLimit;
-                limits.parameters.futilityMaxDepth = 0;
-                limits.isolateTranspositionTable = true;
-                limits.futilitySiteMaxDepth = options.siteMaxDepth;
-                limits.futilitySiteMinBeta = options.minBeta;
-                limits.futilitySiteCallback = collectFutilitySite;
-                limits.futilitySiteUserData = &callbackData;
-
-                stats.acceptedRoots++;
-                SearchResult result = searchBestMove(position, limits);
-                stats.searchNodes += result.nodes;
-                if (result.completed) stats.completedRoots++;
-                else stats.interruptedRoots++;
-                stats.eligibleSites = reservoir.seen();
-                stats.retainedSites = reservoir.retained();
-                if (stats.acceptedRoots % options.reportEvery == 0) printProgress(stats, totalRows, started);
             }
+            sampledRoots = rootReservoir.roots();
+            stats.selectedRoots = static_cast<uint64_t>(sampledRoots.size());
+            std::cout << "Root sampling: selected " << stats.selectedRoots << " of " << stats.validInputRoots
+                      << " valid input occurrences with seed " << options.rootSeed << "\n";
+        }
+
+        const uint64_t totalRoots = options.maxRoots > 0 ? stats.selectedRoots : totalRows;
+        SearchLimits limits{};
+        limits.depth = options.depth;
+        limits.nodeLimit = options.nodeLimit;
+        limits.parameters.futilityMaxDepth = 0;
+        limits.isolateTranspositionTable = true;
+        limits.futilitySiteMaxDepth = options.siteMaxDepth;
+        limits.futilitySiteMinBeta = options.minBeta;
+        limits.futilitySiteCallback = collectFutilitySite;
+        limits.futilitySiteUserData = &callbackData;
+        auto searchRoot = [&](const std::string& fen) {
+            Position position = parseFEN(fen);
+            resetDrawHistory(position);
+            stats.acceptedRoots++;
+            SearchResult result = searchBestMove(position, limits);
+            stats.searchNodes += result.nodes;
+            if (result.completed) stats.completedRoots++;
+            else stats.interruptedRoots++;
+            stats.eligibleSites = reservoir.seen();
+            stats.retainedSites = reservoir.retained();
+            if (stats.acceptedRoots % options.reportEvery == 0) printProgress(stats, totalRoots, started);
+        };
+
+        if (options.maxRoots > 0) {
+            for (const std::string& fen : sampledRoots) searchRoot(fen);
+        } else {
+            for (const FileIdentity& inputIdentity : inputs) {
+                std::ifstream input(inputIdentity.path);
+                if (!input) throw std::runtime_error("failed to open input " + inputIdentity.path.string());
+                std::string line;
+                while (std::getline(input, line)) {
+                    std::string fen;
+                    if (extractInputFen(line, stats, fen)) searchRoot(fen);
+                }
+            }
+            stats.selectedRoots = stats.validInputRoots;
         }
 
         reservoir.finalize();
@@ -515,7 +599,7 @@ int main(int argc, char** argv) {
         FileIdentity output = identifyFile(outputPath.string());
         writeManifest(manifestPath, inputs, weights, output, options, stats);
         if (stats.acceptedRoots == 0 || stats.acceptedRoots % options.reportEvery != 0) {
-            printProgress(stats, totalRows, started);
+            printProgress(stats, totalRoots, started);
         }
         std::cout << "Wrote " << stats.retainedSites << " futility-site FEN occurrences to " << outputPath << "\n"
                   << "Wrote manifest " << manifestPath << "\n";

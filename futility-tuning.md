@@ -789,18 +789,23 @@ build/futility-site-collect-avx2/futility_site_collect \
   --weights /data/chilo-net.bin \
   --output /data/futility-sites.fen \
   --depth 7 --site-max-depth 5 --min-beta <chosen-cp-floor> \
+  --max-roots <N> --root-seed <seed> \
   --max-sites 0 --report-every 100
 ```
 
 `--input` is repeatable and accepts plain FEN rows (or a CSV whose first field
 is the FEN). `--min-beta` is required rather than silently choosing a safety
 policy, and `--depth` must exceed `--site-max-depth` so the deepest requested
-site is actually reachable. `--max-sites 0` keeps every occurrence; a positive cap uses seeded
-uniform reservoir sampling over occurrences and prints the selected seed. The
-tool refuses to overwrite the FEN output, its temporary output, or the
-adjacent `*.manifest.json`. The manifest locks input/output and NNUE SHA-256
-identities, source revision/dirty state, search settings, eligibility contract,
-sampling seed, and collection counts. `make futility_site_collect_tests`
+site is actually reachable. `--max-roots 0` searches every valid input
+occurrence. A positive `--max-roots` requires `--root-seed`; the collector
+makes one cheap read-only pass over the input to retain a uniform reservoir of
+root occurrences, then searches only that reservoir. It does not create an
+intermediate root file. `--max-sites 0` keeps every eligible site occurrence;
+a positive cap uses the separate `--seed` reservoir. The tool refuses to
+overwrite the FEN output, its temporary output, or the adjacent
+`*.manifest.json`. The manifest locks input/output and NNUE SHA-256 identities,
+source revision/dirty state, search settings, eligibility contract, both
+sampling seeds and limits, and collection counts. `make futility_site_collect_tests`
 checks the callback's ordinary, disabled-depth, strict-beta, and
 non-pawn-material gates without changing normal-engine test coverage.
 
