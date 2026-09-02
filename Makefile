@@ -53,7 +53,7 @@ WIN64_AVX2_BINS := $(WIN64_AVX2_DIR)/perft.exe $(WIN64_AVX2_DIR)/perft_diag.exe 
 	perft perft_diag engine_tests chilo selfplay_collect eval_fen nnue_eval_bench \
 	futility_stats futility_probe move_ordering_probe futility_site_collect futility_site_collect_avx2 futility_site_collect_tests futility_margin_analysis futility_margin_analysis_avx2 perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug \
 	futility_stats_debug futility_probe_debug move_ordering_probe_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
-	futility_stats_validate futility_probe_validate move_ordering_probe_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe nnue_eval_bench.exe futility_stats.exe futility_probe.exe move_ordering_probe.exe
+	futility_stats_validate futility_probe_validate move_ordering_probe_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe nnue_eval_bench.exe futility_stats.exe futility_probe.exe move_ordering_probe.exe futility_margin_analysis.exe futility_margin_analysis_avx2.exe
 
 all: release release-avx2 windows64 windows64-avx2 tests
 
@@ -121,6 +121,8 @@ nnue_eval_bench.exe: $(WIN64_DIR)/nnue_eval_bench.exe
 futility_stats.exe: $(WIN64_DIR)/futility_stats.exe
 futility_probe.exe: $(WIN64_DIR)/futility_probe.exe
 move_ordering_probe.exe: $(WIN64_DIR)/move_ordering_probe.exe
+futility_margin_analysis.exe: $(WIN64_DIR)/futility_margin_analysis.exe
+futility_margin_analysis_avx2.exe: $(WIN64_AVX2_DIR)/futility_margin_analysis.exe
 
 python-env:
 	bash ./scripts/setup_python_env.sh
@@ -299,6 +301,9 @@ $(WIN64_DIR)/futility_probe.exe: $(FUTILITY_PROBE_SRC) $(ENGINE_WIN64_OBJ) | $(W
 $(WIN64_DIR)/move_ordering_probe.exe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_OBJ)
 
+$(WIN64_DIR)/futility_margin_analysis.exe: $(FUTILITY_MARGIN_ANALYSIS_SRC) $(ENGINE_WIN64_OBJ) | $(WIN64_DIR)
+	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(FUTILITY_MARGIN_ANALYSIS_SRC) $(ENGINE_WIN64_OBJ)
+
 $(WIN64_AVX2_DIR)/perft.exe: $(PERFT_SRC) $(ENGINE_WIN64_AVX2_OBJ) | $(WIN64_AVX2_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(PERFT_SRC) $(ENGINE_WIN64_AVX2_OBJ)
 
@@ -328,6 +333,9 @@ $(WIN64_AVX2_DIR)/futility_probe.exe: $(FUTILITY_PROBE_SRC) $(ENGINE_WIN64_AVX2_
 
 $(WIN64_AVX2_DIR)/move_ordering_probe.exe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_AVX2_OBJ) | $(WIN64_AVX2_DIR)
 	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_WIN64_AVX2_OBJ)
+
+$(WIN64_AVX2_DIR)/futility_margin_analysis.exe: $(FUTILITY_MARGIN_ANALYSIS_SRC) $(ENGINE_WIN64_AVX2_OBJ) | $(WIN64_AVX2_DIR)
+	$(WIN64_CXX) $(WIN64_CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG $(WIN64_LDFLAGS) -o $@ $(FUTILITY_MARGIN_ANALYSIS_SRC) $(ENGINE_WIN64_AVX2_OBJ)
 
 $(RELEASE_DIR)/%.o: %.cpp $(ENGINE_HEADERS) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
