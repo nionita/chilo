@@ -152,6 +152,10 @@ bool loadNnueWeightsFile(const std::string& path, std::string& error);
 struct SearchResult;
 using SearchInfoCallback = void (*)(const SearchResult&, void*);
 
+#ifdef CHILO_FUTILITY_SITE_COLLECT
+using FutilitySiteCallback = void (*)(const std::string& fen, void* userData);
+#endif
+
 struct SearchSample {
     std::string rootFen;
     std::string evalFen;
@@ -205,6 +209,16 @@ struct SearchLimits {
     uint64_t nodeLimit = 0;
     SearchParameters parameters{};
     bool isolateTranspositionTable = false;
+#ifdef CHILO_FUTILITY_SITE_COLLECT
+    // Collector-only callback for a parent position that has reached a
+    // structurally eligible futility candidate. This is intentionally before
+    // the static-evaluation/alpha/margin condition, so collection is not tied
+    // to a particular net evaluation or current futility profile.
+    int futilitySiteMaxDepth = 0;
+    int futilitySiteMinBeta = -SEARCH_MATE_SCORE;
+    FutilitySiteCallback futilitySiteCallback = nullptr;
+    void* futilitySiteUserData = nullptr;
+#endif
     // Restrict the root to this one legal move. This preserves ordinary
     // iterative deepening while making the root search a full-window search.
     bool restrictRootMove = false;

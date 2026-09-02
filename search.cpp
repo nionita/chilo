@@ -91,6 +91,12 @@ uint64_t g_nodesSearched = 0;
 uint64_t g_nodeLimit = 0;
 SearchParameters g_searchParameters{};
 bool g_isolateTranspositionTable = false;
+#ifdef CHILO_FUTILITY_SITE_COLLECT
+int g_futilitySiteMaxDepth = 0;
+int g_futilitySiteMinBeta = -SEARCH_MATE_SCORE;
+FutilitySiteCallback g_futilitySiteCallback = nullptr;
+void* g_futilitySiteUserData = nullptr;
+#endif
 std::vector<TTEntry> g_tt(TT_SIZE);
 uint32_t g_ttGeneration = 0;
 Move g_killers[MAX_SEARCH_DEPTH][2];
@@ -875,6 +881,13 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
     int staticEval = 0;
     bool allowFutility = !isPv && depth <= g_searchParameters.futilityMaxDepth;
     if (allowFutility) staticEval = evaluateSearchPosition(pos, nnueState, nnuePly);
+#ifdef CHILO_FUTILITY_SITE_COLLECT
+    const bool allowFutilitySiteCollection =
+        g_futilitySiteCallback != nullptr && ply > 0 && !isPv && !inCheckNow &&
+        depth >= 1 && depth <= g_futilitySiteMaxDepth && beta > g_futilitySiteMinBeta &&
+        hasNonPawnMaterial(pos, pos.sideToMove);
+    bool reportedFutilitySite = false;
+#endif
 
     for (int i = 0; i < moveCount; i++) {
         const Move& move = moves[i];
@@ -882,6 +895,13 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
         CutoffMoveType cutoffMoveType =
             classifyCutoffMove(pos, move, isValidMove(ttMove) ? &ttMove : nullptr, ply);
         HistoryMoveInfo moveInfo = historyMoveInfo(pos, move);
+
+#ifdef CHILO_FUTILITY_SITE_COLLECT
+        const bool possibleFutilitySite =
+            allowFutilitySiteCollection && !reportedFutilitySite && i > 0 && quiet;
+        std::string futilitySiteFen;
+        if (possibleFutilitySite) futilitySiteFen = positionToFEN(pos);
+#endif
 
         bool childUsesNnue = childPieceCountAfterMove(pos, move) > NNUE_REBUILD_PIECE_THRESHOLD;
         NnueMoveDelta nnueDelta{};
@@ -893,6 +913,13 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
         pushSearchHistory(pos.hashKey, moveIsIrreversible(moveInfo, packCastling(pos)),
                           savedLastValid, savedLastIrreversible);
         bool givesCheck = inCheck(pos, pos.sideToMove);
+
+#ifdef CHILO_FUTILITY_SITE_COLLECT
+        if (possibleFutilitySite && !givesCheck) {
+            g_futilitySiteCallback(futilitySiteFen, g_futilitySiteUserData);
+            reportedFutilitySite = true;
+        }
+#endif
 
         if (allowFutility && i > 0 && quiet && !givesCheck &&
             static_cast<int64_t>(staticEval) + g_searchParameters.futilityMargins[depth] <= alpha) {
@@ -1040,6 +1067,14 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_nodeLimit = limits.nodeLimit;
     g_searchParameters = limits.parameters;
     g_isolateTranspositionTable = limits.isolateTranspositionTable;
+#ifdef CHILO_FUTILITY_SITE_COLLECT
+    g_futilitySiteMaxDepth = limits.futilitySiteMaxDepth;
+    if (g_futilitySiteMaxDepth < 0) g_futilitySiteMaxDepth = 0;
+    if (g_futilitySiteMaxDepth > MAX_FUTILITY_DEPTH) g_futilitySiteMaxDepth = MAX_FUTILITY_DEPTH;
+    g_futilitySiteMinBeta = limits.futilitySiteMinBeta;
+    g_futilitySiteCallback = limits.futilitySiteCallback;
+    g_futilitySiteUserData = limits.futilitySiteUserData;
+#endif
     if (g_searchParameters.futilityMaxDepth < 0) g_searchParameters.futilityMaxDepth = 0;
     if (g_searchParameters.futilityMaxDepth > MAX_FUTILITY_DEPTH) {
         g_searchParameters.futilityMaxDepth = MAX_FUTILITY_DEPTH;

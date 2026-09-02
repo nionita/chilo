@@ -744,6 +744,66 @@ Implementation does not authorize a package, optimizer run, full evaluation,
 or SPRT. Review the source/weights/anchor contract and the exact proposal
 budget before any new development-only experiment.
 
+### Future: empirical recursive futility bounds
+
+The Pareto work optimizes a score-regret proxy and can trade tactical mistakes
+against average score. A separate, deliberately conservative experiment is to
+measure a margin at which a quiet-move futility decision is non-losing for the
+current evaluator and search. It is not a replacement for score-regret or an
+SPRT: even a locally non-losing quiet-move rule can reduce the root depth that
+discovers an important tactic.
+
+The intended procedure is sequential by residual depth. First establish the
+largest safe depth-1 margin using exact, full-window searches of each relevant
+quiet move. Then enable that established depth-1 rule while measuring depth 2,
+and continue through the chosen maximum depth. Each stage therefore tests the
+same recursive search policy that the following stage will actually use. The
+margin analysis is still to be implemented; its input corpus must be broad
+normal-game search traffic rather than the quiet-position NNUE training shards
+used by SR4 and SR3-R2M.
+
+`futility_site_collect` is the opt-in collection half of that work. It sweeps
+root FENs from an external broad-game corpus at a fixed depth, with futility
+disabled, and writes plain canonical parent FEN occurrences. It deliberately
+does **not** write a move, alpha, beta, static evaluation, margin, or residual
+depth: the same position can later be useful with a new evaluator or at a
+different iterative-deepening depth. Occurrences are retained; a repeated
+opening or endgame position represents repeated exposure in the source games.
+
+A parent is reported once per internal node only after normal move ordering
+has reached a later (`i > 0`) quiet candidate that does not give check. The
+parent itself must be non-root, non-PV, not in check, have non-pawn material
+for the moving side, have remaining depth in `1..--site-max-depth`, and satisfy
+the explicit strict non-losing guard `beta > --min-beta`. Reporting happens
+before static evaluation and before the alpha-plus-margin gate, so it neither
+depends on the current NNUE score nor presupposes a futility tuple. The
+collector is compiled with `CHILO_FUTILITY_SITE_COLLECT` into separate object
+files; normal UCI and probe builds contain none of its callback path.
+
+Build and run it only with an explicit runtime NNUE file:
+
+```bash
+make futility_site_collect_avx2
+build/futility-site-collect-avx2/futility_site_collect \
+  --input /data/broad-game-roots.fen \
+  --weights /data/chilo-net.bin \
+  --output /data/futility-sites.fen \
+  --depth 7 --site-max-depth 5 --min-beta <chosen-cp-floor> \
+  --max-sites 0 --report-every 100
+```
+
+`--input` is repeatable and accepts plain FEN rows (or a CSV whose first field
+is the FEN). `--min-beta` is required rather than silently choosing a safety
+policy, and `--depth` must exceed `--site-max-depth` so the deepest requested
+site is actually reachable. `--max-sites 0` keeps every occurrence; a positive cap uses seeded
+uniform reservoir sampling over occurrences and prints the selected seed. The
+tool refuses to overwrite the FEN output, its temporary output, or the
+adjacent `*.manifest.json`. The manifest locks input/output and NNUE SHA-256
+identities, source revision/dirty state, search settings, eligibility contract,
+sampling seed, and collection counts. `make futility_site_collect_tests`
+checks the callback's ordinary, disabled-depth, strict-beta, and
+non-pawn-material gates without changing normal-engine test coverage.
+
 ### Old gated-D3 endpoint comparison — 2026-08-31
 
 The completed cloud archive is retained as

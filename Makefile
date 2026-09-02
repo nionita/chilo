@@ -22,6 +22,11 @@ ENGINE_DEBUG_OBJ := $(addprefix $(DEBUG_DIR)/,$(addsuffix .debug.o,$(ENGINE_NAME
 ENGINE_VALIDATE_OBJ := $(addprefix $(VALIDATE_DIR)/,$(addsuffix .validate.o,$(ENGINE_NAMES)))
 ENGINE_WIN64_OBJ := $(addprefix $(WIN64_DIR)/,$(addsuffix .win64.o,$(ENGINE_NAMES)))
 ENGINE_WIN64_AVX2_OBJ := $(addprefix $(WIN64_AVX2_DIR)/,$(addsuffix .win64-avx2.o,$(ENGINE_NAMES)))
+FUTILITY_SITE_COLLECT_DIR := $(BUILD_DIR)/futility-site-collect
+FUTILITY_SITE_COLLECT_AVX2_DIR := $(BUILD_DIR)/futility-site-collect-avx2
+FUTILITY_SITE_COLLECT_CPPFLAGS := -DCHILO_FUTILITY_SITE_COLLECT
+FUTILITY_SITE_COLLECT_ENGINE_OBJ := $(addprefix $(FUTILITY_SITE_COLLECT_DIR)/,$(addsuffix .o,$(ENGINE_NAMES)))
+FUTILITY_SITE_COLLECT_AVX2_ENGINE_OBJ := $(addprefix $(FUTILITY_SITE_COLLECT_AVX2_DIR)/,$(addsuffix .avx2.o,$(ENGINE_NAMES)))
 PERFT_SRC := perft.cpp
 PERFT_DIAG_SRC := perft_diag.cpp
 TEST_SRC := engine_tests.cpp
@@ -32,6 +37,8 @@ NNUE_EVAL_BENCH_SRC := nnue_eval_bench.cpp
 FUTILITY_STATS_SRC := futility_stats.cpp
 FUTILITY_PROBE_SRC := futility_probe.cpp
 MOVE_ORDERING_PROBE_SRC := move_ordering_probe.cpp
+FUTILITY_SITE_COLLECT_SRC := futility_site_collect.cpp
+FUTILITY_SITE_COLLECT_TEST_SRC := futility_site_collect_tests.cpp
 ENGINE_HEADERS := engine.h chess_position.h chess_tables.h $(GENERATED_DIR)/generated_nnue_weights.h
 VENV_PYTHON := .venv/bin/python
 RELEASE_BINS := $(RELEASE_DIR)/perft $(RELEASE_DIR)/perft_diag $(RELEASE_DIR)/engine_tests $(RELEASE_DIR)/chilo $(RELEASE_DIR)/selfplay_collect $(RELEASE_DIR)/eval_fen $(RELEASE_DIR)/nnue_eval_bench $(RELEASE_DIR)/futility_stats $(RELEASE_DIR)/futility_probe $(RELEASE_DIR)/move_ordering_probe
@@ -43,8 +50,8 @@ WIN64_AVX2_BINS := $(WIN64_AVX2_DIR)/perft.exe $(WIN64_AVX2_DIR)/perft_diag.exe 
 
 .PHONY: all clean release release-avx2 debug validate windows64 windows64-avx2 tests tests-debug tests-validate python-env nnue-python-tests nnue-verify \
 	perft perft_diag engine_tests chilo selfplay_collect eval_fen nnue_eval_bench \
-	futility_stats futility_probe perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug \
-	futility_stats_debug futility_probe_debug move_ordering_probe move_ordering_probe_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
+	futility_stats futility_probe move_ordering_probe futility_site_collect futility_site_collect_avx2 futility_site_collect_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug \
+	futility_stats_debug futility_probe_debug move_ordering_probe_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
 	futility_stats_validate futility_probe_validate move_ordering_probe_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe nnue_eval_bench.exe futility_stats.exe futility_probe.exe move_ordering_probe.exe
 
 all: release release-avx2 windows64 windows64-avx2 tests
@@ -77,6 +84,9 @@ nnue_eval_bench: $(RELEASE_DIR)/nnue_eval_bench
 futility_stats: $(RELEASE_DIR)/futility_stats
 futility_probe: $(RELEASE_DIR)/futility_probe
 move_ordering_probe: $(RELEASE_DIR)/move_ordering_probe
+futility_site_collect: $(FUTILITY_SITE_COLLECT_DIR)/futility_site_collect
+futility_site_collect_avx2: $(FUTILITY_SITE_COLLECT_AVX2_DIR)/futility_site_collect
+futility_site_collect_tests: $(FUTILITY_SITE_COLLECT_DIR)/futility_site_collect_tests
 
 perft_debug: $(DEBUG_DIR)/perft_debug
 perft_diag_debug: $(DEBUG_DIR)/perft_diag_debug
@@ -118,7 +128,7 @@ nnue-python-tests:
 nnue-verify:
 	$(VENV_PYTHON) scripts/verify_nnue_workflow.py
 
-$(RELEASE_DIR) $(RELEASE_AVX2_DIR) $(DEBUG_DIR) $(VALIDATE_DIR) $(WIN64_DIR) $(WIN64_AVX2_DIR):
+$(RELEASE_DIR) $(RELEASE_AVX2_DIR) $(DEBUG_DIR) $(VALIDATE_DIR) $(WIN64_DIR) $(WIN64_AVX2_DIR) $(FUTILITY_SITE_COLLECT_DIR) $(FUTILITY_SITE_COLLECT_AVX2_DIR):
 	mkdir -p $@
 
 $(RELEASE_DIR)/perft: $(PERFT_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
@@ -151,6 +161,15 @@ $(RELEASE_DIR)/futility_probe: $(FUTILITY_PROBE_SRC) $(ENGINE_OBJ) | $(RELEASE_D
 $(RELEASE_DIR)/move_ordering_probe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_OBJ)
 
+$(FUTILITY_SITE_COLLECT_DIR)/futility_site_collect: $(FUTILITY_SITE_COLLECT_SRC) $(FUTILITY_SITE_COLLECT_ENGINE_OBJ) | $(FUTILITY_SITE_COLLECT_DIR)
+	$(CXX) $(CXXFLAGS) $(FUTILITY_SITE_COLLECT_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_SITE_COLLECT_SRC) $(FUTILITY_SITE_COLLECT_ENGINE_OBJ)
+
+$(FUTILITY_SITE_COLLECT_DIR)/futility_site_collect_tests: $(FUTILITY_SITE_COLLECT_TEST_SRC) $(FUTILITY_SITE_COLLECT_ENGINE_OBJ) | $(FUTILITY_SITE_COLLECT_DIR)
+	$(CXX) $(CXXFLAGS) $(FUTILITY_SITE_COLLECT_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_SITE_COLLECT_TEST_SRC) $(FUTILITY_SITE_COLLECT_ENGINE_OBJ)
+
+$(FUTILITY_SITE_COLLECT_AVX2_DIR)/futility_site_collect: $(FUTILITY_SITE_COLLECT_SRC) $(FUTILITY_SITE_COLLECT_AVX2_ENGINE_OBJ) | $(FUTILITY_SITE_COLLECT_AVX2_DIR)
+	$(CXX) $(CXXFLAGS) $(FUTILITY_SITE_COLLECT_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_SITE_COLLECT_SRC) $(FUTILITY_SITE_COLLECT_AVX2_ENGINE_OBJ)
+
 $(RELEASE_AVX2_DIR)/perft: $(PERFT_SRC) $(ENGINE_AVX2_OBJ) | $(RELEASE_AVX2_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG -o $@ $(PERFT_SRC) $(ENGINE_AVX2_OBJ)
 
@@ -180,6 +199,12 @@ $(RELEASE_AVX2_DIR)/futility_probe: $(FUTILITY_PROBE_SRC) $(ENGINE_AVX2_OBJ) | $
 
 $(RELEASE_AVX2_DIR)/move_ordering_probe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_AVX2_OBJ) | $(RELEASE_AVX2_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG -o $@ $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_AVX2_OBJ)
+
+$(FUTILITY_SITE_COLLECT_DIR)/%.o: %.cpp $(ENGINE_HEADERS) | $(FUTILITY_SITE_COLLECT_DIR)
+	$(CXX) $(CXXFLAGS) $(FUTILITY_SITE_COLLECT_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
+
+$(FUTILITY_SITE_COLLECT_AVX2_DIR)/%.avx2.o: %.cpp $(ENGINE_HEADERS) | $(FUTILITY_SITE_COLLECT_AVX2_DIR)
+	$(CXX) $(CXXFLAGS) $(FUTILITY_SITE_COLLECT_CPPFLAGS) $(AVX2_CPPFLAGS) -O3 -DNDEBUG -c -o $@ $<
 
 $(DEBUG_DIR)/perft_debug: $(PERFT_SRC) $(ENGINE_DEBUG_OBJ) | $(DEBUG_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O0 -g -o $@ $(PERFT_SRC) $(ENGINE_DEBUG_OBJ)
