@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 
-SCHEMA = "chilo.futility_margin_analysis.v1"
+SCHEMA = "chilo.futility_margin_analysis.v2"
 
 
 def sha256(path: Path) -> str:
@@ -44,10 +44,10 @@ def load_settings(config_path: Path) -> Dict[str, Any]:
         raw = json.loads(raw_bytes)
     except json.JSONDecodeError as error:
         raise SystemExit(f"invalid JSON config: {error}") from error
-    allowed = {"analyzer", "input", "weights", "target_depth", "previous_margins", "max_fens", "sample_seed", "report_every", "mate_position_policy"}
+    allowed = {"analyzer", "input", "weights", "target_depth", "previous_margins", "max_fens", "sample_seed", "report_every"}
     if not isinstance(raw, dict) or set(raw) - allowed:
-        raise SystemExit("config must be an object with only analyzer, input, weights, target_depth, previous_margins, max_fens, sample_seed, report_every, and mate_position_policy")
-    for key in ("analyzer", "input", "weights", "target_depth", "previous_margins", "max_fens", "sample_seed", "report_every", "mate_position_policy"):
+        raise SystemExit("config must be an object with only analyzer, input, weights, target_depth, previous_margins, max_fens, sample_seed, and report_every")
+    for key in ("analyzer", "input", "weights", "target_depth", "previous_margins", "max_fens", "sample_seed", "report_every"):
         if key not in raw:
             raise SystemExit(f"missing required config field: {key}")
     analyzer = resolve(config_path, raw["analyzer"])
@@ -64,9 +64,6 @@ def load_settings(config_path: Path) -> Dict[str, Any]:
     max_fens = require_int(raw["max_fens"], "max_fens")
     seed = require_int(raw["sample_seed"], "sample_seed")
     report_every = require_int(raw["report_every"], "report_every", 1)
-    policy = raw["mate_position_policy"]
-    if policy not in ("keep_finite_moves", "exclude_position"):
-        raise SystemExit("mate_position_policy must be keep_finite_moves or exclude_position")
     sidecar = Path(str(input_path) + ".manifest.json")
     if not sidecar.is_file():
         raise SystemExit(f"input manifest not found: {sidecar}")
@@ -79,7 +76,7 @@ def load_settings(config_path: Path) -> Dict[str, Any]:
         raise SystemExit("input SHA-256 does not match its adjacent collector manifest")
     return {"raw_sha256": hashlib.sha256(raw_bytes).hexdigest(), "analyzer": analyzer, "input": input_path, "weights": weights,
             "target_depth": target_depth, "previous_margins": margins, "max_fens": max_fens, "sample_seed": seed,
-            "report_every": report_every, "mate_position_policy": policy, "input_manifest": identity(sidecar)}
+            "report_every": report_every, "input_manifest": identity(sidecar)}
 
 
 def select_fens(input_path: Path, maximum: int, seed: int) -> List[str]:
@@ -125,7 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "input_manifest": settings.pop("input_manifest"), "weights": identity(settings["weights"]),
                 "target_depth": settings["target_depth"], "previous_margins": settings["previous_margins"],
                 "max_fens": settings["max_fens"], "sample_seed": settings["sample_seed"],
-                "report_every": settings["report_every"], "mate_position_policy": settings["mate_position_policy"]}
+                "report_every": settings["report_every"], "analysis_method": "normal_best_quiet_v1"}
     if args.new:
         if run_dir.exists():
             raise SystemExit(f"new run directory already exists: {run_dir}")
@@ -150,7 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     command = [str(settings["analyzer"]), "--input", str(selected_path), "--weights", str(settings["weights"]),
                "--target-depth", str(settings["target_depth"]), "--previous-margins", ",".join(str(value) for value in settings["previous_margins"]) or "-",
-               "--mate-policy", settings["mate_position_policy"], "--results", str(result_path), "--mates", str(mates_path),
+               "--results", str(result_path), "--mates", str(mates_path),
                "--completed", str(completed_path), "--report-every", str(settings["report_every"])]
     print("Command:", subprocess.list2cmdline(command))
     if args.dry_run:

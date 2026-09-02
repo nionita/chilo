@@ -53,7 +53,6 @@ def main() -> int:
     parser.add_argument("--max-fens", type=int, default=0)
     parser.add_argument("--sample-seed", type=int, required=True)
     parser.add_argument("--report-every", type=int, default=100)
-    parser.add_argument("--mate-position-policy", choices=("keep_finite_moves", "exclude_position"), default="keep_finite_moves")
     args = parser.parse_args()
     if not 1 <= args.target_depth <= 7:
         raise SystemExit("--target-depth must be in 1..7")
@@ -102,7 +101,6 @@ def main() -> int:
         "max_fens": args.max_fens,
         "sample_seed": args.sample_seed,
         "report_every": args.report_every,
-        "mate_position_policy": args.mate_position_policy,
     }
     (output / "config").mkdir()
     (output / "config" / "calibration.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -131,7 +129,7 @@ def main() -> int:
     )
     files = [path for path in sorted(output.rglob("*")) if path.is_file()]
     manifest = {
-        "schema": "chilo.futility_margin_analysis.package.v1",
+        "schema": "chilo.futility_margin_analysis.package.v2",
         "purpose": "Exact recursive futility-margin analysis on Windows",
         "git_revision": revision,
         "source_dirty": dirty,
@@ -140,7 +138,7 @@ def main() -> int:
         "previous_margins": margins,
         "max_fens": args.max_fens,
         "sample_seed": args.sample_seed,
-        "mate_position_policy": args.mate_position_policy,
+        "analysis_method": "normal_best_quiet_v1",
         "files": [identity(path, output) for path in files],
     }
     manifest_path = output / "package_manifest.json"

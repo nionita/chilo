@@ -23,7 +23,6 @@ struct Options {
     int targetDepth = 0;
     std::vector<int> previousMargins;
     bool previousMarginsProvided = false;
-    std::string matePolicy;
     uint64_t reportEvery = 100;
 };
 
@@ -49,7 +48,7 @@ std::string trim(const std::string& text) {
 void usage() {
     std::cout
         << "Usage: futility_margin_analysis --input selected.fens --weights net.bin --target-depth N\\n"
-        << "       --previous-margins M1[,M2,...] --mate-policy keep_finite_moves|exclude_position\\n"
+        << "       --previous-margins M1[,M2,...]\\n"
         << "       --results positions.jsonl --mates mate-risks.jsonl --completed completed.indices [options]\\n"
         << "Options:\\n"
         << "  --report-every N    Progress interval in completed FENs (default: 100)\\n";
@@ -113,8 +112,6 @@ bool parseArgs(int argc, char** argv, Options& options) {
             const char* item = value("--previous-margins");
             if (item == nullptr || !parseMargins(item, options.previousMargins)) return false;
             options.previousMarginsProvided = true;
-        } else if (argument == "--mate-policy") {
-            const char* item = value("--mate-policy"); if (item == nullptr) return false; options.matePolicy = item;
         } else if (argument == "--results") {
             const char* item = value("--results"); if (item == nullptr) return false; options.resultsPath = item;
         } else if (argument == "--mates") {
@@ -131,16 +128,12 @@ bool parseArgs(int argc, char** argv, Options& options) {
     }
     if (options.inputPath.empty() || options.weightsPath.empty() || options.resultsPath.empty() || options.matesPath.empty() ||
         options.completedPath.empty() || options.targetDepth < 1 || options.targetDepth > MAX_FUTILITY_DEPTH ||
-        !options.previousMarginsProvided || options.matePolicy.empty()) {
-        std::cerr << "--input, --weights, --target-depth, --previous-margins, --mate-policy, --results, --mates, and --completed are required\\n";
+        !options.previousMarginsProvided) {
+        std::cerr << "--input, --weights, --target-depth, --previous-margins, --results, --mates, and --completed are required\\n";
         return false;
     }
     if (options.previousMargins.size() != static_cast<std::size_t>(options.targetDepth - 1)) {
         std::cerr << "--previous-margins must contain exactly target-depth - 1 values\\n";
-        return false;
-    }
-    if (options.matePolicy != "keep_finite_moves" && options.matePolicy != "exclude_position") {
-        std::cerr << "--mate-policy must be keep_finite_moves or exclude_position\\n";
         return false;
     }
     return true;
@@ -257,7 +250,7 @@ int main(int argc, char** argv) {
         parameters.futilityMaxDepth = options.targetDepth - 1;
         for (std::size_t i = 0; i < options.previousMargins.size(); i++) parameters.futilityMargins[i + 1] = options.previousMargins[i];
 
-        uint64_t index = 0, done = 0, skipped = 0, finite = 0, mateCount = 0;
+        uint64_t index = 0, done = 0, parentIneligible = 0, bestMoveIneligible = 0, finite = 0, mateCount = 0;
         std::string fen;
         while (std::getline(input, fen)) {
             fen = trim(fen);
@@ -271,33 +264,26 @@ int main(int argc, char** argv) {
             std::vector<MoveRecord> finiteMoves;
             std::vector<MateRecord> mateMoves;
             if (inCheck(position, position.sideToMove) || !hasNonPawnMaterial(position, position.sideToMove)) {
-                skipped++;
+                parentIneligible++;
             } else {
-                Move moves[MAX_MOVES];
-                const int count = genLegalMoves(position, moves);
-                for (int moveIndex = 0; moveIndex < count; moveIndex++) {
-                    const Move& move = moves[moveIndex];
-                    if (!quietMove(position, move)) continue;
-                    const Piece piece = pieceAt(position, move.from);
-                    UndoState undoState;
-                    doMove(position, move, undoState);
-                    const bool givesCheck = inCheck(position, position.sideToMove);
-                    undo(position, move, undoState);
-                    if (givesCheck) continue;
-
-                    SearchLimits limits{};
-                    limits.depth = options.targetDepth;
-                    limits.parameters = parameters;
-                    limits.isolateTranspositionTable = true;
-                    limits.restrictRootMove = true;
-                    limits.rootMove = move;
-                    Position searchPosition = position;
-                    resetDrawHistory(searchPosition);
-                    const SearchResult result = searchBestMove(searchPosition, limits);
-                    if (!result.completed || !result.hasMove) {
-                        throw std::runtime_error("search did not complete for input index " + std::to_string(index));
-                    }
-                    MoveRecord record{moveToUCI(move), pieceSymbol(piece), result.score};
+                SearchLimits limits{};
+                limits.depth = options.targetDepth;
+                limits.parameters = parameters;
+                limits.isolateTranspositionTable = true;
+                const SearchResult result = searchBestMove(position, limits);
+                if (!result.completed || !result.hasMove) {
+                    throw std::runtime_error("normal search did not complete for input index " + std::to_string(index));
+                }
+                const Move& bestMove = result.bestMove;
+                const Piece piece = pieceAt(position, bestMove.from);
+                UndoState undoState;
+                doMove(position, bestMove, undoState);
+                const bool givesCheck = inCheck(position, position.sideToMove);
+                undo(position, bestMove, undoState);
+                if (!quietMove(position, bestMove) || givesCheck) {
+                    bestMoveIneligible++;
+                } else {
+                    MoveRecord record{moveToUCI(bestMove), pieceSymbol(piece), result.score};
                     if (isMateScore(result.score)) {
                         mateMoves.push_back({record.move, record.movingPiece, record.score, mateDistancePlies(result.score),
                                              result.score > 0 ? "win" : "loss"});
@@ -305,7 +291,6 @@ int main(int argc, char** argv) {
                         finiteMoves.push_back(record);
                     }
                 }
-                if (!mateMoves.empty() && options.matePolicy == "exclude_position") finiteMoves.clear();
             }
 
             const std::string finiteOutput = formatFiniteMoves(fen, staticEval, finiteMoves);
@@ -317,12 +302,14 @@ int main(int argc, char** argv) {
             completedOut.flush();
             done++; finite += finiteMoves.size(); mateCount += mateMoves.size();
             if (done % options.reportEvery == 0) {
-                std::cout << "Futility-margin progress: completed " << done << ", finite moves " << finite
-                          << ", mates " << mateCount << ", parent-ineligible " << skipped << "\n";
+                std::cout << "Futility-margin progress: completed " << done << ", quiet best moves " << finite
+                          << ", quiet best mates " << mateCount << ", parent-ineligible " << parentIneligible
+                          << ", best-move-ineligible " << bestMoveIneligible << "\n";
             }
         }
-        std::cout << "Futility-margin complete: positions " << done << ", finite moves " << finite
-                  << ", mate moves " << mateCount << ", parent-ineligible " << skipped << "\n";
+        std::cout << "Futility-margin complete: positions " << done << ", quiet best moves " << finite
+                  << ", quiet best mates " << mateCount << ", parent-ineligible " << parentIneligible
+                  << ", best-move-ineligible " << bestMoveIneligible << "\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "fatal: " << error.what() << '\n';

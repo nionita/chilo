@@ -813,24 +813,22 @@ and raw/unique/final collection counts. `make futility_site_collect_tests`
 checks the callback's ordinary, disabled-depth, strict-beta, and
 non-pawn-material gates without changing normal-engine test coverage.
 
-`futility_margin_analysis` is the exact-search half. It does not simulate a
-sampled alpha-beta interior node: for every selected parent FEN it considers
-all legal quiet, non-checking moves and searches each candidate as an isolated
-single-root full-window search at `target_depth`, with no node cap. The current
-static evaluation is the unpruned parent evaluation. Depths below the target
-use exactly the supplied already-established margins; the target depth is left
-disabled, so the finite result measures the score effect of pruning that move.
-The output deliberately preserves the raw values rather than choosing a margin:
-`move_score - static_eval` is calculated later with `jq`.
+`futility_margin_analysis` is the normal-search oracle half. For every selected
+parent FEN it makes one unrestricted normal PVS search at `target_depth`, with
+the supplied established margins enabled only below the target depth. The
+target-depth futility rule remains disabled. It retains an observation only
+when that search's actual best move is a quiet, non-checking move; captures,
+promotions, checking moves, and other ineligible best moves contribute no
+finite observation. The retained move score is the normal best score `B`, so
+the required finite margin is `max(0, B - static_eval)`. This asks whether a
+quiet move can preserve the node's final value, rather than whether every quiet
+move can improve over static evaluation in isolation.
 
 The analyzer excludes a parent that is in check or has no non-pawn material for
-the moving side. It independently excludes captures, promotions, castling,
-en-passant, and checking moves. A mate-score move is written to
-`mate-risks.jsonl`, never folded into the finite tail. The required
-`mate_position_policy` config controls whether finite moves from a parent with
-at least one mate move are retained (`keep_finite_moves`) or discarded only
-after every qualifying move was searched (`exclude_position`). The default
-example uses the former so the raw evidence remains available.
+the moving side. A quiet best move that has a mate score is written to
+`mate-risks.jsonl`, never folded into the finite tail. The former per-position
+mate policy is intentionally gone: a normal best move is the only candidate
+that can establish a finite observation.
 
 Build the matching analyzer, copy
 `scripts/futility_margin_analysis.example.json`, set its three artifact paths

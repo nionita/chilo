@@ -6,6 +6,5 @@
   "previous_margins": [],
   "max_fens": 10000,
   "sample_seed": 2029991717,
-  "report_every": 100,
-  "mate_position_policy": "keep_finite_moves"
+  "report_every": 100
 }

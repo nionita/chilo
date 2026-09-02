@@ -33,7 +33,6 @@ class MarginAnalysisRunnerTest(unittest.TestCase):
             "analyzer": str(analyzer), "input": str(sites), "weights": str(weights),
             "target_depth": 2, "previous_margins": [75], "max_fens": 2,
             "sample_seed": 9, "report_every": 1,
-            "mate_position_policy": "exclude_position",
         }), encoding="utf-8")
         return config, directory / "run"
 
