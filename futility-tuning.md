@@ -6,20 +6,59 @@ selects SPRT candidates; it does not establish playing strength.
 
 ## Accepted SPRT Basis
 
-`f21` is the current practical playing basis: its 6+0.1 SPRT against `f01`
+`f21` is the established practical control: its 6+0.1 SPRT against `f01`
 accepted H1, and its longer-control SPRT against the source `g4t1-64x8`
-accepted H1. Future futility SPRTs compare candidates against f21. `f01`
-remains frozen as the anchor baseline, baseline-depth measurement, and a
-stable comparison variant. The deep per-root reference, not f01, defines the
-current tail-risk safety gates. Do not replace or overwrite either binary.
+accepted H1. `spsa150b` subsequently accepted H1 against `f21` at 30+0.5 and
+is therefore the strongest directly tested futility tuple. `f01` remains
+frozen as the anchor baseline, baseline-depth measurement, and a stable
+comparison variant. The deep per-root reference, not f01, defines the current
+tail-risk safety gates. Do not replace or overwrite either binary.
 
 | Binary | Margins | Status |
 |---|---|---|
 | `chilo-0.7.5-f01-avx2` | `120,240,360` | Accepted previous basis; frozen anchor baseline. |
 | `chilo-0.7.5-f21-avx2` | `75,212,390,600,839` | H1 accepted versus f01 at 6+0.1 and source `g4t1-64x8` at longer control; practical SPRT basis. |
+| `chilo-0.7.5-spsa150b-avx2` | `0,40,158,488,754` | H1 accepted versus f21 at 30+0.5; strongest directly tested tuple. |
 
 The variant manifest for `f01` through `f06` is maintained externally at
 `~/Tune/futility/futility-sprt-g4t1-64x8-d3-d5-first.json`.
+
+## Full SR4/SR3-R2M f21 and SPSA-150B Matrix — 2026-09-02
+
+The returned Windows archive
+`~/Tune/futility/g3-sr4-sr3-r2m-f21-spsa150b-matrix-win-rez.zip` (SHA-256
+`79336a596c0aacc4c9d0f63f9f26a4b4bb0aa8c58c5431f25f37129b477693fc`)
+contains four fresh, complete normal-PVS 120k probes: `f21` and `spsa150b` on
+full G3-SR4 development and untouched G3-SR3-R2M selection inputs. Its package
+artifacts, inputs, `per_root_v1` anchors, rescue sidecars, controls, probe,
+and weights all match the package manifest. Analysis uses 22,825 trusted SR4
+and 22,934 trusted SR3-R2M positions.
+
+The SR3-R2M table is the current validation view. Lower is better for every
+metric except that the semantic columns are direct regression counts, which
+are also lower-is-better. `Clear` is clear advantage lost and `Adv-><=0` is a
+clear advantage becoming non-positive.
+
+| Rank | Candidate | Margins | Mean regret | Squared | P95 | P99 | CVaR 1% | Mates / Clear / Adv-><=0 / Nonlose->loss | SPRT evidence |
+|---:|---|---|---:|---:|---:|---:|---:|---:|---|
+| 1 | `d3-0009` | `0,25,139` | **0.014369** | **0.002076** | **0.084819** | **0.199647** | **0.312449** | 218 / 216 / **17** / **14** | Not tested. |
+| 2 | `spsa150b` | `0,40,158,488,754` | 0.014452 | 0.002167 | 0.084990 | 0.201051 | 0.321794 | **205** / 221 / 19 / 16 | H1 accepted versus f21 at 30+0.5. |
+| 3 | `d3-0062` | `0,58,205` | 0.014732 | 0.002231 | 0.086320 | 0.206254 | 0.325278 | 228 / 217 / 22 / 16 | Not tested. |
+| 4 | `f21` | `75,212,390,600,839` | 0.014778 | 0.002278 | 0.085782 | 0.203774 | 0.329138 | 220 / 223 / 21 / 18 | H1 accepted versus f01; established control. |
+| 5 | `f01` | `120,240,360` | 0.015140 | 0.002343 | 0.088668 | 0.208117 | 0.330023 | 230 / 228 / 21 / 18 | Lost to f21. |
+
+`spsa150b` beats `f21` on every listed continuous metric on both full
+populations; on SR3-R2M its mean regret is 2.25% lower, squared regret 5.12%
+lower, and CVaR-1% 2.28% lower. The observed proxy and known game-strength
+ordering therefore agree for the two direct edges `f01 < f21 < spsa150b`.
+This is encouraging calibration evidence, not an Elo conversion or a license
+to promote a proxy winner without SPRT.
+
+`d3-0009` is the best untouched-selection proxy tuple, including every
+continuous risk metric. It has no game-strength evidence, so its apparent
+advantage over `spsa150b` is a hypothesis for a direct SPRT, not a claim of
+superior playing strength. `d3-0062` trails both on SR3-R2M and has no current
+reason to receive priority over that comparison.
 
 ## G3-SR1 Candidate Filter — 2026-08-21
 
