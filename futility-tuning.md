@@ -864,8 +864,8 @@ after all of its finite records and any separate mate records have been
 flushed; a restart trims unjournaled trailing bytes before continuing. A resume
 rejects changed artifacts or settings rather than mixing evidence.
 
-For a first tail inspection, flatten the per-position JSONL and calculate the
-delta on demand:
+For an ad-hoc small inspection, flatten the per-position JSONL and calculate
+the delta on demand:
 
 ```bash
 jq -c '. + {delta: (.move_score - .static_eval)}' \
@@ -883,6 +883,27 @@ new questions can be asked with `jq` without prejudging new conditions. The
 workflow only gathers evidence. Choosing a margin after examining its tail,
 adding an exclusion, packaging a large run, or changing the engine remains an
 explicit follow-up decision.
+
+For a complete multi-gigabyte finite stream, use the native read-only tail
+scanner instead of repeatedly parsing it with `jq`. Its single current
+exemption is a passed-pawn advance, defined on the pre-move FEN as having no
+opposing pawn ahead on the same or adjacent file. The destination rank is
+relative to the pawn's side: Black `d3d2`, for example, reaches rank seven.
+
+```bash
+make futility_margin_tail
+build/release/futility_margin_tail \
+  --input ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl \
+  --passed-pawn-min-destination-rank 7 \
+  --top 20 > tail-rank7.json
+```
+
+`--passed-pawn-min-destination-rank 0` disables the exemption and gives the
+unfiltered baseline. The scanner writes one JSON report with all/positive and
+excluded counts, plus the maximum and top remaining positive moves. It uses no
+NNUE weights and performs no engine search. It is exploratory only: do not add
+the corresponding live futility exemption until the retained tail evidence has
+stabilized.
 
 ### Old gated-D3 endpoint comparison — 2026-08-31
 
