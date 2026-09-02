@@ -74,6 +74,21 @@ int main() {
     ok &= check(!report.top.empty() && report.top.front().move == "h1h2" && report.top.front().delta == 700,
                 "top result is descending after exclusion");
 
+    std::istringstream staticEvalInput(
+        json(record(rookMove, -401, "h1h2", 'R', 99)) +
+        json(record(whitePassed, -400, "d5d6", 'P', 10)) +
+        json(record(blackPassed, 400, "d4d3", 'p', 500)) +
+        json(record(blackBlocked, 401, "d4d3", 'p', 30)));
+    Options staticEvalOptions;
+    staticEvalOptions.staticEvalLimitProvided = true;
+    staticEvalOptions.staticEvalLimit = 400;
+    const futility_margin_tail::Report staticEvalReport = futility_margin_tail::scan(staticEvalInput, staticEvalOptions);
+    ok &= check(staticEvalReport.staticEvalTooLowRecords == 2 && staticEvalReport.staticEvalTooHighRecords == 1 &&
+                    staticEvalReport.excludedRecords == 3,
+                "static evaluation limit excludes both out-of-range tails");
+    ok &= check(!staticEvalReport.top.empty() && staticEvalReport.top.front().staticEval == 400,
+                "the static-evaluation interval is -limit exclusive and +limit inclusive");
+
     if (!ok) return 1;
     std::cout << "futility_margin_tail tests passed\n";
     return 0;

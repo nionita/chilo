@@ -903,6 +903,45 @@ NNUE weights and performs no engine search. It is exploratory only: do not add
 the corresponding live futility exemption until the retained tail evidence has
 stabilized.
 
+The scanner can additionally restrict inspection to the near-equality regime
+without rerunning the analyzer:
+
+```bash
+build/release/futility_margin_tail \
+  --input ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl \
+  --passed-pawn-min-destination-rank 7 \
+  --static-eval-limit 400 \
+  --top 20 > tail-rank7-near-equal.json
+```
+
+`--static-eval-limit L` retains exactly `-L < static_eval <= L`, reports the
+low and high exclusions separately, and is disabled by default. It is a
+diagnostic filter for the intended futility regime, not a live-search rule.
+
+### Rejected noisy-rescue shortcut — 2026-09-03
+
+We considered dropping a quiet-best margin observation when the best
+capture/promotion was within a configurable few centipawns of it. That would
+discard cases where the quiet move might be found later, but it would also make
+the procedure explicitly lossy. The lossless margin analysis must not use such
+a rescue margin.
+
+The relevant live-search premise is instead ordering: a quiet move that does
+not exceed the alpha already established by an earlier good capture or
+promotion fails low normally and cannot be the best move. Conversely, a node
+with no earlier searched capture/promotion must not use futility pruning under
+this policy; the first quiet move is not a non-quiet rescue. This fact cannot
+be reconstructed from a bare FEN, because TT, killers, history, and SEE affect
+the original ordering. Future site collection must preserve it as an explicit
+event/eligibility field before the live futility condition is changed.
+
+Current normal ordering is good SEE captures, killer quiets, non-capturing
+promotions, ordinary quiets, then negative-SEE captures (with a TT/preferred
+move before all of these). Non-capturing promotions therefore already precede
+ordinary quiets, but their placement after killers has not yet been tested or
+tuned. Negative-SEE captures remain later tactical possibilities and cannot be
+assumed harmless merely because they occur after a quiet candidate.
+
 ### Old gated-D3 endpoint comparison — 2026-08-31
 
 The completed cloud archive is retained as

@@ -15,6 +15,8 @@ namespace futility_margin_tail {
 struct Options {
     std::string inputPath;
     int passedPawnMinDestinationRank = 0;
+    bool staticEvalLimitProvided = false;
+    int staticEvalLimit = 0;
     int topCount = 20;
 };
 
@@ -34,6 +36,10 @@ struct Report {
     uint64_t positiveRecords = 0;
     uint64_t excludedRecords = 0;
     uint64_t excludedPositiveRecords = 0;
+    uint64_t staticEvalTooLowRecords = 0;
+    uint64_t staticEvalTooLowPositiveRecords = 0;
+    uint64_t staticEvalTooHighRecords = 0;
+    uint64_t staticEvalTooHighPositiveRecords = 0;
     std::vector<Record> top;
 };
 
@@ -140,10 +146,24 @@ Report scan(std::istream& input, const Options& options) {
         int relativeRank = 0;
         record.passedPawnAdvance = isPassedPawnAdvance(position, record, relativeRank);
         record.relativeDestinationRank = relativeRank;
-        const bool excluded = options.passedPawnMinDestinationRank != 0 && record.passedPawnAdvance &&
-                              relativeRank >= options.passedPawnMinDestinationRank;
+        const bool excludedPassedPawn = options.passedPawnMinDestinationRank != 0 && record.passedPawnAdvance &&
+                                        relativeRank >= options.passedPawnMinDestinationRank;
+        // The useful futility regime is deliberately half-open: -limit < static eval <= limit.
+        // A score exactly at the positive limit remains eligible; one exactly at the negative limit does not.
+        const bool excludedStaticEvalLow = options.staticEvalLimitProvided && record.staticEval <= -options.staticEvalLimit;
+        const bool excludedStaticEvalHigh = options.staticEvalLimitProvided && record.staticEval > options.staticEvalLimit;
+        const bool excludedStaticEval = excludedStaticEvalLow || excludedStaticEvalHigh;
+        const bool excluded = excludedPassedPawn || excludedStaticEval;
         report.records++;
         if (record.delta > 0) report.positiveRecords++;
+        if (excludedStaticEvalLow) {
+            report.staticEvalTooLowRecords++;
+            if (record.delta > 0) report.staticEvalTooLowPositiveRecords++;
+        }
+        if (excludedStaticEvalHigh) {
+            report.staticEvalTooHighRecords++;
+            if (record.delta > 0) report.staticEvalTooHighPositiveRecords++;
+        }
         if (excluded) {
             report.excludedRecords++;
             if (record.delta > 0) report.excludedPositiveRecords++;
@@ -181,6 +201,13 @@ void writeRecord(std::ostream& output, const Record& record) {
 void writeReport(std::ostream& output, const Report& report, const Options& options) {
     output << "{\"records\":" << report.records << ",\"positive_records\":" << report.positiveRecords
            << ",\"passed_pawn_min_destination_rank\":" << options.passedPawnMinDestinationRank
+           << ",\"static_eval_limit\":";
+    if (options.staticEvalLimitProvided) output << options.staticEvalLimit;
+    else output << "null";
+    output << ",\"static_eval_too_low_records\":" << report.staticEvalTooLowRecords
+           << ",\"static_eval_too_low_positive_records\":" << report.staticEvalTooLowPositiveRecords
+           << ",\"static_eval_too_high_records\":" << report.staticEvalTooHighRecords
+           << ",\"static_eval_too_high_positive_records\":" << report.staticEvalTooHighPositiveRecords
            << ",\"excluded_records\":" << report.excludedRecords
            << ",\"excluded_positive_records\":" << report.excludedPositiveRecords
            << ",\"remaining_positive_records\":" << (report.positiveRecords - report.excludedPositiveRecords)
@@ -209,6 +236,7 @@ bool parseArgs(int argc, char** argv, Options& options) {
             std::cout << "Usage: futility_margin_tail --input positions.jsonl [options]\n"
                       << "Options:\n"
                       << "  --passed-pawn-min-destination-rank N  0 disables; otherwise relative rank 1..8 (default: 0)\n"
+                      << "  --static-eval-limit CP                 Retain -CP < static score <= CP (default: disabled)\n"
                       << "  --top N                                Positive records to retain (default: 20)\n";
             return false;
         } else if (argument == "--input") {
@@ -216,6 +244,10 @@ bool parseArgs(int argc, char** argv, Options& options) {
         } else if (argument == "--passed-pawn-min-destination-rank") {
             const char* item = value("--passed-pawn-min-destination-rank");
             if (item == nullptr || !parseInt(item, options.passedPawnMinDestinationRank)) return false;
+        } else if (argument == "--static-eval-limit") {
+            const char* item = value("--static-eval-limit");
+            if (item == nullptr || !parseInt(item, options.staticEvalLimit)) return false;
+            options.staticEvalLimitProvided = true;
         } else if (argument == "--top") {
             const char* item = value("--top");
             if (item == nullptr || !parseInt(item, options.topCount)) return false;
@@ -225,8 +257,8 @@ bool parseArgs(int argc, char** argv, Options& options) {
         }
     }
     if (options.inputPath.empty() || options.passedPawnMinDestinationRank < 0 ||
-        options.passedPawnMinDestinationRank > 8 || options.topCount < 1) {
-        std::cerr << "--input is required; rank must be in 0..8; --top must be positive\n";
+        options.passedPawnMinDestinationRank > 8 || options.staticEvalLimit < 0 || options.topCount < 1) {
+        std::cerr << "--input is required; rank and static-eval limit must be non-negative; --top must be positive\n";
         return false;
     }
     return true;
