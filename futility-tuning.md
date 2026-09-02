@@ -800,12 +800,17 @@ site is actually reachable. `--max-roots 0` searches every valid input
 occurrence. A positive `--max-roots` requires `--root-seed`; the collector
 makes one cheap read-only pass over the input to retain a uniform reservoir of
 root occurrences, then searches only that reservoir. It does not create an
-intermediate root file. `--max-sites 0` keeps every eligible site occurrence;
-a positive cap uses the separate `--seed` reservoir. The tool refuses to
-overwrite the FEN output, its temporary output, or the adjacent
-`*.manifest.json`. The manifest locks input/output and NNUE SHA-256 identities,
-source revision/dirty state, search settings, eligibility contract, both
-sampling seeds and limits, and collection counts. `make futility_site_collect_tests`
+intermediate root file. Every eligible site occurrence is first spooled to a
+temporary file, then the collector invokes an external `sort -u` over exact
+canonical FENs; the final output is therefore unique by default without a
+large in-memory hash set. `--max-sites 0` keeps every unique FEN. A positive
+cap uses the separate `--seed` reservoir *after* that deduplication, so it is
+uniform over unique FENs. The raw spool and sort intermediates are deleted only
+after successful finalization; existing temporary paths are protected just like
+the output and adjacent `*.manifest.json`. The manifest locks input/output and
+NNUE SHA-256 identities, source revision/dirty state, search settings,
+eligibility contract, both sampling seeds and limits, deduplication method,
+and raw/unique/final collection counts. `make futility_site_collect_tests`
 checks the callback's ordinary, disabled-depth, strict-beta, and
 non-pawn-material gates without changing normal-engine test coverage.
 

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -61,6 +63,7 @@ struct RunStats {
     uint64_t completedRoots = 0;
     uint64_t interruptedRoots = 0;
     uint64_t eligibleSites = 0;
+    uint64_t uniqueSites = 0;
     uint64_t retainedSites = 0;
     uint64_t searchNodes = 0;
     uint64_t elapsedMs = 0;
@@ -88,7 +91,7 @@ void printUsage() {
         << "      --min-beta <cp>         Required strict beta floor for a non-losing site\n"
         << "      --max-roots <N>         Search at most N uniformly sampled input occurrences (default: 0 = all)\n"
         << "      --root-seed <N>         Required seed when --max-roots is positive\n"
-        << "      --max-sites <N>         Keep at most N uniformly sampled occurrences (default: 0 = all)\n"
+        << "      --max-sites <N>         Keep at most N uniformly sampled unique FENs (default: 0 = all)\n"
         << "      --report-every <N>      Report after N accepted roots (default: 100)\n"
         << "  -s, --seed <N>              Reservoir seed (default: time/process-derived)\n"
         << "  -h, --help                  Show this help\n";
@@ -361,44 +364,52 @@ private:
     std::vector<std::string> roots_;
 };
 
-class SiteReservoir {
+class SiteSpool {
 public:
-    SiteReservoir(uint64_t capacity, uint64_t seed, const std::filesystem::path& temporaryOutput)
-        : capacity_(capacity), rng_(seed), temporaryOutput_(temporaryOutput) {
-        if (capacity_ == 0) {
-            stream_.open(temporaryOutput_);
-            if (!stream_) throw std::runtime_error("failed to create temporary output " + temporaryOutput_.string());
-        }
+    explicit SiteSpool(const std::filesystem::path& path) : path_(path) {
+        stream_.open(path_);
+        if (!stream_) throw std::runtime_error("failed to create temporary output " + path_.string());
     }
 
     void add(const std::string& fen) {
         seen_++;
-        if (capacity_ == 0) {
-            stream_ << fen << '\n';
-            if (!stream_) throw std::runtime_error("failed writing temporary output");
-            return;
-        }
-        if (reservoir_.size() < capacity_) {
-            reservoir_.push_back(fen);
+        stream_ << fen << '\n';
+        if (!stream_) throw std::runtime_error("failed writing temporary output");
+    }
+
+    uint64_t seen() const { return seen_; }
+
+    void finalize() {
+        stream_.close();
+        if (!stream_) throw std::runtime_error("failed closing temporary output");
+    }
+
+private:
+    uint64_t seen_ = 0;
+    std::filesystem::path path_;
+    std::ofstream stream_;
+};
+
+class UniqueSiteReservoir {
+public:
+    UniqueSiteReservoir(uint64_t capacity, uint64_t seed) : capacity_(capacity), rng_(seed) {}
+
+    void add(const std::string& fen) {
+        seen_++;
+        if (fens_.size() < capacity_) {
+            fens_.push_back(fen);
             return;
         }
         std::uniform_int_distribution<uint64_t> distribution(0, seen_ - 1);
         uint64_t replacement = distribution(rng_);
-        if (replacement < capacity_) reservoir_[static_cast<std::size_t>(replacement)] = fen;
+        if (replacement < capacity_) fens_[static_cast<std::size_t>(replacement)] = fen;
     }
 
     uint64_t seen() const { return seen_; }
-    uint64_t retained() const { return capacity_ == 0 ? seen_ : reservoir_.size(); }
-
-    void finalize() {
-        if (capacity_ == 0) {
-            stream_.close();
-            if (!stream_) throw std::runtime_error("failed closing temporary output");
-            return;
-        }
-        std::ofstream output(temporaryOutput_);
-        if (!output) throw std::runtime_error("failed to create temporary output " + temporaryOutput_.string());
-        for (const std::string& fen : reservoir_) output << fen << '\n';
+    void write(const std::filesystem::path& path) const {
+        std::ofstream output(path);
+        if (!output) throw std::runtime_error("failed to create temporary output " + path.string());
+        for (const std::string& fen : fens_) output << fen << '\n';
         if (!output) throw std::runtime_error("failed writing temporary output");
     }
 
@@ -406,18 +417,59 @@ private:
     uint64_t capacity_ = 0;
     uint64_t seen_ = 0;
     std::mt19937_64 rng_;
-    std::filesystem::path temporaryOutput_;
-    std::ofstream stream_;
-    std::vector<std::string> reservoir_;
+    std::vector<std::string> fens_;
 };
 
 struct SiteCallbackData {
-    SiteReservoir* reservoir = nullptr;
+    SiteSpool* spool = nullptr;
 };
 
 void collectFutilitySite(const std::string& fen, void* userData) {
     auto* data = static_cast<SiteCallbackData*>(userData);
-    data->reservoir->add(fen);
+    data->spool->add(fen);
+}
+
+std::string shellQuote(const std::filesystem::path& path) {
+    std::string quoted = "'";
+    for (char character : path.string()) {
+        if (character == '\'') quoted += "'\\''";
+        else quoted += character;
+    }
+    return quoted + "'";
+}
+
+void sortUniqueFens(const std::filesystem::path& input, const std::filesystem::path& output) {
+    const std::string command = "LC_ALL=C sort -u -o " + shellQuote(output) + " -- " + shellQuote(input);
+    if (std::system(command.c_str()) != 0) {
+        throw std::runtime_error("sort -u failed while deduplicating futility sites");
+    }
+}
+
+uint64_t countFenLines(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("failed to open temporary output " + path.string());
+    uint64_t count = 0;
+    std::string line;
+    while (std::getline(input, line)) count++;
+    return count;
+}
+
+uint64_t sampleUniqueFens(const std::filesystem::path& input, uint64_t capacity, uint64_t seed,
+                          const std::filesystem::path& output) {
+    std::ifstream stream(input);
+    if (!stream) throw std::runtime_error("failed to open unique temporary output " + input.string());
+    UniqueSiteReservoir reservoir(capacity, seed);
+    std::string fen;
+    while (std::getline(stream, fen)) reservoir.add(fen);
+    reservoir.write(output);
+    return reservoir.seen();
+}
+
+void removeTemporary(const std::filesystem::path& path) {
+    std::error_code error;
+    if (std::filesystem::exists(path) && !std::filesystem::remove(path, error)) {
+        throw std::runtime_error("failed to remove temporary output " + path.string() + ": " + error.message());
+    }
 }
 
 bool extractInputFen(const std::string& line, RunStats& stats, std::string& fen) {
@@ -445,7 +497,7 @@ void printProgress(const RunStats& stats, uint64_t totalRoots, std::chrono::stea
         std::chrono::steady_clock::now() - started).count());
     double rootsPerSecond = elapsedMs == 0 ? 0.0 : static_cast<double>(stats.acceptedRoots) * 1000.0 / elapsedMs;
     std::cout << "Futility-site collection: roots " << stats.acceptedRoots << "/" << totalRoots
-              << ", eligible " << stats.eligibleSites << ", retained " << stats.retainedSites
+              << ", eligible occurrences " << stats.eligibleSites
               << ", elapsed " << std::fixed << std::setprecision(1) << (elapsedMs / 1000.0) << "s";
     if (rootsPerSecond > 0.0 && totalRoots > stats.acceptedRoots) {
         std::cout << ", ETA " << std::setprecision(1) << ((totalRoots - stats.acceptedRoots) / rootsPerSecond) << "s";
@@ -482,13 +534,15 @@ void writeManifest(const std::filesystem::path& path, const std::vector<FileIden
     if (options.maxRoots == 0) stream << "null";
     else stream << options.rootSeed;
     stream << ", \"method\": \"" << (options.maxRoots == 0 ? "all_valid_input_occurrences" : "reservoir_occurrences") << "\"},\n"
+           << "  \"deduplication\": {\"method\": \"external_sort_unique\", \"key\": \"canonical_fen_exact\"},\n"
            << "  \"site_sampling\": {\"seed\": " << options.seed << ", \"max_sites\": " << options.maxSites
-           << ", \"method\": \"" << (options.maxSites == 0 ? "all_occurrences" : "reservoir_occurrences") << "\"},\n"
+           << ", \"method\": \"" << (options.maxSites == 0 ? "all_unique_fens" : "reservoir_unique_fens") << "\"},\n"
            << "  \"counts\": {\"input_lines\": " << stats.inputLines << ", \"skipped_lines\": " << stats.skippedLines
            << ", \"parse_errors\": " << stats.parseErrors << ", \"valid_input_roots\": " << stats.validInputRoots
            << ", \"selected_roots\": " << stats.selectedRoots << ", \"accepted_roots\": " << stats.acceptedRoots
            << ", \"completed_roots\": " << stats.completedRoots << ", \"interrupted_roots\": " << stats.interruptedRoots
-           << ", \"eligible_sites\": " << stats.eligibleSites << ", \"retained_sites\": " << stats.retainedSites
+           << ", \"eligible_site_occurrences\": " << stats.eligibleSites << ", \"unique_sites\": " << stats.uniqueSites
+           << ", \"retained_sites\": " << stats.retainedSites
            << ", \"search_nodes\": " << stats.searchNodes << ", \"elapsed_ms\": " << stats.elapsedMs << "},\n"
            << "  \"output\": {\"path\": \"" << jsonEscape(output.path.string()) << "\", \"sha256\": \""
            << output.sha256 << "\", \"size\": " << output.size << "}\n"
@@ -518,7 +572,12 @@ int main(int argc, char** argv) {
         std::filesystem::path outputPath = std::filesystem::absolute(options.outputPath);
         std::filesystem::path manifestPath = manifestPathFor(outputPath);
         std::filesystem::path temporaryOutput = std::filesystem::path(outputPath.string() + ".tmp");
-        if (std::filesystem::exists(outputPath) || std::filesystem::exists(manifestPath) || std::filesystem::exists(temporaryOutput)) {
+        std::filesystem::path rawTemporary = std::filesystem::path(outputPath.string() + ".raw.tmp");
+        std::filesystem::path uniqueTemporary = std::filesystem::path(outputPath.string() + ".unique.tmp");
+        std::filesystem::path manifestTemporary = std::filesystem::path(manifestPath.string() + ".tmp");
+        if (std::filesystem::exists(outputPath) || std::filesystem::exists(manifestPath) ||
+            std::filesystem::exists(temporaryOutput) || std::filesystem::exists(rawTemporary) ||
+            std::filesystem::exists(uniqueTemporary) || std::filesystem::exists(manifestTemporary)) {
             throw std::runtime_error("refusing to overwrite existing output, manifest, or temporary output");
         }
 
@@ -527,10 +586,15 @@ int main(int argc, char** argv) {
             throw std::runtime_error("failed to load NNUE weights: " + weightError);
         }
         std::cerr << "info string loaded NNUE weights from " << weights.path.string() << "\n";
-        std::cout << "Using reservoir seed " << options.seed << "; futility is disabled for collection\n";
+        if (options.maxSites == 0) {
+            std::cout << "Retaining all unique sites; futility is disabled for collection\n";
+        } else {
+            std::cout << "Using unique-site reservoir seed " << options.seed
+                      << "; futility is disabled for collection\n";
+        }
 
-        SiteReservoir reservoir(options.maxSites, options.seed, temporaryOutput);
-        SiteCallbackData callbackData{&reservoir};
+        SiteSpool spool(rawTemporary);
+        SiteCallbackData callbackData{&spool};
         RunStats stats;
         auto started = std::chrono::steady_clock::now();
 
@@ -570,8 +634,7 @@ int main(int argc, char** argv) {
             stats.searchNodes += result.nodes;
             if (result.completed) stats.completedRoots++;
             else stats.interruptedRoots++;
-            stats.eligibleSites = reservoir.seen();
-            stats.retainedSites = reservoir.retained();
+            stats.eligibleSites = spool.seen();
             if (stats.acceptedRoots % options.reportEvery == 0) printProgress(stats, totalRoots, started);
         };
 
@@ -590,10 +653,20 @@ int main(int argc, char** argv) {
             stats.selectedRoots = stats.validInputRoots;
         }
 
-        reservoir.finalize();
+        spool.finalize();
+        if (options.maxSites == 0) {
+            sortUniqueFens(rawTemporary, temporaryOutput);
+            stats.uniqueSites = countFenLines(temporaryOutput);
+            stats.retainedSites = stats.uniqueSites;
+        } else {
+            sortUniqueFens(rawTemporary, uniqueTemporary);
+            stats.uniqueSites = sampleUniqueFens(uniqueTemporary, options.maxSites, options.seed, temporaryOutput);
+            stats.retainedSites = countFenLines(temporaryOutput);
+            removeTemporary(uniqueTemporary);
+        }
+        removeTemporary(rawTemporary);
         std::filesystem::rename(temporaryOutput, outputPath);
-        stats.eligibleSites = reservoir.seen();
-        stats.retainedSites = reservoir.retained();
+        stats.eligibleSites = spool.seen();
         stats.elapsedMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count());
         FileIdentity output = identifyFile(outputPath.string());
@@ -601,7 +674,9 @@ int main(int argc, char** argv) {
         if (stats.acceptedRoots == 0 || stats.acceptedRoots % options.reportEvery != 0) {
             printProgress(stats, totalRoots, started);
         }
-        std::cout << "Wrote " << stats.retainedSites << " futility-site FEN occurrences to " << outputPath << "\n"
+        std::cout << "Deduplicated " << stats.eligibleSites << " eligible occurrences to " << stats.uniqueSites
+                  << " unique FENs\n"
+                  << "Wrote " << stats.retainedSites << " futility-site FENs to " << outputPath << "\n"
                   << "Wrote manifest " << manifestPath << "\n";
         return 0;
     } catch (const std::exception& error) {
