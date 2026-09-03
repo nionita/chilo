@@ -506,17 +506,20 @@ void noteQuietBetaCutoff(Color side, int ply, const Move& move, int depth) {
 int moveOrderScore(const Position& pos, const Move& move, const Move* preferredMove, int ply) {
     if (preferredMove != nullptr && movesEqual(move, *preferredMove)) return 1000000;
 
-    if (isCaptureMove(pos, move)) {
-        int bucket = staticExchangeEvalIsNonNegative(pos, move) ? 900000 : 100000;
-        return bucket + captureOrderScore(pos, move);
+    // ordB: good captures lead, then every promotion, then quiet killers.
+    // Negative-SEE captures remain late even when they promote.
+    if (isCaptureMove(pos, move) && staticExchangeEvalIsNonNegative(pos, move)) {
+        return 900000 + captureOrderScore(pos, move);
     }
+
+    if (move.promotion != EMPTY) return 875000 + moveValueGuess(move.promotion);
+
+    if (isCaptureMove(pos, move)) return 100000 + captureOrderScore(pos, move);
 
     if (isQuietMove(pos, move)) {
         if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][0])) return 850000;
         if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][1])) return 800000;
     }
-
-    if (move.promotion != EMPTY) return 600000 + moveValueGuess(move.promotion);
 
     int score = 200000;
     if (isQuietMove(pos, move)) {
