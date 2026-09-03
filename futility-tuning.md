@@ -937,10 +937,13 @@ event/eligibility field before the live futility condition is changed.
 
 Current normal ordering is good SEE captures, killer quiets, non-capturing
 promotions, ordinary quiets, then negative-SEE captures (with a TT/preferred
-move before all of these). Non-capturing promotions therefore already precede
-ordinary quiets, but their placement after killers has not yet been tested or
-tuned. Negative-SEE captures remain later tactical possibilities and cannot be
-assumed harmless merely because they occur after a quiet candidate.
+move before all of these). A fixed-depth move-ordering experiment has now
+tested promotion placement and selected the ordB successor (all promotions
+after good captures and before killers) for the next version change; see
+`engine-decisions.md`. Until that source change lands, the current ordering
+above remains the live behavior. Negative-SEE captures remain later tactical
+possibilities and cannot be assumed harmless merely because they occur after a
+quiet candidate.
 
 ### Old gated-D3 endpoint comparison — 2026-08-31
 

@@ -11,6 +11,8 @@ Status labels:
 - **SUPERSEDED**: deliberately replaced by a later design.
 - **REJECTED**: tried and not retained.
 - **OPEN**: a plausible future improvement without an accepted solution.
+- **PLANNED**: an accepted change intentionally deferred to a later version
+  change; current source still describes the live behavior.
 - **UNCERTAIN**: the historical evidence does not establish a conclusion.
 
 ## Core And Validation
@@ -56,6 +58,59 @@ Status labels:
 - **UNCERTAIN**: no preserved result explains why the historical depth-one
   `80` setting was not carried into the current line. Current futility margins
   are starting points, not NNUE-independent constants.
+
+### Move-Ordering Node Experiment — 2026-09-03
+
+The fixed-depth move-ordering experiment used all 25,783 FENs in
+`~/Tune/open-moves/open-moves.fen` (SHA-256
+`5280ff9be9fd27af3443fafb10430a25a00fc0af66022829a5abf45d299c1122`),
+the runtime net `chilo-g4t1-64x8.bin` (SHA-256
+`51ee64101ee3d85f69eb0948f4caa8be6d90115abdb909d82767ffb4a53ccd90`),
+and the common spsa150b futility tuple `0,40,158,488,754`. Every candidate
+was a Windows AVX2 binary and every root was searched at the stated fixed
+depth with a fresh process/TT. These are search-tree efficiency measurements,
+not score-quality or playing-strength evidence.
+
+`GC` denotes a non-negative-SEE capture; `BC` a negative-SEE capture. The
+actual tested order and aggregate nodes were:
+
+| Variant | Tested order after TT | Depth-7 nodes | D7 vs current | Depth-8 nodes | D8 vs current |
+|---|---|---:|---:|---:|---:|
+| current | GC → killers → non-capture promotions → quiets → BC | 1,480,193,669 | baseline | 3,529,987,693 | baseline |
+| ordA | all queen promotions → GC → killers → minor non-capture promotions → quiets → BC | 1,480,487,823 | +0.019873% | 3,530,679,905 | +0.019609% |
+| ordB | GC → all promotions → killers → quiets → remaining BC | **1,480,165,003** | **−0.001937%** | **3,529,832,083** | **−0.004408%** |
+| ordC | GC → all promotions → killers → remaining BC → quiets | 1,495,792,079 | +1.053809% | 3,546,274,920 | +0.461396% |
+| ordD | GC → non-capture queen promotions → killers → non-capture R/B/N promotions → quiets → BC | — | — | 3,529,889,618 | −0.002778% |
+
+In ordB and ordC, the generic promotion branch precedes the remaining-capture
+branch: a negative-SEE capture-promotion is therefore in the promotion group.
+In ordD, every capture-promotion remains a capture and is separated by SEE.
+
+The depth-8 non-PV beta-cutoff counters (`TT`, capture, killer, quiet,
+promotion, other) were:
+
+| Variant | cut_tt | cut_cap | cut_killer | cut_quiet | cut_promo | cut_other |
+|---|---:|---:|---:|---:|---:|---:|
+| current | 122,542,294 | 427,074,643 | 85,401,969 | 12,442,368 | 1,922 | 4,575,681 |
+| ordA | 122,528,772 | 426,860,545 | 85,390,987 | 12,442,293 | 248,101 | 4,576,149 |
+| ordB | 122,536,727 | 427,066,053 | 85,392,650 | 12,441,881 | 7,829 | 4,575,326 |
+| ordC | 122,027,873 | 426,918,264 | 83,952,999 | 11,610,430 | 7,285 | 4,439,199 |
+| ordD | 122,539,290 | 427,073,823 | 85,394,426 | 12,442,143 | 7,284 | 4,575,843 |
+
+`cut_tt` is a beta cutoff caused by the TT-preferred move after it was
+searched, not a direct TT-probe cutoff. The counters describe the cutoffs in
+the visited tree; their absolute total is not an efficiency objective. In
+particular, ordC searches substantially more nodes while recording fewer
+cutoffs.
+
+- **PLANNED**: adopt ordB for the next engine version change. It is the
+  lowest-node order at both measured depths. OrdD is close but is 57,535 nodes
+  (0.001630%) behind ordB at depth 8; ordA is consistently a small loss; and
+  ordC rejects moving negative-SEE captures before quiet moves.
+- **CURRENT**: until that version change lands, the source retains the current
+  order. The archived depth-8 Windows result is
+  `~/Tune/futility/chilo-move-order-d8-win-package-rez.zip` (SHA-256
+  `b979b990a75872ded4aa817b170329c3ef8cd2115e119166f7876775b8c35fd8`).
 
 ## NNUE And Training
 
