@@ -14,7 +14,7 @@ namespace {
 const char* STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 #ifndef CHILO_VERSION_OVERRIDE
-#define CHILO_VERSION_OVERRIDE 0.7.5
+#define CHILO_VERSION_OVERRIDE 0.7.6
 #endif
 
 #define CHILO_STRINGIFY_INNER(value) #value

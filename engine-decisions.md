@@ -103,12 +103,11 @@ the visited tree; their absolute total is not an efficiency objective. In
 particular, ordC searches substantially more nodes while recording fewer
 cutoffs.
 
-- **PLANNED**: adopt ordB for the next engine version change. It is the
-  lowest-node order at both measured depths. OrdD is close but is 57,535 nodes
+- **CURRENT**: ordB was adopted for version `0.7.6`. It is the lowest-node
+  order at both measured depths. OrdD is close but is 57,535 nodes
   (0.001630%) behind ordB at depth 8; ordA is consistently a small loss; and
-  ordC rejects moving negative-SEE captures before quiet moves.
-- **CURRENT**: until that version change lands, the source retains the current
-  order. The archived depth-8 Windows result is
+  ordC rejects moving negative-SEE captures before quiet moves. The archived
+  depth-8 Windows result is
   `~/Tune/futility/chilo-move-order-d8-win-package-rez.zip` (SHA-256
   `b979b990a75872ded4aa817b170329c3ef8cd2115e119166f7876775b8c35fd8`).
 

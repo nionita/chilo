@@ -935,13 +935,12 @@ be reconstructed from a bare FEN, because TT, killers, history, and SEE affect
 the original ordering. Future site collection must preserve it as an explicit
 event/eligibility field before the live futility condition is changed.
 
-Current normal ordering is good SEE captures, killer quiets, non-capturing
-promotions, ordinary quiets, then negative-SEE captures (with a TT/preferred
-move before all of these). A fixed-depth move-ordering experiment has now
-tested promotion placement and selected the ordB successor (all promotions
-after good captures and before killers) for the next version change; see
-`engine-decisions.md`. Until that source change lands, the current ordering
-above remains the live behavior. Negative-SEE captures remain later tactical
+Current normal ordering in version `0.7.6` is the TT/preferred move, good SEE
+captures, all promotions, killer quiets, ordinary quiets, then remaining
+negative-SEE captures. The generic promotion branch precedes the remaining
+capture branch, so a negative-SEE capture-promotion is in the promotion group.
+The fixed-depth experiment selecting this ordB order is recorded in
+`engine-decisions.md`. Negative-SEE captures remain later tactical
 possibilities and cannot be assumed harmless merely because they occur after a
 quiet candidate.
 
