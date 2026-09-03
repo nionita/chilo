@@ -14,6 +14,9 @@ namespace futility_margin_tail {
 
 struct Options {
     std::string inputPath;
+    bool marginProvided = false;
+    int margin = 0;
+    int rescueLimit = 0;
     int passedPawnMinDestinationRank = 0;
     bool staticEvalLimitProvided = false;
     int staticEvalLimit = 0;
@@ -21,44 +24,29 @@ struct Options {
 };
 
 struct Record {
-    std::string fen;
-    int staticEval = 0;
-    std::string move;
-    char movingPiece = '?';
-    int moveScore = 0;
-    int delta = 0;
+    std::string fen, prefixMove, quietMove;
+    char quietPiece = '?';
+    int staticEval = 0, prefixScore = 0, quietScore = 0, quietGain = 0;
     bool passedPawnAdvance = false;
     int relativeDestinationRank = 0;
 };
 
 struct Report {
     uint64_t records = 0;
-    uint64_t positiveRecords = 0;
-    uint64_t excludedRecords = 0;
-    uint64_t excludedPositiveRecords = 0;
-    uint64_t staticEvalTooLowRecords = 0;
-    uint64_t staticEvalTooLowPositiveRecords = 0;
-    uint64_t staticEvalTooHighRecords = 0;
-    uint64_t staticEvalTooHighPositiveRecords = 0;
+    uint64_t passedPawnExcluded = 0, staticEvalLowExcluded = 0, staticEvalHighExcluded = 0, excluded = 0;
+    uint64_t remaining = 0, wouldPrune = 0, rescued = 0, unrescued = 0;
     std::vector<Record> top;
 };
 
 std::string trim(const std::string& text) {
-    std::size_t first = 0;
-    while (first < text.size() && std::isspace(static_cast<unsigned char>(text[first]))) first++;
-    std::size_t last = text.size();
-    while (last > first && std::isspace(static_cast<unsigned char>(text[last - 1]))) last--;
+    std::size_t first = 0; while (first < text.size() && std::isspace(static_cast<unsigned char>(text[first]))) first++;
+    std::size_t last = text.size(); while (last > first && std::isspace(static_cast<unsigned char>(text[last - 1]))) last--;
     return text.substr(first, last - first);
 }
 
 bool parseInt(const std::string& text, int& value) {
-    try {
-        std::size_t used = 0;
-        value = std::stoi(text, &used);
-        return used == text.size();
-    } catch (...) {
-        return false;
-    }
+    try { std::size_t used = 0; value = std::stoi(text, &used); return used == text.size(); }
+    catch (...) { return false; }
 }
 
 bool parseJsonStringField(const std::string& line, const char* name, std::string& value) {
@@ -78,42 +66,39 @@ bool parseJsonIntField(const std::string& line, const char* name, int& value) {
     if (start == std::string::npos) return false;
     std::size_t end = start + prefix.size();
     if (end < line.size() && line[end] == '-') end++;
-    const std::size_t digitsStart = end;
+    const std::size_t digits = end;
     while (end < line.size() && std::isdigit(static_cast<unsigned char>(line[end]))) end++;
-    return end > digitsStart && parseInt(line.substr(start + prefix.size(), end - (start + prefix.size())), value);
+    return end > digits && parseInt(line.substr(start + prefix.size(), end - (start + prefix.size())), value);
 }
 
 bool parseRecord(const std::string& line, Record& record) {
-    std::string movingPiece;
-    if (!parseJsonStringField(line, "fen", record.fen) ||
-        !parseJsonIntField(line, "static_eval", record.staticEval) ||
-        !parseJsonStringField(line, "move", record.move) ||
-        !parseJsonStringField(line, "moving_piece", movingPiece) ||
-        !parseJsonIntField(line, "move_score", record.moveScore) ||
-        movingPiece.size() != 1 || record.move.size() != 4) {
-        return false;
-    }
-    record.movingPiece = movingPiece[0];
-    record.delta = record.moveScore - record.staticEval;
+    std::string schema, quietPiece;
+    if (!parseJsonStringField(line, "schema", schema) || schema != "chilo.futility_margin_rescue.v1" ||
+        !parseJsonStringField(line, "fen", record.fen) || !parseJsonIntField(line, "static_eval", record.staticEval) ||
+        !parseJsonStringField(line, "prefix_move", record.prefixMove) || !parseJsonIntField(line, "prefix_score", record.prefixScore) ||
+        !parseJsonStringField(line, "quiet_move", record.quietMove) || !parseJsonStringField(line, "quiet_piece", quietPiece) ||
+        !parseJsonIntField(line, "quiet_score", record.quietScore) || !parseJsonIntField(line, "quiet_gain", record.quietGain) ||
+        quietPiece.size() != 1 || record.quietMove.size() != 4 ||
+        (record.prefixMove.size() != 4 && record.prefixMove.size() != 5) ||
+        record.quietGain != record.quietScore - record.prefixScore || record.quietGain <= 0) return false;
+    record.quietPiece = quietPiece[0];
     return true;
 }
 
 bool parseUciSquare(char file, char rank, int& square) {
     if (file < 'a' || file > 'h' || rank < '1' || rank > '8') return false;
-    square = (rank - '1') * 8 + (file - 'a');
-    return true;
+    square = (rank - '1') * 8 + (file - 'a'); return true;
 }
 
 bool isPassedPawnAdvance(const Position& position, const Record& record, int& relativeDestinationRank) {
     int from = 0, to = 0;
-    if (!parseUciSquare(record.move[0], record.move[1], from) || !parseUciSquare(record.move[2], record.move[3], to)) return false;
+    if (!parseUciSquare(record.quietMove[0], record.quietMove[1], from) || !parseUciSquare(record.quietMove[2], record.quietMove[3], to)) return false;
     const Piece pawn = pieceAt(position, from);
     if (pawn != W_PAWN && pawn != B_PAWN) return false;
-    if (record.movingPiece != (pawn == W_PAWN ? 'P' : 'p')) return false;
+    if (record.quietPiece != (pawn == W_PAWN ? 'P' : 'p')) return false;
     const int direction = pawn == W_PAWN ? 1 : -1;
     const int advance = R(to) - R(from);
     if (F(from) != F(to) || (advance != direction && advance != 2 * direction)) return false;
-
     const Piece opponentPawn = pawn == W_PAWN ? B_PAWN : W_PAWN;
     for (int file = std::max(0, F(from) - 1); file <= std::min(7, F(from) + 1); file++) {
         for (int rank = R(from) + direction; rank >= 0 && rank < 8; rank += direction) {
@@ -125,9 +110,9 @@ bool isPassedPawnAdvance(const Position& position, const Record& record, int& re
 }
 
 bool recordBefore(const Record& left, const Record& right) {
-    if (left.delta != right.delta) return left.delta > right.delta;
+    if (left.quietGain != right.quietGain) return left.quietGain > right.quietGain;
     if (left.fen != right.fen) return left.fen < right.fen;
-    return left.move < right.move;
+    return left.quietMove < right.quietMove;
 }
 
 Report scan(std::istream& input, const Options& options) {
@@ -136,40 +121,26 @@ Report scan(std::istream& input, const Options& options) {
     uint64_t lineNumber = 0;
     while (std::getline(input, line)) {
         lineNumber++;
-        line = trim(line);
-        if (line.empty()) continue;
+        line = trim(line); if (line.empty()) continue;
         Record record;
-        if (!parseRecord(line, record)) {
-            throw std::runtime_error("invalid canonical finite JSONL record at line " + std::to_string(lineNumber));
-        }
+        if (!parseRecord(line, record)) throw std::runtime_error("invalid rescue JSONL record at line " + std::to_string(lineNumber));
         Position position = parseFEN(record.fen);
         int relativeRank = 0;
         record.passedPawnAdvance = isPassedPawnAdvance(position, record, relativeRank);
         record.relativeDestinationRank = relativeRank;
-        const bool excludedPassedPawn = options.passedPawnMinDestinationRank != 0 && record.passedPawnAdvance &&
-                                        relativeRank >= options.passedPawnMinDestinationRank;
-        // The useful futility regime is deliberately half-open: -limit < static eval <= limit.
-        // A score exactly at the positive limit remains eligible; one exactly at the negative limit does not.
-        const bool excludedStaticEvalLow = options.staticEvalLimitProvided && record.staticEval <= -options.staticEvalLimit;
-        const bool excludedStaticEvalHigh = options.staticEvalLimitProvided && record.staticEval > options.staticEvalLimit;
-        const bool excludedStaticEval = excludedStaticEvalLow || excludedStaticEvalHigh;
-        const bool excluded = excludedPassedPawn || excludedStaticEval;
+        const bool passedPawn = options.passedPawnMinDestinationRank && record.passedPawnAdvance && relativeRank >= options.passedPawnMinDestinationRank;
+        const bool staticLow = options.staticEvalLimitProvided && record.staticEval <= -options.staticEvalLimit;
+        const bool staticHigh = options.staticEvalLimitProvided && record.staticEval > options.staticEvalLimit;
         report.records++;
-        if (record.delta > 0) report.positiveRecords++;
-        if (excludedStaticEvalLow) {
-            report.staticEvalTooLowRecords++;
-            if (record.delta > 0) report.staticEvalTooLowPositiveRecords++;
-        }
-        if (excludedStaticEvalHigh) {
-            report.staticEvalTooHighRecords++;
-            if (record.delta > 0) report.staticEvalTooHighPositiveRecords++;
-        }
-        if (excluded) {
-            report.excludedRecords++;
-            if (record.delta > 0) report.excludedPositiveRecords++;
-            continue;
-        }
-        if (record.delta <= 0) continue;
+        if (passedPawn) report.passedPawnExcluded++;
+        if (staticLow) report.staticEvalLowExcluded++;
+        if (staticHigh) report.staticEvalHighExcluded++;
+        if (passedPawn || staticLow || staticHigh) { report.excluded++; continue; }
+        report.remaining++;
+        if (record.staticEval + options.margin > record.prefixScore) continue;
+        report.wouldPrune++;
+        if (record.quietGain <= options.rescueLimit) { report.rescued++; continue; }
+        report.unrescued++;
         report.top.push_back(record);
         std::sort(report.top.begin(), report.top.end(), recordBefore);
         if (static_cast<int>(report.top.size()) > options.topCount) report.top.pop_back();
@@ -179,87 +150,58 @@ Report scan(std::istream& input, const Options& options) {
 
 std::string jsonEscape(const std::string& text) {
     std::ostringstream output;
-    for (unsigned char character : text) {
-        if (character == '"') output << "\\\"";
-        else if (character == '\\') output << "\\\\";
-        else if (character == '\n') output << "\\n";
-        else if (character == '\r') output << "\\r";
-        else if (character == '\t') output << "\\t";
-        else output << static_cast<char>(character);
+    for (unsigned char c : text) {
+        if (c == '"') output << "\\\""; else if (c == '\\') output << "\\\\";
+        else if (c == '\n') output << "\\n"; else if (c == '\r') output << "\\r"; else if (c == '\t') output << "\\t";
+        else output << static_cast<char>(c);
     }
     return output.str();
 }
 
-void writeRecord(std::ostream& output, const Record& record) {
-    output << "{\"fen\":\"" << jsonEscape(record.fen) << "\",\"static_eval\":" << record.staticEval
-           << ",\"move\":\"" << record.move << "\",\"moving_piece\":\"" << record.movingPiece
-           << "\",\"move_score\":" << record.moveScore << ",\"delta\":" << record.delta
-           << ",\"passed_pawn_advance\":" << (record.passedPawnAdvance ? "true" : "false")
-           << ",\"relative_destination_rank\":" << record.relativeDestinationRank << '}';
+void writeRecord(std::ostream& output, const Record& r) {
+    output << "{\"fen\":\"" << jsonEscape(r.fen) << "\",\"static_eval\":" << r.staticEval
+           << ",\"prefix_move\":\"" << r.prefixMove << "\",\"prefix_score\":" << r.prefixScore
+           << ",\"quiet_move\":\"" << r.quietMove << "\",\"quiet_piece\":\"" << r.quietPiece
+           << "\",\"quiet_score\":" << r.quietScore << ",\"quiet_gain\":" << r.quietGain
+           << ",\"passed_pawn_advance\":" << (r.passedPawnAdvance ? "true" : "false")
+           << ",\"relative_destination_rank\":" << r.relativeDestinationRank << '}';
 }
 
 void writeReport(std::ostream& output, const Report& report, const Options& options) {
-    output << "{\"records\":" << report.records << ",\"positive_records\":" << report.positiveRecords
-           << ",\"passed_pawn_min_destination_rank\":" << options.passedPawnMinDestinationRank
-           << ",\"static_eval_limit\":";
-    if (options.staticEvalLimitProvided) output << options.staticEvalLimit;
-    else output << "null";
-    output << ",\"static_eval_too_low_records\":" << report.staticEvalTooLowRecords
-           << ",\"static_eval_too_low_positive_records\":" << report.staticEvalTooLowPositiveRecords
-           << ",\"static_eval_too_high_records\":" << report.staticEvalTooHighRecords
-           << ",\"static_eval_too_high_positive_records\":" << report.staticEvalTooHighPositiveRecords
-           << ",\"excluded_records\":" << report.excludedRecords
-           << ",\"excluded_positive_records\":" << report.excludedPositiveRecords
-           << ",\"remaining_positive_records\":" << (report.positiveRecords - report.excludedPositiveRecords)
-           << ",\"max_positive\":";
-    if (report.top.empty()) output << "null";
-    else writeRecord(output, report.top.front());
+    output << "{\"records\":" << report.records << ",\"margin\":" << options.margin << ",\"rescue_limit\":" << options.rescueLimit
+           << ",\"passed_pawn_min_destination_rank\":" << options.passedPawnMinDestinationRank << ",\"static_eval_limit\":";
+    if (options.staticEvalLimitProvided) output << options.staticEvalLimit; else output << "null";
+    output << ",\"passed_pawn_excluded\":" << report.passedPawnExcluded << ",\"static_eval_low_excluded\":" << report.staticEvalLowExcluded
+           << ",\"static_eval_high_excluded\":" << report.staticEvalHighExcluded << ",\"excluded\":" << report.excluded
+           << ",\"remaining\":" << report.remaining << ",\"would_prune\":" << report.wouldPrune
+           << ",\"rescued\":" << report.rescued << ",\"unrescued\":" << report.unrescued << ",\"max_unrescued\":";
+    if (report.top.empty()) output << "null"; else writeRecord(output, report.top.front());
     output << ",\"top\":[";
-    for (std::size_t index = 0; index < report.top.size(); index++) {
-        if (index) output << ',';
-        writeRecord(output, report.top[index]);
-    }
+    for (std::size_t i = 0; i < report.top.size(); i++) { if (i) output << ','; writeRecord(output, report.top[i]); }
     output << "]}\n";
 }
 
 bool parseArgs(int argc, char** argv, Options& options) {
     for (int index = 1; index < argc; index++) {
         const std::string argument = argv[index];
-        auto value = [&](const char* name) -> const char* {
-            if (index + 1 >= argc) {
-                std::cerr << "Missing value for " << name << '\n';
-                return nullptr;
-            }
-            return argv[++index];
-        };
+        auto value = [&](const char* name) -> const char* { if (index + 1 >= argc) { std::cerr << "Missing value for " << name << '\n'; return nullptr; } return argv[++index]; };
         if (argument == "--help" || argument == "-h") {
-            std::cout << "Usage: futility_margin_tail --input positions.jsonl [options]\n"
-                      << "Options:\n"
-                      << "  --passed-pawn-min-destination-rank N  0 disables; otherwise relative rank 1..8 (default: 0)\n"
-                      << "  --static-eval-limit CP                 Retain -CP < static score <= CP (default: disabled)\n"
-                      << "  --top N                                Positive records to retain (default: 20)\n";
+            std::cout << "Usage: futility_margin_tail --input positions.jsonl --margin CP [options]\nOptions:\n"
+                      << "  --rescue-limit CP                      Accepted local loss (default: 0)\n"
+                      << "  --passed-pawn-min-destination-rank N  0 disables (default: 0)\n"
+                      << "  --static-eval-limit CP                 Retain -CP < static score <= CP\n  --top N                                Unrescued records to retain (default: 20)\n";
             return false;
-        } else if (argument == "--input") {
-            const char* item = value("--input"); if (item == nullptr) return false; options.inputPath = item;
-        } else if (argument == "--passed-pawn-min-destination-rank") {
-            const char* item = value("--passed-pawn-min-destination-rank");
-            if (item == nullptr || !parseInt(item, options.passedPawnMinDestinationRank)) return false;
-        } else if (argument == "--static-eval-limit") {
-            const char* item = value("--static-eval-limit");
-            if (item == nullptr || !parseInt(item, options.staticEvalLimit)) return false;
-            options.staticEvalLimitProvided = true;
-        } else if (argument == "--top") {
-            const char* item = value("--top");
-            if (item == nullptr || !parseInt(item, options.topCount)) return false;
-        } else {
-            std::cerr << "Unknown argument: " << argument << '\n';
-            return false;
-        }
+        } else if (argument == "--input") { const char* v = value("--input"); if (!v) return false; options.inputPath = v; }
+        else if (argument == "--margin") { const char* v = value("--margin"); if (!v || !parseInt(v, options.margin)) return false; options.marginProvided = true; }
+        else if (argument == "--rescue-limit") { const char* v = value("--rescue-limit"); if (!v || !parseInt(v, options.rescueLimit)) return false; }
+        else if (argument == "--passed-pawn-min-destination-rank") { const char* v = value("--passed-pawn-min-destination-rank"); if (!v || !parseInt(v, options.passedPawnMinDestinationRank)) return false; }
+        else if (argument == "--static-eval-limit") { const char* v = value("--static-eval-limit"); if (!v || !parseInt(v, options.staticEvalLimit)) return false; options.staticEvalLimitProvided = true; }
+        else if (argument == "--top") { const char* v = value("--top"); if (!v || !parseInt(v, options.topCount)) return false; }
+        else { std::cerr << "Unknown argument: " << argument << '\n'; return false; }
     }
-    if (options.inputPath.empty() || options.passedPawnMinDestinationRank < 0 ||
+    if (options.inputPath.empty() || !options.marginProvided || options.margin < 0 || options.rescueLimit < 0 || options.passedPawnMinDestinationRank < 0 ||
         options.passedPawnMinDestinationRank > 8 || options.staticEvalLimit < 0 || options.topCount < 1) {
-        std::cerr << "--input is required; rank and static-eval limit must be non-negative; --top must be positive\n";
-        return false;
+        std::cerr << "--input and non-negative --margin are required; all limits must be non-negative and --top positive\n"; return false;
     }
     return true;
 }
@@ -273,12 +215,8 @@ int main(int argc, char** argv) {
         if (!futility_margin_tail::parseArgs(argc, argv, options)) return 1;
         std::ifstream input(options.inputPath);
         if (!input) throw std::runtime_error("failed to open input " + options.inputPath);
-        const futility_margin_tail::Report report = futility_margin_tail::scan(input, options);
-        futility_margin_tail::writeReport(std::cout, report, options);
+        futility_margin_tail::writeReport(std::cout, futility_margin_tail::scan(input, options), options);
         return 0;
-    } catch (const std::exception& error) {
-        std::cerr << "fatal: " << error.what() << '\n';
-        return 1;
-    }
+    } catch (const std::exception& error) { std::cerr << "fatal: " << error.what() << '\n'; return 1; }
 }
 #endif

@@ -507,7 +507,7 @@ int moveOrderScore(const Position& pos, const Move& move, const Move* preferredM
     if (preferredMove != nullptr && movesEqual(move, *preferredMove)) return 1000000;
 
     // ordB: good captures lead, then every promotion, then quiet killers.
-    // Negative-SEE captures remain late even when they promote.
+    // Capture-promotions are in the promotion group even if SEE is negative.
     if (isCaptureMove(pos, move) && staticExchangeEvalIsNonNegative(pos, move)) {
         return 900000 + captureOrderScore(pos, move);
     }
@@ -1070,6 +1070,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
     g_nodeLimit = limits.nodeLimit;
     g_searchParameters = limits.parameters;
     g_isolateTranspositionTable = limits.isolateTranspositionTable;
+    if (limits.futilityMarginSiteResult != nullptr) *limits.futilityMarginSiteResult = FutilityMarginSiteResult{};
 #ifdef CHILO_FUTILITY_SITE_COLLECT
     g_futilitySiteMaxDepth = limits.futilitySiteMaxDepth;
     if (g_futilitySiteMaxDepth < 0) g_futilitySiteMaxDepth = 0;
@@ -1157,7 +1158,11 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
 
         Move iterationMoves[MAX_MOVES];
         for (int i = 0; i < rootCount; i++) iterationMoves[i] = rootMoves[i];
-        orderMoves(pos, iterationMoves, rootCount, &preferredMove, 0);
+        // A bare FEN does not carry a meaningful root TT/preferred move.
+        // The futility-margin trace therefore uses the deterministic ordB
+        // ordering without that artificial root preference.
+        orderMoves(pos, iterationMoves, rootCount,
+                   limits.futilityMarginSiteResult != nullptr ? nullptr : &preferredMove, 0);
 
         int alpha = -INF_SCORE;
         int beta = INF_SCORE;
@@ -1171,9 +1176,20 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         SearchLeaf bestMoveLeaf{};
         std::vector<RootMoveResult> iterationRootResults;
         if (collectRootScores) iterationRootResults.reserve(rootCount);
+        bool prefixSnapshotTaken = false;
+        int prefixScore = -INF_SCORE;
+        Move prefixBestMove{};
+        int prefixMoveCount = 0;
 
         for (int i = 0; i < rootCount; i++) {
             const Move& move = iterationMoves[i];
+            const bool prefixMove = (isCaptureMove(pos, move) && staticExchangeEvalIsNonNegative(pos, move)) ||
+                                    move.promotion != EMPTY;
+            if (!prefixMove && !prefixSnapshotTaken && prefixMoveCount > 0) {
+                prefixSnapshotTaken = true;
+                prefixScore = alpha;
+                prefixBestMove = bestMove;
+            }
             HistoryMoveInfo moveInfo = historyMoveInfo(pos, move);
             bool childUsesNnue = childPieceCountAfterMove(pos, move) > NNUE_REBUILD_PIECE_THRESHOLD;
             NnueMoveDelta nnueDelta{};
@@ -1244,6 +1260,7 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                 }
             }
             if (score > alpha) alpha = score;
+            if (prefixMove) prefixMoveCount++;
         }
 
         result.nodes += iterationNodes;
@@ -1269,6 +1286,26 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
         else clearBestMoveEval(result);
 
         storeTT(pos.hashKey, depth, 0, bestScore, TT_EXACT, bestMove);
+
+        if (limits.futilityMarginSiteResult != nullptr && depth == maxDepth) {
+            FutilityMarginSiteResult& trace = *limits.futilityMarginSiteResult;
+            trace.completed = true;
+            trace.hasPrefix = prefixSnapshotTaken;
+            trace.prefixMove = prefixBestMove;
+            trace.prefixScore = prefixScore;
+            trace.prefixMoveCount = prefixMoveCount;
+            if (prefixSnapshotTaken && isQuietMove(pos, bestMove) && bestScore > prefixScore) {
+                UndoState undoState;
+                doMove(pos, bestMove, undoState);
+                trace.quietGivesCheck = inCheck(pos, pos.sideToMove);
+                undo(pos, bestMove, undoState);
+                if (!trace.quietGivesCheck) {
+                    trace.hasUsefulQuiet = true;
+                    trace.quietMove = bestMove;
+                    trace.quietScore = bestScore;
+                }
+            }
+        }
 
         if (limits.infoCallback != nullptr) limits.infoCallback(result, limits.infoUserData);
     }

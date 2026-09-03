@@ -193,6 +193,22 @@ struct SearchParameters {
     std::array<int, MAX_FUTILITY_DEPTH + 1> futilityMargins = {CHILO_FUTILITY_MARGINS};
 };
 
+// Optional root-search trace used only by the empirical futility-margin
+// analyzer.  The prefix is the current ordB non-quiet prefix: non-negative
+// SEE captures plus every promotion.  It deliberately has no inherited TT,
+// killer, history, or alpha context.
+struct FutilityMarginSiteResult {
+    bool completed = false;
+    bool hasPrefix = false;
+    Move prefixMove{};
+    int prefixScore = 0;
+    int prefixMoveCount = 0;
+    bool hasUsefulQuiet = false;
+    Move quietMove{};
+    int quietScore = 0;
+    bool quietGivesCheck = false;
+};
+
 struct SearchLimits {
     int depth;
     int movetimeMs;
@@ -209,6 +225,10 @@ struct SearchLimits {
     uint64_t nodeLimit = 0;
     SearchParameters parameters{};
     bool isolateTranspositionTable = false;
+    // Run the ordinary root PVS with no preferred root move and retain the
+    // final target-depth prefix/quiet telemetry in this caller-owned object.
+    // This is an analysis-only hook; ordinary searches leave it null.
+    FutilityMarginSiteResult* futilityMarginSiteResult = nullptr;
 #ifdef CHILO_FUTILITY_SITE_COLLECT
     // Collector-only callback for a parent position that has reached a
     // structurally eligible futility candidate. This is intentionally before

@@ -813,22 +813,28 @@ and raw/unique/final collection counts. `make futility_site_collect_tests`
 checks the callback's ordinary, disabled-depth, strict-beta, and
 non-pawn-material gates without changing normal-engine test coverage.
 
-`futility_margin_analysis` is the normal-search oracle half. For every selected
-parent FEN it makes one unrestricted normal PVS search at `target_depth`, with
-the supplied established margins enabled only below the target depth. The
-target-depth futility rule remains disabled. It retains an observation only
-when that search's actual best move is a quiet, non-checking move; captures,
-promotions, checking moves, and other ineligible best moves contribute no
-finite observation. The retained move score is the normal best score `B`, so
-the required finite margin is `max(0, B - static_eval)`. This asks whether a
-quiet move can preserve the node's final value, rather than whether every quiet
-move can improve over static evaluation in isolation.
+`futility_margin_analysis` is the ordB prefix-rescue oracle. For every selected
+parent FEN it makes one ordinary root PVS search at `target_depth`, with the
+supplied established margins enabled only below the target depth. The
+target-depth rule remains disabled. It intentionally has no inherited TT,
+killer/history, or alpha context: a bare FEN cannot supply those. Root ordering
+is therefore deterministic ordB with no preferred move: non-negative SEE
+captures, every promotion (including a negative-SEE capture-promotion), then
+killer/ordinary quiet moves, then remaining negative-SEE captures.
+
+The analyzer uses normal PVS throughout, not a full-window search per move. It
+snapshots the exact root alpha `C` after the capture/promotion prefix, then
+continues the same root PVS from that alpha. It retains an observation only
+when the final best move is a quiet, non-checking move with exact score `Q >
+C`. A tuple with proposed target margin `M` would prune this quiet rescue when
+`static_eval + M <= C`; its local loss is `Q - C`. This is deliberately a
+measured rescue trade-off, not a claim that the target-depth rule is lossless.
 
 The analyzer excludes a parent that is in check or has no non-pawn material for
-the moving side. A quiet best move that has a mate score is written to
-`mate-risks.jsonl`, never folded into the finite tail. The former per-position
-mate policy is intentionally gone: a normal best move is the only candidate
-that can establish a finite observation.
+the moving side. It emits no record when there is no prefix, the final best move
+is not an eligible quiet move, or the quiet does not improve `C`. A quiet rescue
+with a mate score is written to `mate-risks.jsonl`, never folded into the finite
+tail; it retains the same prefix context.
 
 Build the matching analyzer, copy
 `scripts/futility_margin_analysis.example.json`, set its three artifact paths
@@ -862,46 +868,46 @@ after all of its finite records and any separate mate records have been
 flushed; a restart trims unjournaled trailing bytes before continuing. A resume
 rejects changed artifacts or settings rather than mixing evidence.
 
-For an ad-hoc small inspection, flatten the per-position JSONL and calculate
-the delta on demand:
+Each finite `positions.jsonl` record has schema
+`chilo.futility_margin_rescue.v1` and includes `fen`, `static_eval`,
+`prefix_move`, `prefix_score`, `prefix_count`, `quiet_move`, `quiet_piece`,
+`quiet_score`, `prefix_delta`, and `quiet_gain`. For an ad-hoc inspection:
 
 ```bash
-jq -c '. + {delta: (.move_score - .static_eval)}' \
+jq -c . \
   ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl
 
-jq -c 'select((.move_score - .static_eval) >= 300) + {delta: (.move_score - .static_eval)}' \
+jq -c 'select(.quiet_gain >= 100)' \
   ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl
 
 jq -c . ~/Tune/futility/margin-analysis/g4-alpha21-d1/mate-risks.jsonl
 ```
 
-Every `positions.jsonl` line has exactly the five finite fields `fen`,
-`static_eval`, `move`, `moving_piece`, and `move_score`. This is intentional so
-new questions can be asked with `jq` without prejudging new conditions. The
-workflow only gathers evidence. Choosing a margin after examining its tail,
-adding an exclusion, packaging a large run, or changing the engine remains an
-explicit follow-up decision.
-
 For a complete multi-gigabyte finite stream, use the native read-only tail
-scanner instead of repeatedly parsing it with `jq`. Its single current
-exemption is a passed-pawn advance, defined on the pre-move FEN as having no
-opposing pawn ahead on the same or adjacent file. The destination rank is
-relative to the pawn's side: Black `d3d2`, for example, reaches rank seven.
+scanner instead of repeatedly parsing it with `jq`. It applies a proposed
+margin, classifies each would-prune rescue by an accepted local-loss limit, and
+ranks the remaining local losses. Its existing predicate filters remain
+available before this classification. A passed-pawn advance is defined on the
+pre-move FEN as having no opposing pawn ahead on the same or adjacent file. The
+destination rank is relative to the pawn's side: Black `d3d2`, for example,
+reaches rank seven.
 
 ```bash
 make futility_margin_tail
 build/release/futility_margin_tail \
   --input ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl \
+  --margin 100 \
+  --rescue-limit 0 \
   --passed-pawn-min-destination-rank 7 \
   --top 20 > tail-rank7.json
 ```
 
-`--passed-pawn-min-destination-rank 0` disables the exemption and gives the
-unfiltered baseline. The scanner writes one JSON report with all/positive and
-excluded counts, plus the maximum and top remaining positive moves. It uses no
-NNUE weights and performs no engine search. It is exploratory only: do not add
-the corresponding live futility exemption until the retained tail evidence has
-stabilized.
+`--passed-pawn-min-destination-rank 0` disables that filter. The scanner writes
+one JSON report with each predicate exclusion count, retained records,
+would-prune count, rescues within the limit, unrescued count, and maximum/top
+unrescued events. It uses no NNUE weights and performs no engine search. It is
+exploratory only: do not add a corresponding live futility exemption until the
+retained tail evidence has stabilized.
 
 The scanner can additionally restrict inspection to the near-equality regime
 without rerunning the analyzer:
@@ -909,31 +915,27 @@ without rerunning the analyzer:
 ```bash
 build/release/futility_margin_tail \
   --input ~/Tune/futility/margin-analysis/g4-alpha21-d1/positions.jsonl \
+  --margin 100 \
+  --rescue-limit 25 \
   --passed-pawn-min-destination-rank 7 \
   --static-eval-limit 400 \
   --top 20 > tail-rank7-near-equal.json
 ```
 
 `--static-eval-limit L` retains exactly `-L < static_eval <= L`, reports the
-low and high exclusions separately, and is disabled by default. It is a
-diagnostic filter for the intended futility regime, not a live-search rule.
+low and high exclusions separately, and is disabled by default. It and the
+passed-pawn predicate are diagnostic filters, not live-search rules.
 
-### Rejected noisy-rescue shortcut — 2026-09-03
+### Rescue-margin decision — 2026-09-03
 
-We considered dropping a quiet-best margin observation when the best
-capture/promotion was within a configurable few centipawns of it. That would
-discard cases where the quiet move might be found later, but it would also make
-the procedure explicitly lossy. The lossless margin analysis must not use such
-a rescue margin.
-
-The relevant live-search premise is instead ordering: a quiet move that does
-not exceed the alpha already established by an earlier good capture or
-promotion fails low normally and cannot be the best move. Conversely, a node
-with no earlier searched capture/promotion must not use futility pruning under
-this policy; the first quiet move is not a non-quiet rescue. This fact cannot
-be reconstructed from a bare FEN, because TT, killers, history, and SEE affect
-the original ordering. Future site collection must preserve it as an explicit
-event/eligibility field before the live futility condition is changed.
+The earlier static-score maximum and its lossless interpretation are
+superseded. The useful comparison is the quiet rescue `Q - C` after the actual
+ordB non-quiet prefix has established alpha, not `Q - static_eval`. A node with
+no such prefix emits no event; it must not be treated as a safe non-quiet
+rescue. The method still omits TT/killer/history context by design, because the
+FEN corpus does not carry it. That makes the resulting distribution a
+conservative, deterministic FEN-only calibration rather than a replay of one
+particular historical search path.
 
 Current normal ordering in version `0.7.6` is the TT/preferred move, good SEE
 captures, all promotions, killer quiets, ordinary quiets, then remaining

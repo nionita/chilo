@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 
-SCHEMA = "chilo.futility_margin_analysis.v2"
+SCHEMA = "chilo.futility_margin_analysis.v3"
 
 
 def sha256(path: Path) -> str:
@@ -122,7 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "input_manifest": settings.pop("input_manifest"), "weights": identity(settings["weights"]),
                 "target_depth": settings["target_depth"], "previous_margins": settings["previous_margins"],
                 "max_fens": settings["max_fens"], "sample_seed": settings["sample_seed"],
-                "report_every": settings["report_every"], "analysis_method": "normal_best_quiet_v1"}
+                "report_every": settings["report_every"], "analysis_method": "ordb_prefix_rescue_pvs_v1"}
     if args.new:
         if run_dir.exists():
             raise SystemExit(f"new run directory already exists: {run_dir}")

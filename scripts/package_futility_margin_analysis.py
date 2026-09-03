@@ -118,7 +118,7 @@ def main() -> int:
         encoding="utf-8",
     )
     (output / "README.txt").write_text(
-        "Futility margin analysis: depth %d\r\n\r\n"
+        "OrdB prefix-rescue futility margin analysis: depth %d\r\n\r\n"
         "Requirements: Windows x64 with AVX2 and Python available as `python`.\r\n"
         "Run run-analysis.cmd once. It creates run/ and refuses to overwrite it.\r\n"
         "After an interruption, run resume-analysis.cmd. Do not edit config or packaged artifacts before resume.\r\n\r\n"
@@ -129,8 +129,8 @@ def main() -> int:
     )
     files = [path for path in sorted(output.rglob("*")) if path.is_file()]
     manifest = {
-        "schema": "chilo.futility_margin_analysis.package.v2",
-        "purpose": "Exact recursive futility-margin analysis on Windows",
+        "schema": "chilo.futility_margin_analysis.package.v3",
+        "purpose": "OrdB prefix-rescue futility-margin analysis on Windows",
         "git_revision": revision,
         "source_dirty": dirty,
         "command": "run-analysis.cmd",
@@ -138,7 +138,7 @@ def main() -> int:
         "previous_margins": margins,
         "max_fens": args.max_fens,
         "sample_seed": args.sample_seed,
-        "analysis_method": "normal_best_quiet_v1",
+        "analysis_method": "ordb_prefix_rescue_pvs_v1",
         "files": [identity(path, output) for path in files],
     }
     manifest_path = output / "package_manifest.json"

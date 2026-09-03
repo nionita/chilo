@@ -40,6 +40,7 @@ MOVE_ORDERING_PROBE_SRC := move_ordering_probe.cpp
 FUTILITY_SITE_COLLECT_SRC := futility_site_collect.cpp
 FUTILITY_SITE_COLLECT_TEST_SRC := futility_site_collect_tests.cpp
 FUTILITY_MARGIN_ANALYSIS_SRC := futility_margin_analysis.cpp
+FUTILITY_MARGIN_ANALYSIS_TEST_SRC := futility_margin_analysis_tests.cpp
 FUTILITY_MARGIN_TAIL_SRC := futility_margin_tail.cpp
 FUTILITY_MARGIN_TAIL_TEST_SRC := futility_margin_tail_tests.cpp
 ENGINE_HEADERS := engine.h chess_position.h chess_tables.h $(GENERATED_DIR)/generated_nnue_weights.h
@@ -53,7 +54,7 @@ WIN64_AVX2_BINS := $(WIN64_AVX2_DIR)/perft.exe $(WIN64_AVX2_DIR)/perft_diag.exe 
 
 .PHONY: all clean release release-avx2 debug validate windows64 windows64-avx2 tests tests-debug tests-validate python-env nnue-python-tests nnue-verify \
 	perft perft_diag engine_tests chilo selfplay_collect eval_fen nnue_eval_bench \
-	futility_stats futility_probe move_ordering_probe futility_site_collect futility_site_collect_avx2 futility_site_collect_tests futility_margin_analysis futility_margin_analysis_avx2 futility_margin_tail futility_margin_tail_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug \
+	futility_stats futility_probe move_ordering_probe futility_site_collect futility_site_collect_avx2 futility_site_collect_tests futility_margin_analysis futility_margin_analysis_avx2 futility_margin_analysis_tests futility_margin_tail futility_margin_tail_tests perft_debug perft_diag_debug engine_tests_debug chilo_debug selfplay_collect_debug eval_fen_debug \
 	futility_stats_debug futility_probe_debug move_ordering_probe_debug perft_validate perft_diag_validate engine_tests_validate chilo_validate selfplay_collect_validate eval_fen_validate \
 	futility_stats_validate futility_probe_validate move_ordering_probe_validate perft.exe perft_diag.exe engine_tests.exe chilo.exe selfplay_collect.exe eval_fen.exe nnue_eval_bench.exe futility_stats.exe futility_probe.exe move_ordering_probe.exe futility_margin_analysis.exe futility_margin_analysis_avx2.exe
 
@@ -92,6 +93,7 @@ futility_site_collect_avx2: $(FUTILITY_SITE_COLLECT_AVX2_DIR)/futility_site_coll
 futility_site_collect_tests: $(FUTILITY_SITE_COLLECT_DIR)/futility_site_collect_tests
 futility_margin_analysis: $(RELEASE_DIR)/futility_margin_analysis
 futility_margin_analysis_avx2: $(RELEASE_AVX2_DIR)/futility_margin_analysis
+futility_margin_analysis_tests: $(RELEASE_DIR)/futility_margin_analysis_tests
 futility_margin_tail: $(RELEASE_DIR)/futility_margin_tail
 futility_margin_tail_tests: $(RELEASE_DIR)/futility_margin_tail_tests
 
@@ -172,6 +174,9 @@ $(RELEASE_DIR)/move_ordering_probe: $(MOVE_ORDERING_PROBE_SRC) $(ENGINE_OBJ) | $
 
 $(RELEASE_DIR)/futility_margin_analysis: $(FUTILITY_MARGIN_ANALYSIS_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_MARGIN_ANALYSIS_SRC) $(ENGINE_OBJ)
+
+$(RELEASE_DIR)/futility_margin_analysis_tests: $(FUTILITY_MARGIN_ANALYSIS_TEST_SRC) $(ENGINE_OBJ) | $(RELEASE_DIR)
+	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_MARGIN_ANALYSIS_TEST_SRC) $(ENGINE_OBJ)
 
 $(RELEASE_DIR)/futility_margin_tail: $(FUTILITY_MARGIN_TAIL_SRC) chess_position.h | $(RELEASE_DIR)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O3 -DNDEBUG -o $@ $(FUTILITY_MARGIN_TAIL_SRC)
