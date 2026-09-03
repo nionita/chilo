@@ -11,9 +11,11 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +36,16 @@ def sha256(path: Path) -> str:
 def atomic_json(path: Path, value: Any) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2) + "\n")
-    temporary.replace(path)
+    # Windows Defender/indexing can transiently hold the old checkpoint open.
+    # The completed record is already durable, so retry the atomic replacement.
+    for attempt in range(20):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
 
 
 def load_fens(path: Path) -> list[str]:
@@ -82,6 +93,31 @@ def run_one(engine: Path, weights: Path, fen: str, depth: int) -> dict[str, Any]
     return info
 
 
+def recover_records(records_path: Path) -> tuple[int, dict[str, int]]:
+    """Return the contiguous completed prefix and totals from durable records."""
+    if not records_path.exists():
+        return 0, {}
+    by_index: dict[int, dict[str, Any]] = {}
+    for line_number, line in enumerate(records_path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        index = record.get("index")
+        if not isinstance(index, int) or index < 0 or index in by_index:
+            raise ValueError(f"{records_path}:{line_number}: invalid or duplicate record index")
+        by_index[index] = record
+    totals: dict[str, int] = {}
+    index = 0
+    while index in by_index:
+        for key, value in by_index[index].items():
+            if key not in ("index", "bestmove"):
+                totals[key] = totals.get(key, 0) + int(value)
+        index += 1
+    if len(by_index) != index:
+        raise ValueError(f"{records_path}: records do not form a contiguous prefix")
+    return index, totals
+
+
 def run_candidate(candidate: dict[str, str], root: Path, fens: list[str], depth: int, resume: bool) -> dict[str, Any]:
     candidate_id = candidate["id"]
     engine = root / candidate["engine"]
@@ -99,13 +135,24 @@ def run_candidate(candidate: dict[str, str], root: Path, fens: list[str], depth:
         state = json.loads(state_path.read_text())
         if state.get("schema") != SCHEMA or state.get("candidate") != candidate_id or state.get("depth") != depth:
             raise ValueError(f"{candidate_id}: state does not match this run")
-    start = int(state["next_index"])
-    totals = {key: int(value) for key, value in state.get("totals", {}).items()}
+    if resume:
+        start, totals = recover_records(records_path)
+        # Records are written before the checkpoint.  Rebuild a stale/missing
+        # state from those records, including the entry that survived a failed
+        # Windows rename.
+        state = {"schema": SCHEMA, "candidate": candidate_id, "depth": depth, "next_index": start, "totals": totals}
+        atomic_json(state_path, state)
+    else:
+        start = 0
+        totals: dict[str, int] = {}
     with records_path.open("a") as records:
         for index in range(start, len(fens)):
             result = run_one(engine, weights, fens[index], depth)
             records.write(json.dumps({"index": index, **result}) + "\n")
             records.flush()
+            # The checkpoint must never claim a record that is still only in a
+            # buffered user-space write.
+            os.fsync(records.fileno())
             for key, value in result.items():
                 if key != "bestmove":
                     totals[key] = totals.get(key, 0) + int(value)
