@@ -20,6 +20,10 @@ package does not authorize starting an expensive run.
   scripts and configuration, every selected input/reference/anchor artifact,
   and the runtime weights when the probe needs them. Resolve every config path
   inside the staged package.
+- Include the complete local Python import closure of every packaged entry
+  point, including modules imported only by a post-probe analysis step. Before
+  archiving, import the staged entry points with `PYTHONPATH` set to the staged
+  `scripts/` directory and run their dry validation where available.
 - Generate a manifest containing the Git revision, run purpose, command,
   candidate identities/margins, and SHA-256 hashes of the executable, scripts,
   config, inputs, reference, baseline when applicable, and weights.

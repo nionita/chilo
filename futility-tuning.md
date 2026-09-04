@@ -43,9 +43,10 @@ clear advantage becoming non-positive.
 |---:|---|---|---:|---:|---:|---:|---:|---:|---|
 | 1 | `d3-0009` | `0,25,139` | **0.014369** | **0.002076** | **0.084819** | **0.199647** | **0.312449** | 218 / 216 / **17** / **14** | Not tested. |
 | 2 | `spsa150b` | `0,40,158,488,754` | 0.014452 | 0.002167 | 0.084990 | 0.201051 | 0.321794 | **205** / 221 / 19 / 16 | H1 accepted versus f21 at 30+0.5. |
-| 3 | `d3-0062` | `0,58,205` | 0.014732 | 0.002231 | 0.086320 | 0.206254 | 0.325278 | 228 / 217 / 22 / 16 | Not tested. |
-| 4 | `f21` | `75,212,390,600,839` | 0.014778 | 0.002278 | 0.085782 | 0.203774 | 0.329138 | 220 / 223 / 21 / 18 | H1 accepted versus f01; established control. |
-| 5 | `f01` | `120,240,360` | 0.015140 | 0.002343 | 0.088668 | 0.208117 | 0.330023 | 230 / 228 / 21 / 18 | Lost to f21. |
+| 3 | `pareto-0041` | `0,44,205` | 0.014521 | 0.002167 | 0.085379 | 0.205161 | **0.319430** | 219 / 225 / 19 / 15 | Not tested. |
+| 4 | `d3-0062` / `pareto-0040` | `0,58,205` | 0.014732 | 0.002231 | 0.086320 | 0.206254 | 0.325278 | 228 / 217 / 22 / 16 | Not tested. |
+| 5 | `f21` | `75,212,390,600,839` | 0.014778 | 0.002278 | 0.085782 | 0.203774 | 0.329138 | 220 / 223 / 21 / 18 | H1 accepted versus f01; established control. |
+| 6 | `f01` | `120,240,360` | 0.015140 | 0.002343 | 0.088668 | 0.208117 | 0.330023 | 230 / 228 / 21 / 18 | Lost to f21. |
 
 `spsa150b` beats `f21` on every listed continuous metric on both full
 populations; on SR3-R2M its mean regret is 2.25% lower, squared regret 5.12%
@@ -59,6 +60,38 @@ continuous risk metric. It has no game-strength evidence, so its apparent
 advantage over `spsa150b` is a hypothesis for a direct SPRT, not a claim of
 superior playing strength. `d3-0062` trails both on SR3-R2M and has no current
 reason to receive priority over that comparison.
+
+### Pareto-v4 cloud search and 0041 evaluation — 2026-09-04
+
+The one-worker cloud Pareto search from `d3-0009` ended after 63 proposals
+(64 evaluated tuples including the initial point), rather than its requested
+86. At the fixed three-depth perturbation radius it could not generate a new
+unevaluated tuple after 1,000 deterministic retries; retries did not enlarge
+that radius. This is an optimizer-neighborhood exhaustion, not a probe or
+reference failure. The completed search archive is retained as
+`~/Tune/futility/g3-sr4-pareto-v4-d3-86-linux-rez.tgz` (SHA-256
+`be94ac76c4370054fbdd9933bceab7e102dc7907c8e6df919a629015d27753af`).
+
+Its two useful final tuples were `pareto-0040` = `0,58,205` and
+`pareto-0041` = `0,44,205`. `pareto-0040` is exactly the already evaluated
+`d3-0062`, so only 0041 required fresh complete probes. The repair-only
+analysis completed without rerunning those probes; its returned archive is
+`~/Tune/futility/g3-sr4-sr3-r2m-pareto-0040-0041-results.tgz` (SHA-256
+`a14d58cd7754909393a5fdff33af9f32d4a256e57de5fc61b088dfae0062e3ca`).
+It contains normal-PVS 120k output for all 25,001 input records on each
+population and direct-reference analyses over 22,825 trusted SR4 and 22,934
+trusted SR3-R2M positions.
+
+On development SR4, 0041 was the lowest-mean tuple (mean `0.014055`, squared
+`0.002169`, CVaR-1% `0.324880`), narrowly ahead of `spsa150b` (`0.014074`,
+`0.002188`, `0.329445`). The tail-oriented 0040 was better on SR4 squared
+regret and CVaR-1% (`0.002143`, `0.322649`). On untouched SR3-R2M, 0041
+regressed relative to `spsa150b` on mean regret (`0.014521` vs `0.014452`) and
+P95/P99, although it had a slightly lower CVaR-1% (`0.319430` vs `0.321794`).
+It also had more clear-advantage losses (225 vs 221). Thus 0041 is a useful
+recorded Pareto trade-off, but not a compelling new SPRT priority over the
+already SPRT-validated `spsa150b`. The selection table above is the current
+matched view of all these candidates.
 
 ## G3-SR1 Candidate Filter — 2026-08-21
 
