@@ -455,6 +455,7 @@ def build_per_root_reference_command(
     reference_output: Path,
     baseline_output: Path,
     report_every: int,
+    resume: bool = False,
 ) -> List[str]:
     command = [
         str(probe.resolve()),
@@ -466,8 +467,8 @@ def build_per_root_reference_command(
         "--report-every", str(report_every),
         "--baseline-output", str(baseline_output.resolve()),
         "--output", str(reference_output.resolve()),
-        "--overwrite",
     ]
+    command.append("--resume" if resume else "--overwrite")
     if weights is not None:
         command.extend(["--weights", str(weights.resolve())])
     command.extend(str(path.resolve()) for path in inputs)
@@ -715,9 +716,10 @@ def run_per_root_anchor(
     ):
         return {"status": "reused", "reference": str(reference_path), "baseline": str(baseline_path)}
 
+    resume = (reference_path.parent / (reference_path.name + ".resume")).is_file()
     command = build_per_root_reference_command(
         probe, inputs, weights, baseline_nodes, reference_nodes, depth_gap, margins,
-        reference_path, baseline_path, expanded["reference_report_every"],
+        reference_path, baseline_path, expanded["reference_report_every"], resume,
     )
     with log_path.open("w", encoding="utf-8") as log:
         log.write("command=" + json.dumps(command) + "\n")

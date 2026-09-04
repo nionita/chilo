@@ -199,7 +199,8 @@ def run(settings: Mapping[str, Any], run_dir: Path) -> Dict[str, Any]:
         rescue = parse_rescue(rescue_path, settings["reference_nodes_per_root"], settings["baseline_margins"], settings["candidate_nodes"], settings["reference_depth_gap"])
         rescue_baseline = tune_futility.parse_probe_output(rescue_baseline_path, settings["candidate_nodes"], settings["baseline_margins"])
     except (RescueError, tune_futility.TuningError):
-        command = [str(settings["probe"]), "--per-root-mate-rescue", "--baseline-nodes", str(settings["candidate_nodes"]), "--reference-nodes-per-root", str(settings["reference_nodes_per_root"]), "--reference-depth-gap", str(settings["reference_depth_gap"]), "--futility-margins", ",".join(str(value) for value in settings["baseline_margins"]), "--baseline-output", str(rescue_baseline_path), "--output", str(rescue_path), "--overwrite", "--report-every", str(settings["report_every"])]
+        resume = (rescue_path.parent / (rescue_path.name + ".resume")).is_file()
+        command = [str(settings["probe"]), "--per-root-mate-rescue", "--baseline-nodes", str(settings["candidate_nodes"]), "--reference-nodes-per-root", str(settings["reference_nodes_per_root"]), "--reference-depth-gap", str(settings["reference_depth_gap"]), "--futility-margins", ",".join(str(value) for value in settings["baseline_margins"]), "--baseline-output", str(rescue_baseline_path), "--output", str(rescue_path), "--resume" if resume else "--overwrite", "--report-every", str(settings["report_every"])]
         if settings["weights"] is not None:
             command += ["--weights", str(settings["weights"])]
         command += [str(path) for path in masked_inputs]

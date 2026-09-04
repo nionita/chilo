@@ -33,6 +33,7 @@ struct Options {
     bool perRootReference = false;
     bool perRootMateRescue = false;
     bool overwrite = false;
+    bool resume = false;
     bool helpRequested = false;
 };
 
@@ -57,6 +58,224 @@ struct ReferenceRunStats {
     uint64_t elapsedMs = 0;
     std::array<uint64_t, MAX_FUTILITY_DEPTH + 1> futilityPrunes{};
     std::array<uint64_t, MAX_FUTILITY_DEPTH + 1> futilityPrunesInCheck{};
+};
+
+struct ResumeCheckpoint {
+    uint64_t positions = 0;
+    uint64_t referenceBytes = 0;
+    uint64_t baselineBytes = 0;
+    RunStats baselineStats{};
+    ReferenceRunStats referenceStats{};
+};
+
+bool parseUInt64(const std::string& text, uint64_t& value);
+
+std::string resumeFingerprint(const Options& options) {
+    // This is a local restart guard, not an artifact identity. The Python
+    // manifests still bind the executable, inputs, weights, and settings with
+    // SHA-256. A human-readable fingerprint keeps a stale journal from being
+    // applied to a different invocation before that layer gets a chance to
+    // validate the completed files.
+    std::ostringstream output;
+    output << "per-root-resume-v1\t"
+           << (options.perRootMateRescue ? "mate-rescue" : "reference") << '\t'
+           << options.baselineNodeLimit << '\t'
+           << options.referenceNodesPerRoot << '\t'
+           << options.referenceDepthGap << '\t'
+           << options.parameters.futilityMaxDepth << '\t';
+    for (int depth = 1; depth <= options.parameters.futilityMaxDepth; ++depth) {
+        if (depth > 1) output << ',';
+        output << options.parameters.futilityMargins[depth];
+    }
+    output << '\t' << options.weightsPath;
+    for (const std::string& input : options.inputPaths) {
+        const std::filesystem::path path = std::filesystem::absolute(input).lexically_normal();
+        std::error_code error;
+        const uintmax_t size = std::filesystem::file_size(path, error);
+        if (error) return {};
+        const auto modified = std::filesystem::last_write_time(path, error);
+        if (error) return {};
+        output << '\t' << path.string() << ':' << size << ':' << modified.time_since_epoch().count();
+    }
+    return output.str();
+}
+
+void writeStats(std::ostream& output, const RunStats& stats) {
+    output << '\t' << stats.positions
+           << '\t' << stats.terminalPositions
+           << '\t' << stats.interruptedSearches
+           << '\t' << stats.nodes
+           << '\t' << stats.completedNodes
+           << '\t' << stats.elapsedMs;
+    for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; ++depth) output << '\t' << stats.futilityPrunes[depth];
+    for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; ++depth) output << '\t' << stats.futilityPrunesInCheck[depth];
+}
+
+bool readStats(const std::vector<std::string>& fields, std::size_t& index, RunStats& stats) {
+    auto read = [&](uint64_t& value) {
+        if (index >= fields.size() || !parseUInt64(fields[index], value)) return false;
+        ++index;
+        return true;
+    };
+    if (!read(stats.positions) || !read(stats.terminalPositions) || !read(stats.interruptedSearches) ||
+        !read(stats.nodes) || !read(stats.completedNodes) || !read(stats.elapsedMs)) {
+        return false;
+    }
+    for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; ++depth) {
+        if (!read(stats.futilityPrunes[depth])) return false;
+    }
+    for (int depth = 1; depth <= MAX_FUTILITY_DEPTH; ++depth) {
+        if (!read(stats.futilityPrunesInCheck[depth])) return false;
+    }
+    return true;
+}
+
+void writeReferenceStats(std::ostream& output, const ReferenceRunStats& stats) {
+    output << '\t' << stats.positions
+           << '\t' << stats.terminalPositions
+           << '\t' << stats.completedPositions
+           << '\t' << stats.rejectedPositions
+           << '\t' << stats.nodes
+           << '\t' << stats.completedNodes
+           << '\t' << stats.elapsedMs;
+}
+
+bool readReferenceStats(const std::vector<std::string>& fields, std::size_t& index, ReferenceRunStats& stats) {
+    auto read = [&](uint64_t& value) {
+        if (index >= fields.size() || !parseUInt64(fields[index], value)) return false;
+        ++index;
+        return true;
+    };
+    return read(stats.positions) && read(stats.terminalPositions) && read(stats.completedPositions) &&
+           read(stats.rejectedPositions) && read(stats.nodes) && read(stats.completedNodes) && read(stats.elapsedMs);
+}
+
+std::vector<std::string> splitTabs(const std::string& line) {
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t end = line.find('\t', start);
+        fields.push_back(line.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return fields;
+}
+
+class ResumeJournal {
+public:
+    ResumeJournal() = default;
+
+    bool create(const std::filesystem::path& path, const std::string& fingerprint, std::string& error) {
+        path_ = path;
+        stream_.open(path_, std::ios::out | std::ios::trunc);
+        if (!stream_) {
+            error = "failed to create resume journal " + path_.string();
+            return false;
+        }
+        stream_ << fingerprint << '\n';
+        stream_.flush();
+        if (!stream_) {
+            error = "failed to write resume journal " + path_.string();
+            return false;
+        }
+        return true;
+    }
+
+    bool resume(const std::filesystem::path& path, const std::string& fingerprint,
+                const std::filesystem::path& referencePath, const std::filesystem::path& baselinePath,
+                ResumeCheckpoint& checkpoint, std::string& error) {
+        path_ = path;
+        std::ifstream input(path_);
+        if (!input) {
+            error = "missing resume journal " + path_.string();
+            return false;
+        }
+        std::string header;
+        if (!std::getline(input, header) || header != fingerprint) {
+            error = "resume journal does not match the current per-root invocation";
+            return false;
+        }
+
+        ResumeCheckpoint last{};
+        std::streamoff validBytes = static_cast<std::streamoff>(header.size() + 1);
+        std::string line;
+        while (std::getline(input, line)) {
+            const std::streamoff nextBytes = input.tellg();
+            const std::vector<std::string> fields = splitTabs(line);
+            ResumeCheckpoint parsed{};
+            std::size_t index = 0;
+            bool valid = fields.size() >= 4 && fields[index++] == "C" &&
+                         parseUInt64(fields[index++], parsed.positions) &&
+                         parseUInt64(fields[index++], parsed.referenceBytes) &&
+                         parseUInt64(fields[index++], parsed.baselineBytes) &&
+                         readStats(fields, index, parsed.baselineStats) &&
+                         readReferenceStats(fields, index, parsed.referenceStats) && index == fields.size() &&
+                         parsed.positions == parsed.baselineStats.positions &&
+                         parsed.positions == parsed.referenceStats.positions;
+            if (!valid) break;
+            last = parsed;
+            validBytes = nextBytes == std::streamoff(-1)
+                ? static_cast<std::streamoff>(std::filesystem::file_size(path_)) : nextBytes;
+        }
+        std::error_code fsError;
+        const uintmax_t referenceSize = std::filesystem::file_size(referencePath, fsError);
+        if (fsError || referenceSize < last.referenceBytes) {
+            error = "reference output is shorter than the last resume checkpoint";
+            return false;
+        }
+        const uintmax_t baselineSize = std::filesystem::file_size(baselinePath, fsError);
+        if (fsError || baselineSize < last.baselineBytes) {
+            error = "baseline output is shorter than the last resume checkpoint";
+            return false;
+        }
+        std::filesystem::resize_file(referencePath, last.referenceBytes, fsError);
+        if (fsError) {
+            error = "failed to trim reference output to the last resume checkpoint";
+            return false;
+        }
+        std::filesystem::resize_file(baselinePath, last.baselineBytes, fsError);
+        if (fsError) {
+            error = "failed to trim baseline output to the last resume checkpoint";
+            return false;
+        }
+        std::filesystem::resize_file(path_, static_cast<uintmax_t>(validBytes), fsError);
+        if (fsError) {
+            error = "failed to trim resume journal";
+            return false;
+        }
+        stream_.open(path_, std::ios::out | std::ios::app);
+        if (!stream_) {
+            error = "failed to reopen resume journal " + path_.string();
+            return false;
+        }
+        checkpoint = last;
+        return true;
+    }
+
+    bool checkpoint(uint64_t positions, std::streamoff referenceBytes, std::streamoff baselineBytes,
+                    const RunStats& baselineStats, const ReferenceRunStats& referenceStats, std::string& error) {
+        if (referenceBytes < 0 || baselineBytes < 0) {
+            error = "failed to get paired output offsets for resume checkpoint";
+            return false;
+        }
+        stream_ << "C\t" << positions << '\t' << referenceBytes << '\t' << baselineBytes;
+        writeStats(stream_, baselineStats);
+        writeReferenceStats(stream_, referenceStats);
+        stream_ << '\n';
+        stream_.flush();
+        if (!stream_) {
+            error = "failed while writing resume journal " + path_.string();
+            return false;
+        }
+        return true;
+    }
+
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+    std::ofstream stream_;
 };
 
 std::string trim(const std::string& text) {
@@ -129,6 +348,7 @@ void printUsage() {
         << "  -w, --weights <path>        Load external NNUE weights; failure is fatal\n"
         << "  -o, --output <path>         Write JSON Lines to this file instead of stdout\n"
         << "  --overwrite                 Permit replacing an existing output file\n"
+        << "  --resume                    Resume an interrupted paired per-root output\n"
         << "  --report-every <N>          Progress interval in positions (default: 100; 0 disables)\n"
         << "  -h, --help                  Show this help\n";
 }
@@ -207,6 +427,8 @@ bool parseArgs(int argc, char** argv, Options& options) {
             options.outputPath = value;
         } else if (arg == "--overwrite") {
             options.overwrite = true;
+        } else if (arg == "--resume") {
+            options.resume = true;
         } else if (arg == "--report-every") {
             const char* value = requireValue("--report-every");
             if (value == nullptr || !parseUInt64(value, options.reportEvery)) {
@@ -234,6 +456,14 @@ bool parseArgs(int argc, char** argv, Options& options) {
         }
     } else if (!options.hasNodeLimit) {
         std::cerr << "--nodes is required\n";
+        return false;
+    }
+    if (options.resume && !options.perRootReference) {
+        std::cerr << "--resume is supported only with --per-root-reference\n";
+        return false;
+    }
+    if (options.resume && options.overwrite) {
+        std::cerr << "--resume cannot be combined with --overwrite\n";
         return false;
     }
     if (!options.hasMargins) {
@@ -785,9 +1015,10 @@ bool processFile(const std::string& path, const Options& options, RunStats& stat
 }
 
 bool processReferenceFile(const std::string& path, const Options& options, RunStats& baselineStats,
-                          ReferenceRunStats& referenceStats, std::ostream& baselineOutput,
-                          std::ostream& referenceOutput, uint64_t totalPositions,
-                          std::chrono::steady_clock::time_point started) {
+                          ReferenceRunStats& referenceStats, std::ofstream& baselineOutput,
+                          std::ofstream& referenceOutput, uint64_t totalPositions,
+                          std::chrono::steady_clock::time_point started, uint64_t& skipPositions,
+                          ResumeJournal* resumeJournal) {
     std::ifstream input(path);
     if (!input) {
         std::cerr << "fatal: failed to open input file " << path << "\n";
@@ -814,6 +1045,10 @@ bool processReferenceFile(const std::string& path, const Options& options, RunSt
         if (!looksLikeFen(fen)) {
             std::cerr << "fatal: " << path << ':' << lineNumber << ": invalid FEN in first field\n";
             return false;
+        }
+        if (skipPositions > 0) {
+            --skipPositions;
+            continue;
         }
 
         Position pos = parseFEN(fen);
@@ -905,6 +1140,21 @@ bool processReferenceFile(const std::string& path, const Options& options, RunSt
             }
         }
 
+        baselineOutput.flush();
+        referenceOutput.flush();
+        if (!baselineOutput || !referenceOutput) {
+            std::cerr << "fatal: failed while flushing paired per-root outputs\n";
+            return false;
+        }
+        if (resumeJournal != nullptr) {
+            std::string checkpointError;
+            if (!resumeJournal->checkpoint(referenceStats.positions, referenceOutput.tellp(), baselineOutput.tellp(),
+                                           baselineStats, referenceStats, checkpointError)) {
+                std::cerr << "fatal: " << checkpointError << "\n";
+                return false;
+            }
+        }
+
         if (options.reportEvery > 0 && referenceStats.positions % options.reportEvery == 0) {
             reportReferenceProgress(referenceStats, totalPositions, started);
         }
@@ -913,9 +1163,10 @@ bool processReferenceFile(const std::string& path, const Options& options, RunSt
 }
 
 bool processMateRescueFile(const std::string& path, const Options& options, RunStats& baselineStats,
-                           ReferenceRunStats& referenceStats, std::ostream& baselineOutput,
-                           std::ostream& referenceOutput, uint64_t totalPositions,
-                           std::chrono::steady_clock::time_point started) {
+                           ReferenceRunStats& referenceStats, std::ofstream& baselineOutput,
+                           std::ofstream& referenceOutput, uint64_t totalPositions,
+                           std::chrono::steady_clock::time_point started, uint64_t& skipPositions,
+                           ResumeJournal* resumeJournal) {
     std::ifstream input(path);
     if (!input) {
         std::cerr << "fatal: failed to open input file " << path << "\n";
@@ -940,6 +1191,10 @@ bool processMateRescueFile(const std::string& path, const Options& options, RunS
         if (!looksLikeFen(fen)) {
             std::cerr << "fatal: " << path << ':' << lineNumber << ": invalid FEN in first field\n";
             return false;
+        }
+        if (skipPositions > 0) {
+            --skipPositions;
+            continue;
         }
 
         Position pos = parseFEN(fen);
@@ -1075,6 +1330,20 @@ bool processMateRescueFile(const std::string& path, const Options& options, RunS
                                         status, reason);
             }
         }
+        baselineOutput.flush();
+        referenceOutput.flush();
+        if (!baselineOutput || !referenceOutput) {
+            std::cerr << "fatal: failed while flushing paired mate-rescue outputs\n";
+            return false;
+        }
+        if (resumeJournal != nullptr) {
+            std::string checkpointError;
+            if (!resumeJournal->checkpoint(referenceStats.positions, referenceOutput.tellp(), baselineOutput.tellp(),
+                                           baselineStats, referenceStats, checkpointError)) {
+                std::cerr << "fatal: " << checkpointError << "\n";
+                return false;
+            }
+        }
         if (options.reportEvery > 0 && referenceStats.positions % options.reportEvery == 0) {
             reportReferenceProgress(referenceStats, totalPositions, started);
         }
@@ -1116,8 +1385,8 @@ int main(int argc, char** argv) {
             std::cerr << "fatal: failed to inspect " << label << " " << text << "\n";
             return false;
         }
-        if (exists && !options.overwrite) {
-            std::cerr << "fatal: " << label << " already exists; pass --overwrite to replace it\n";
+        if (exists && !options.overwrite && !options.resume) {
+            std::cerr << "fatal: " << label << " already exists; pass --overwrite to replace it or --resume to continue\n";
             return false;
         }
         return true;
@@ -1134,25 +1403,60 @@ int main(int argc, char** argv) {
             std::cerr << "fatal: reference output and baseline output must differ\n";
             return 1;
         }
-        std::ofstream referenceFile(referencePath, std::ios::out | std::ios::trunc);
-        std::ofstream baselineFile(baselinePath, std::ios::out | std::ios::trunc);
+        const std::filesystem::path journalPath = referencePath.string() + ".resume";
+        const std::string fingerprint = resumeFingerprint(options);
+        if (fingerprint.empty()) {
+            std::cerr << "fatal: failed to fingerprint per-root input files for resume\n";
+            return 1;
+        }
+
+        ResumeCheckpoint checkpoint{};
+        ResumeJournal journal;
+        std::string resumeError;
+        if (options.resume) {
+            if (!std::filesystem::exists(referencePath) || !std::filesystem::exists(baselinePath)) {
+                std::cerr << "fatal: --resume requires both existing paired per-root outputs\n";
+                return 1;
+            }
+            if (!journal.resume(journalPath, fingerprint, referencePath, baselinePath, checkpoint, resumeError)) {
+                std::cerr << "fatal: " << resumeError << "\n";
+                return 1;
+            }
+        }
+
+        std::ofstream referenceFile(referencePath, options.resume ? std::ios::out | std::ios::app
+                                                                  : std::ios::out | std::ios::trunc);
+        std::ofstream baselineFile(baselinePath, options.resume ? std::ios::out | std::ios::app
+                                                                : std::ios::out | std::ios::trunc);
         if (!referenceFile || !baselineFile) {
             std::cerr << "fatal: failed to open per-root reference outputs\n";
             return 1;
         }
+        if (!options.resume && !journal.create(journalPath, fingerprint, resumeError)) {
+            std::cerr << "fatal: " << resumeError << "\n";
+            return 1;
+        }
         const uint64_t totalPositions = countInputPositions(options.inputPaths);
         const auto started = std::chrono::steady_clock::now();
-        RunStats baselineStats;
-        ReferenceRunStats referenceStats;
+        RunStats baselineStats = checkpoint.baselineStats;
+        ReferenceRunStats referenceStats = checkpoint.referenceStats;
+        uint64_t skipPositions = checkpoint.positions;
+        if (options.resume) {
+            std::cerr << "reference resume: committed=" << skipPositions << '/' << totalPositions << "\n";
+        }
         for (const std::string& path : options.inputPaths) {
             const bool processed = options.perRootMateRescue
                 ? processMateRescueFile(path, options, baselineStats, referenceStats, baselineFile, referenceFile,
-                                        totalPositions, started)
+                                        totalPositions, started, skipPositions, &journal)
                 : processReferenceFile(path, options, baselineStats, referenceStats, baselineFile, referenceFile,
-                                       totalPositions, started);
+                                       totalPositions, started, skipPositions, &journal);
             if (!processed) {
                 return 1;
             }
+        }
+        if (skipPositions != 0) {
+            std::cerr << "fatal: resume journal has more committed positions than the supplied inputs\n";
+            return 1;
         }
         Options baselineOptions = options;
         baselineOptions.nodeLimit = options.baselineNodeLimit;
@@ -1160,8 +1464,16 @@ int main(int argc, char** argv) {
         writeSummary(baselineFile, baselineOptions, baselineStats);
         if (options.perRootMateRescue) writeMateRescueSummary(referenceFile, options, referenceStats);
         else writeReferenceSummary(referenceFile, options, referenceStats);
+        baselineFile.flush();
+        referenceFile.flush();
         if (!referenceFile || !baselineFile) {
             std::cerr << "fatal: failed while writing per-root reference JSON Lines output\n";
+            return 1;
+        }
+        std::error_code removeError;
+        std::filesystem::remove(journal.path(), removeError);
+        if (removeError) {
+            std::cerr << "fatal: completed paired outputs but failed to remove resume journal\n";
             return 1;
         }
         if (referenceStats.positions == 0) std::cerr << "warning: no positions processed\n";

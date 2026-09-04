@@ -225,6 +225,14 @@ class ProbeContractTest(unittest.TestCase):
         self.assertIn("480000", command)
         self.assertIn("--baseline-output", command)
 
+    def test_builds_resumable_per_root_reference_command(self) -> None:
+        command = tune_futility.build_per_root_reference_command(
+            Path("probe"), [Path("positions.csv")], None, 120000, 2000000, 2,
+            [120, 240, 360], Path("reference.jsonl"), Path("baseline.jsonl"), 1000, resume=True,
+        )
+        self.assertIn("--resume", command)
+        self.assertNotIn("--overwrite", command)
+
     def test_parses_complete_and_rejected_per_root_reference(self) -> None:
         margins = [120]
         baseline_nodes = 100
