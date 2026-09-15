@@ -264,6 +264,41 @@ reviewed. The full-corpus G3-SR3-R2M selection comparison of the two SPSA
 endpoints is recorded below from its durable probe output, not inferred from
 development results.
 
+### Extended selection-store layout — 2026-09-15
+
+The five completed `sr3v-01` through `sr3v-05` anchors are a new immutable
+selection population. Their mate-rescue combined populations total 114,507
+trusted positions. The two 2k smoke shards are also valid selection evidence:
+they must remain separate (`sr3v-smoke`) and are excluded when later SR3V
+production inputs are sampled, so they can be pooled without duplicate FENs.
+Neither is development data; G3-SR4 remains the only optimizer population.
+
+On the cloud server, keep raw evidence and candidate outputs separate:
+
+```text
+~/futility-validation/
+  populations/selection/sr3v/run/       # immutable five-shard raw run
+  populations/selection/sr3v-smoke/run/ # immutable two-shard smoke run
+  artifacts/<probe-sha>-<weights-sha>/  # exact frozen executable and net
+  evals/<batch-name>/                   # disposable normal-PVS outputs/reports
+```
+
+`scripts/setup_futility_validation_store.sh STORE_ROOT PROD_PACKAGE
+[SMOKE_PACKAGE]` is the guarded one-time migration. It requires completed
+receipts, refuses existing destinations, moves only each package's `run/`,
+leaves an old-path symlink for provenance, and copies the exact probe/net into
+the hash-named artifact directory. It never runs a probe.
+
+`scripts/run_futility_validation_batch.py --config CONFIG` is the serial
+candidate evaluator. A config names the immutable input, anchor, and rescue
+directories for every shard plus the frozen probe/net and candidate tuples. It
+hash-binds all of them in `batch_manifest.json`, reuses only complete candidate
+JSONL files, and writes normal PVS outputs only below the new evaluation run.
+It pools records by position only after each shard's anchor/rescue contract has
+validated. Use `--dry-run` before a cloud launch; rerunning the same command
+continues after an interruption, but a partially written ordinary candidate
+probe is intentionally restarted from scratch.
+
 ## Historical Coordinate Optimizer
 
 `scripts/optimize_futility.py` is the original dependency-free, deterministic
