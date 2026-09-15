@@ -65,8 +65,37 @@ def atomic_write(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+def normalize_rescued_root_result(record: Mapping[str, Any], scores: Mapping[str, int], line_number: int) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Use a complete rescue root map as the authoritative result in memory.
+
+    Early mate-rescue probe builds could retain a shallower baseline score when
+    it exceeded every completed rescue-root score.  The JSONL is immutable
+    experiment evidence, so keep it byte-for-byte intact and normalize only
+    the parsed copy.  New probes emit this invariant directly.
+    """
+    root_score = max(scores.values())
+    top_moves = [move for move, score in scores.items() if score == root_score]
+    raw_score = record.get("score")
+    raw_bestmove = record.get("bestmove")
+    if raw_score == root_score and raw_bestmove in top_moves:
+        return dict(record), None
+
+    normalized = dict(record)
+    normalized["score"] = root_score
+    normalized["bestmove"] = raw_bestmove if raw_bestmove in top_moves else top_moves[0]
+    return normalized, {
+        "jsonl_line": line_number,
+        "original_score": raw_score,
+        "normalized_score": root_score,
+        "original_bestmove": raw_bestmove,
+        "normalized_bestmove": normalized["bestmove"],
+        "reason": "rescued_complete_root_map_overrides_legacy_baseline_result",
+    }
+
+
 def parse_rescue(path: Path, nodes: int, margins: Sequence[int], baseline_nodes: int, gap: int) -> Dict[str, Any]:
     positions: Dict[Key, Dict[str, Any]] = {}
+    normalizations: List[Dict[str, Any]] = []
     summary: Optional[Dict[str, Any]] = None
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -102,21 +131,23 @@ def parse_rescue(path: Path, nodes: int, margins: Sequence[int], baseline_nodes:
             depths = record.get("root_score_depths")
             if not isinstance(scores, dict) or not scores or not isinstance(depths, dict) or set(scores) != set(depths):
                 raise RescueError(f"{path}:{line_number}: rescued record lacks matching root maps")
-            if record.get("score") != max(scores.values()) or record.get("bestmove") not in scores:
-                raise RescueError(f"{path}:{line_number}: invalid rescued best root")
+            record, normalization = normalize_rescued_root_result(record, scores, line_number)
             if int(record.get("mate_score", 0)) < tune_futility.MATE_SCORE_FLOOR:
                 raise RescueError(f"{path}:{line_number}: rescued record does not certify a winning mate")
         key = tune_futility.record_key(record)
         if key in positions:
             raise RescueError(f"{path}:{line_number}: duplicate position")
         positions[key] = record
+        if status == "rescued" and normalization is not None:
+            normalization["position_key"] = list(key)
+            normalizations.append(normalization)
     if summary is None or summary.get("reference_mode") != RESCUE_MODE:
         raise RescueError(f"{path}: missing mate-rescue summary")
     if summary.get("positions") != len(positions) or summary.get("node_limit") != nodes:
         raise RescueError(f"{path}: invalid mate-rescue summary")
     if summary.get("baseline_node_limit") != baseline_nodes or summary.get("reference_depth_gap") != gap:
         raise RescueError(f"{path}: mate-rescue contract mismatch")
-    return {"positions": positions, "summary": summary}
+    return {"positions": positions, "summary": summary, "rescued_root_map_normalizations": normalizations}
 
 
 def rejected_keys(reference: Mapping[str, Any]) -> List[Key]:
@@ -234,7 +265,7 @@ def run(settings: Mapping[str, Any], run_dir: Path) -> Dict[str, Any]:
         merged_reference["positions"].update(rescued_reference["positions"])
         combined_metrics = tune_futility.compute_metrics(merged_reference, baseline, candidate, settings["candidate_nodes"], 600.0, combined_keys)
         candidates.append({"id": candidate_id, "margins": list(margins), "output": identity(output), "rescue_metrics": rescue_metrics, "combined_metrics": combined_metrics})
-    result = {"schema": SCHEMA, "ordinary_trusted_set": ordinary_trusted, "rejected_position_count": len(keys), "rescued_position_count": len(rescued_keys), "combined_position_count": len(combined_keys), "rescued_position_keys": [list(key) for key in rescued_keys], "rescue_reference": identity(rescue_path), "rescue_baseline": identity(rescue_baseline_path), "candidates": candidates}
+    result = {"schema": SCHEMA, "ordinary_trusted_set": ordinary_trusted, "rejected_position_count": len(keys), "rescued_position_count": len(rescued_keys), "combined_position_count": len(combined_keys), "rescued_position_keys": [list(key) for key in rescued_keys], "rescued_root_map_normalizations": rescue["rescued_root_map_normalizations"], "rescue_reference": identity(rescue_path), "rescue_baseline": identity(rescue_baseline_path), "candidates": candidates}
     atomic_write(run_dir / "rescue_results.json", result)
     atomic_write(run_dir / "combined_population.json", {"schema": SCHEMA, "ordinary_trusted_set": ordinary_trusted, "rescued_position_count": len(rescued_keys), "combined_position_count": len(combined_keys), "position_keys": [list(key) for key in combined_keys]})
     lines = ["# Futility mate-rescue results", "", f"Rejected inputs: `{len(keys)}`", f"Reference-proven rescued mates: `{len(rescued_keys)}`", f"Combined ordinary-trusted plus rescue population: `{len(combined_keys)}`"]

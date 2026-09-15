@@ -828,6 +828,13 @@ void writeMateRescuePosition(std::ostream& output, const std::string& source, ui
     const bool rescued = std::string(status) == "rescued";
     Move bestMove = baseline.bestMove;
     int bestScore = baseline.score;
+    // A rescued position has a complete same-depth root map.  That map, not
+    // the shallower baseline, is the reference result we emit.  In particular
+    // mate scores can differ by a few plies between the two searches.
+    if (rescued && !roots.empty()) {
+        bestMove = roots.front().move;
+        bestScore = roots.front().score;
+    }
     Move mateMove{};
     int mateScore = 0;
     for (const RescueRootScore& root : roots) {
