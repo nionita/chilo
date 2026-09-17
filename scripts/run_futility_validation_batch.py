@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import futility_risk
+import futility_probe_cache
 import optimize_futility
 import tune_futility
 
@@ -98,10 +99,10 @@ def load_settings(config_path: Path) -> Dict[str, Any]:
         raise BatchError("config root must be an object")
     allowed = {
         "schema", "run_dir", "probe", "weights", "candidate_nodes", "baseline_margins", "score_scale",
-        "report_every", "tail_fractions", "regret_thresholds", "semantic_thresholds", "shards", "candidates",
+        "report_every", "tail_fractions", "regret_thresholds", "semantic_thresholds", "shards", "candidates", "probe_cache_dir",
     }
     unknown = sorted(set(raw) - allowed)
-    missing = sorted(allowed - set(raw))
+    missing = sorted((allowed - {"probe_cache_dir"}) - set(raw))
     if raw.get("schema") != SCHEMA or unknown or missing:
         details = []
         if raw.get("schema") != SCHEMA:
@@ -116,6 +117,8 @@ def load_settings(config_path: Path) -> Dict[str, Any]:
     weights = resolve(config_path, raw["weights"], "weights")
     if not probe.is_file() or not weights.is_file():
         raise BatchError("probe and weights must both exist")
+    cache_raw = raw.get("probe_cache_dir")
+    cache_dir = resolve(config_path, cache_raw, "probe_cache_dir") if cache_raw is not None else None
     candidate_nodes = require_int(raw["candidate_nodes"], "candidate_nodes")
     baseline_margins = tuple(tune_futility.validate_margins(raw["baseline_margins"], "baseline_margins"))
     score_scale = require_number(raw["score_scale"], "score_scale")
@@ -182,6 +185,7 @@ def load_settings(config_path: Path) -> Dict[str, Any]:
         "loss_cp": loss_cp,
         "shards": shards,
         "candidates": candidates,
+        "probe_cache_dir": cache_dir,
     }
 
 
@@ -234,6 +238,7 @@ def execution_manifest(settings: Mapping[str, Any], contexts: Sequence[Mapping[s
         "config_sha256": settings["config_sha256"],
         "probe": tune_futility.file_identity(settings["probe"]),
         "weights": tune_futility.file_identity(settings["weights"]),
+        "probe_cache_dir": str(settings["probe_cache_dir"]) if settings["probe_cache_dir"] is not None else None,
         "candidate_nodes": settings["candidate_nodes"],
         "baseline_margins": list(settings["baseline_margins"]),
         "score_scale": settings["score_scale"],
@@ -277,6 +282,37 @@ def run_candidate_probe(settings: Mapping[str, Any], candidate: Mapping[str, Any
     (job_root / "probes").mkdir(parents=True, exist_ok=True)
     (job_root / "logs").mkdir(exist_ok=True)
     job = {"id": "candidate", "nodes": settings["candidate_nodes"], "margins": candidate["margins"]}
+    cache_dir = settings["probe_cache_dir"]
+    if cache_dir is not None:
+        output = candidate_output_path(settings["run_dir"], candidate["id"], shard["id"])
+        value = futility_probe_cache.descriptor(
+            settings["probe"], settings["weights"], [shard["input"]], settings["candidate_nodes"], candidate["margins"],
+        )
+        entry = futility_probe_cache.entry_for(cache_dir, value)
+        try:
+            with futility_probe_cache.lock(cache_dir, entry.key):
+                if entry.directory.exists():
+                    futility_probe_cache.restore(entry, output, settings["candidate_nodes"], candidate["margins"])
+                    (job_root / "logs" / "candidate.log").write_text(
+                        "cache_key=" + entry.key + "\ncache_status=hit\n", encoding="utf-8"
+                    )
+                    atomic_json(job_root / "logs" / "candidate.cache.json", futility_probe_cache.receipt(entry, "hit"))
+                    return "cache-hit"
+                if tune_futility.probe_output_complete(output, settings["candidate_nodes"], candidate["margins"]):
+                    status = "promoted_existing_output"
+                else:
+                    try:
+                        outcome = tune_futility.run_probe_job(
+                            job, settings["probe"], [shard["input"]], settings["weights"], settings["report_every"], job_root, True
+                        )
+                    except tune_futility.TuningError as exc:
+                        raise BatchError(f"{candidate['id']} on {shard['id']}: {exc}") from exc
+                    status = "miss" if outcome["status"] == "completed" else "promoted_existing_output"
+                futility_probe_cache.publish(entry, output, settings["candidate_nodes"], candidate["margins"])
+                atomic_json(job_root / "logs" / "candidate.cache.json", futility_probe_cache.receipt(entry, status))
+                return status
+        except futility_probe_cache.CacheError as exc:
+            raise BatchError(f"{candidate['id']} on {shard['id']}: cache failure: {exc}") from exc
     try:
         outcome = tune_futility.run_probe_job(
             job, settings["probe"], [shard["input"]], settings["weights"], settings["report_every"], job_root, True
@@ -292,6 +328,11 @@ def parse_candidate(settings: Mapping[str, Any], candidate: Mapping[str, Any], s
         return tune_futility.parse_probe_output(path, settings["candidate_nodes"], candidate["margins"])
     except tune_futility.TuningError as exc:
         raise BatchError(f"invalid candidate output for {candidate['id']} on {shard['id']}: {exc}") from exc
+
+
+def candidate_cache_receipt(run_dir: Path, candidate_id: str, shard_id: str) -> Mapping[str, Any] | None:
+    path = candidate_output_path(run_dir, candidate_id, shard_id).parent.parent / "logs" / "candidate.cache.json"
+    return read_json(path, f"candidate cache receipt {candidate_id}/{shard_id}") if path.is_file() else None
 
 
 def merge_records(items: Iterable[Tuple[Mapping[str, Any], Sequence[Key]]], label: str) -> Mapping[str, Any]:
@@ -335,7 +376,8 @@ def calculate_results(settings: Mapping[str, Any], contexts: Sequence[Mapping[st
             except (tune_futility.TuningError, optimize_futility.OptimizationError) as exc:
                 raise BatchError(f"cannot score {candidate['id']} on {shard['id']}: {exc}") from exc
             per_shard.append({"id": shard["id"], "position_count": len(context.trusted_keys), "metrics": metrics, "risk": risk,
-                              "output": tune_futility.file_identity(candidate_output_path(settings["run_dir"], candidate["id"], shard["id"]))})
+                              "output": tune_futility.file_identity(candidate_output_path(settings["run_dir"], candidate["id"], shard["id"])),
+                              "cache": candidate_cache_receipt(settings["run_dir"], candidate["id"], shard["id"])})
             candidate_parts.append((output, context.trusted_keys))
         merged_candidate = merge_records(candidate_parts, f"candidate {candidate['id']}")
         try:

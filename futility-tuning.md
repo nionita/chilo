@@ -316,6 +316,7 @@ On the cloud server, keep raw evidence and candidate outputs separate:
   populations/per-root-v1/selection/sr3v-production/run/
   populations/per-root-v1/selection/sr3v-smoke/run/
   artifacts/<probe-sha>-<weights-sha>/  # exact frozen executable and net
+  candidate-probe-cache/                # immutable normal-PVS outputs, keyed by raw search contract
   evals/<batch-name>/                   # disposable normal-PVS outputs/reports
 ```
 
@@ -334,6 +335,23 @@ It pools records by position only after each shard's anchor/rescue contract has
 validated. Use `--dry-run` before a cloud launch; rerunning the same command
 continues after an interruption, but a partially written ordinary candidate
 probe is intentionally restarted from scratch.
+
+`candidate-probe-cache/` is deliberately below the same validation-store root
+but outside an evaluation campaign. Its content-addressed key binds only the
+normal-PVS search contract: probe and weights hashes, ordered input hashes,
+node budget, and margins. It excludes the reference/rescue evidence, score
+scale, reporting cadence, paths, and campaign name. A cache hit is copied into
+the campaign or validation job's normal output path, so the campaign still
+contains self-contained raw evidence and calculates its own reference-relative
+metrics. Cache entries are immutable; a malformed or mismatched entry is an
+error, never an overwrite.
+
+`scripts/backfill_futility_probe_cache.py --store-root STORE_ROOT --dry-run`
+inspects only canonical `STORE_ROOT/evals/` manifests and complete normal-PVS
+JSONL outputs. The non-dry-run form validates every source artifact identity
+before importing each output into the cache; `--report PATH` preserves its
+import/existing/skipped receipt. It is the one-time cloud migration for prior
+campaign and batch outputs, not a way to import ad-hoc files from elsewhere.
 
 ### Forward Pareto workflow
 
@@ -385,8 +403,11 @@ output only from `evals/<campaign_run_id>/search/state.json`, validates its
 recorded probe/net, SR4 reference/baseline/rescue contract, and output hash,
 then atomically stages it as the new run's `search/probes/initial.jsonl`.
 It rejects a candidate from a different fixed campaign probe rather than
-silently mixing search implementations. A staged complete initial JSONL does
-not consume a work unit, so a one-unit cron invocation can begin proposal 1
+silently mixing search implementations. The approved source output is first
+imported into the raw-probe cache if necessary, then the current campaign
+stages its independent copy. The cache receipt is stored as
+`search/logs/initial.cache.json`; a staged complete initial JSONL does not
+consume a work unit, so a one-unit cron invocation can begin proposal 1
 immediately.
 
 ## Historical Coordinate Optimizer

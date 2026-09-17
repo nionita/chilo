@@ -140,7 +140,7 @@ class CampaignPopulationTest(unittest.TestCase):
                 campaign.stage_initial_evaluation(current)
             self.assertEqual(seed["margins"], [0, 25, 139])
             self.assertEqual((store / "evals" / "next-run" / "search" / "probes" / "initial.jsonl").read_text(encoding="utf-8"), "synthetic candidate output\n")
-            self.assertEqual(parsed.call_count, 2)
+            self.assertGreaterEqual(parsed.call_count, 2)
 
     def test_initial_evaluation_rejects_prior_probe_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

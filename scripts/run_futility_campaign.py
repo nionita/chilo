@@ -12,13 +12,13 @@ import argparse
 import hashlib
 import json
 import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import optimize_futility
 import optimize_futility_gated
+import futility_probe_cache
 import run_futility_validation_batch as validation_batch
 import tune_futility
 
@@ -347,6 +347,7 @@ def load_campaign(config_path: Path) -> dict[str, Any]:
         "store_root": store_root,
         "run_id": run_id,
         "run_dir": store_root / "evals" / run_id,
+        "probe_cache_dir": store_root / "candidate-probe-cache",
         "probe": probe,
         "weights": weights,
         "candidate_nodes": candidate_nodes,
@@ -385,6 +386,7 @@ def search_config(settings: Mapping[str, Any]) -> dict[str, Any]:
         "score_scale": settings["score_scale"], "probe_report_every": settings["report_every"],
         "development": {"reference_dir": str(development["anchor_dir"]), "contract": "per_root_v1", "rescue_dir": str(development["rescue_dir"])},
         "pareto_search": pareto,
+        "probe_cache_dir": str(settings["probe_cache_dir"]),
     }
 
 
@@ -402,6 +404,7 @@ def validation_config(settings: Mapping[str, Any]) -> dict[str, Any]:
         "semantic_thresholds": validation["semantic_thresholds"],
         "shards": [{"id": item["id"], "input": str(item["input"]), "anchor_dir": str(item["anchor_dir"]), "rescue_dir": str(item["rescue_dir"])} for item in settings["selection"]],
         "candidates": validation["candidates"],
+        "probe_cache_dir": str(settings["probe_cache_dir"]),
     }
 
 
@@ -425,20 +428,26 @@ def stage_initial_evaluation(settings: Mapping[str, Any]) -> None:
         return
     source = Path(seed["source_output_path"])
     target = Path(settings["run_dir"]) / "search" / "probes" / "initial.jsonl"
-    expected = seed["source_output"]
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        if not same_identity(file_identity(target), expected):
-            raise CampaignError("existing staged initial.jsonl differs from the configured initial_evaluation source")
-    else:
-        temporary = target.with_name(target.name + ".tmp")
-        try:
-            shutil.copy2(source, temporary)
-            if not same_identity(file_identity(temporary), expected):
-                raise CampaignError("initial_evaluation source changed while staging it")
-            temporary.replace(target)
-        finally:
-            temporary.unlink(missing_ok=True)
+    try:
+        value = futility_probe_cache.descriptor(
+            settings["probe"], settings["weights"], [settings["development"]["input"]], settings["candidate_nodes"], seed["margins"],
+        )
+        cache_root = Path(settings.get("probe_cache_dir", Path(settings["store_root"]) / "candidate-probe-cache"))
+        entry = futility_probe_cache.entry_for(cache_root, value)
+        with futility_probe_cache.lock(cache_root, entry.key):
+            if entry.directory.exists():
+                futility_probe_cache.restore(entry, target, settings["candidate_nodes"], seed["margins"])
+                status = "hit"
+            else:
+                if not source.is_file() or not same_identity(file_identity(source), seed["source_output"]):
+                    raise CampaignError("initial_evaluation source changed before it could be imported into the cache")
+                futility_probe_cache.publish(entry, source, settings["candidate_nodes"], seed["margins"])
+                futility_probe_cache.restore(entry, target, settings["candidate_nodes"], seed["margins"])
+                status = "imported_seed"
+        atomic_json(target.parent.parent / "logs" / "initial.cache.json", futility_probe_cache.receipt(entry, status))
+    except futility_probe_cache.CacheError as exc:
+        raise CampaignError(f"initial_evaluation cache failure: {exc}") from exc
     try:
         tune_futility.parse_probe_output(target, settings["candidate_nodes"], tuple(seed["margins"]))
     except tune_futility.TuningError as exc:

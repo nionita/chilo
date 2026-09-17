@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import futility_risk
+import futility_probe_cache
 import optimize_futility
 import spsa_optimizer
 import tune_futility
@@ -67,6 +68,7 @@ class Settings:
     perturbation_gamma: float
     max_margin: int
     semantic_filters: Tuple[SemanticFilter, ...]
+    probe_cache_dir: Optional[Path]
 
 
 def atomic_write(path: Path, value: Any) -> None:
@@ -115,7 +117,7 @@ def load_settings(config_path: Path) -> Settings:
     raw = json.loads(raw_bytes)
     if not isinstance(raw, dict):
         raise optimize_futility.OptimizationError("Pareto futility config root must be an object")
-    allowed = {"probe", "inputs", "weights", "candidate_nodes", "baseline_margins", "score_scale", "probe_report_every", "development", "pareto_search"}
+    allowed = {"probe", "inputs", "weights", "candidate_nodes", "baseline_margins", "score_scale", "probe_report_every", "development", "pareto_search", "probe_cache_dir"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise optimize_futility.OptimizationError(f"unknown Pareto futility config field(s): {', '.join(unknown)}")
@@ -132,6 +134,8 @@ def load_settings(config_path: Path) -> Settings:
     weights = optimize_futility.resolve_path(config_path, optimize_futility.require_string(weights_raw, "weights")) if weights_raw is not None else None
     if weights is not None and not weights.is_file():
         raise optimize_futility.OptimizationError(f"weights does not exist: {weights}")
+    cache_raw = raw.get("probe_cache_dir")
+    cache_dir = optimize_futility.resolve_path(config_path, cache_raw) if cache_raw is not None else None
     nodes = optimize_futility.require_int(raw.get("candidate_nodes"), "candidate_nodes", 1)
     baseline = tune_futility.validate_margins(raw.get("baseline_margins"), "baseline_margins")
     score_scale = require_number(raw.get("score_scale", 600), "score_scale", 0)
@@ -163,7 +167,7 @@ def load_settings(config_path: Path) -> Settings:
         seed=optimize_futility.require_int(pareto.get("seed"), "pareto_search.seed", 0),
         perturbation_c=require_number(pareto.get("perturbation_c"), "pareto_search.perturbation_c", 0),
         perturbation_gamma=require_number(pareto.get("perturbation_gamma"), "pareto_search.perturbation_gamma", 0),
-        max_margin=max_margin, semantic_filters=parse_semantic_filters(pareto.get("semantic_filters")),
+        max_margin=max_margin, semantic_filters=parse_semantic_filters(pareto.get("semantic_filters")), probe_cache_dir=cache_dir,
     )
 
 
@@ -181,6 +185,7 @@ def manifest(settings: Settings) -> Dict[str, Any]:
             "seed": settings.seed, "perturbation_c": settings.perturbation_c, "perturbation_gamma": settings.perturbation_gamma, "max_margin": settings.max_margin,
             "semantic_filters": [{"metric": item.metric, "discard_worst_fraction": item.discard_worst_fraction} for item in settings.semantic_filters],
         },
+        "probe_cache_dir": str(settings.probe_cache_dir) if settings.probe_cache_dir is not None else None,
     }
 
 
@@ -247,20 +252,54 @@ def make_unique_proposal(
 def probe_one(settings: Settings, run_dir: Path, identifier: str, margins: Margins) -> Mapping[str, Any]:
     output = run_dir / "probes" / f"{identifier}.jsonl"
     log = run_dir / "logs" / f"{identifier}.log"
+    receipt_path = run_dir / "logs" / f"{identifier}.cache.json"
+
+    def write_receipt(value: Mapping[str, Any]) -> None:
+        atomic_write(receipt_path, dict(value))
+
+    def run_probe(status: str, entry: Optional[futility_probe_cache.CacheEntry] = None) -> Mapping[str, Any]:
+        command = tune_futility.build_probe_command(settings.probe, settings.inputs, settings.weights, settings.candidate_nodes, margins, output, settings.probe_report_every)
+        with log.open("w", encoding="utf-8") as handle:
+            if entry is not None:
+                handle.write(f"cache_key={entry.key}\ncache_status={status}\n")
+            handle.write("command=" + json.dumps(command) + "\n")
+            handle.flush()
+            completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, text=True, check=False)
+            handle.write(f"exit_code={completed.returncode}\n")
+        if completed.returncode:
+            raise optimize_futility.OptimizationError(f"Pareto futility {identifier} probe failed; see {log}")
+        return tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
+
+    if settings.probe_cache_dir is not None:
+        value = futility_probe_cache.descriptor(settings.probe, settings.weights, settings.inputs, settings.candidate_nodes, margins)
+        entry = futility_probe_cache.entry_for(settings.probe_cache_dir, value)
+        try:
+            with futility_probe_cache.lock(settings.probe_cache_dir, entry.key):
+                if entry.directory.exists():
+                    candidate = futility_probe_cache.restore(entry, output, settings.candidate_nodes, margins)
+                    metadata = futility_probe_cache.receipt(entry, "hit")
+                    log.write_text("cache_key=" + entry.key + "\ncache_status=hit\n", encoding="utf-8")
+                    write_receipt(metadata)
+                    return candidate
+                try:
+                    candidate = tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
+                except tune_futility.TuningError:
+                    candidate = run_probe("miss", entry)
+                    status = "miss"
+                else:
+                    status = "promoted_existing_output"
+                futility_probe_cache.publish(entry, output, settings.candidate_nodes, margins)
+                metadata = futility_probe_cache.receipt(entry, status)
+                write_receipt(metadata)
+                return candidate
+        except futility_probe_cache.CacheError as exc:
+            raise optimize_futility.OptimizationError(f"Pareto futility cache failure for {identifier}: {exc}") from exc
     try:
         if output.is_file():
             return tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
     except tune_futility.TuningError:
         pass
-    command = tune_futility.build_probe_command(settings.probe, settings.inputs, settings.weights, settings.candidate_nodes, margins, output, settings.probe_report_every)
-    with log.open("w", encoding="utf-8") as handle:
-        handle.write("command=" + json.dumps(command) + "\n")
-        handle.flush()
-        completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, text=True, check=False)
-        handle.write(f"exit_code={completed.returncode}\n")
-    if completed.returncode:
-        raise optimize_futility.OptimizationError(f"Pareto futility {identifier} probe failed; see {log}")
-    return tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
+    return run_probe("disabled")
 
 
 def completed_probe_exists(settings: Settings, run_dir: Path, identifier: str, margins: Margins) -> bool:
@@ -283,7 +322,9 @@ def evaluate(settings: Settings, run_dir: Path, identifier: str, margins: Margin
     metrics = tune_futility.compute_metrics(settings.anchor.reference, settings.anchor.baseline, candidate, settings.candidate_nodes, settings.score_scale, keys)
     risk = risk_metrics(settings.anchor.reference, candidate, keys, settings.score_scale)
     semantic = risk["semantic_regressions_vs_reference"]
-    return {"id": identifier, "margins": list(margins), "metrics": metrics, "risk": risk, "semantic": {metric: int(semantic[metric]) for metric in sorted(SEMANTIC_METRICS)}, "output": tune_futility.file_identity(run_dir / "probes" / f"{identifier}.jsonl")}
+    receipt_path = run_dir / "logs" / f"{identifier}.cache.json"
+    cache = optimize_futility.read_json(receipt_path, f"Pareto cache receipt {identifier}") if receipt_path.is_file() else None
+    return {"id": identifier, "margins": list(margins), "metrics": metrics, "risk": risk, "semantic": {metric: int(semantic[metric]) for metric in sorted(SEMANTIC_METRICS)}, "output": tune_futility.file_identity(run_dir / "probes" / f"{identifier}.jsonl"), "cache": cache}
 
 
 def primary_values(item: Mapping[str, Any]) -> Tuple[float, float, float]:

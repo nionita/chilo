@@ -55,3 +55,11 @@ then retain the accepted archive under `~/Tune/futility`.
   top-level corpus names may be compatibility symlinks. Raw populations belong
   below `populations/per-root-v1/`; candidate JSONL and derived reports belong
   below `evaluations/`.
+- The sibling `candidate-probe-cache/` holds immutable, content-addressed raw
+  normal-PVS outputs. Its key is the probe/net/input/node/margin contract, not
+  a reference or campaign. A cache hit is copied into the campaign's own
+  output path, so analyse the campaign-local JSONL and receipt rather than
+  treating the cache as a scored evaluation. To recover prior canonical cloud
+  evidence, use `scripts/backfill_futility_probe_cache.py --store-root STORE`
+  against `STORE/evals/`; it validates manifests and outputs and never scans
+  ad-hoc legacy directories.
