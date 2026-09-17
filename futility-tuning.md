@@ -311,8 +311,10 @@ On the cloud server, keep raw evidence and candidate outputs separate:
 
 ```text
 ~/futility-validation/
-  populations/selection/sr3v/run/       # immutable five-shard raw run
-  populations/selection/sr3v-smoke/run/ # immutable two-shard smoke run
+  populations/per-root-v1/development/g3-sr4/
+  populations/per-root-v1/selection/g3-sr3-r2m/
+  populations/per-root-v1/selection/sr3v-production/run/
+  populations/per-root-v1/selection/sr3v-smoke/run/
   artifacts/<probe-sha>-<weights-sha>/  # exact frozen executable and net
   evals/<batch-name>/                   # disposable normal-PVS outputs/reports
 ```
@@ -344,6 +346,27 @@ analysis and comparison over the current selection set. Decide there which
 tuples merit SPRT; run the SPRT locally, not on the cloud. This keeps expensive
 search and validation remote while preserving the final evidence and
 promotion decision beside the local engine/test environment.
+
+### Unified campaign runner
+
+`scripts/run_futility_campaign.py` is the normal entry point for new Pareto
+campaigns. A campaign config names the immutable development and selection
+populations, one fixed candidate probe/net pair, the common 120k/f01 scoring
+contract, Pareto parameters, and explicitly selected validation tuples. Its
+only writable location is `store_root/evals/<run_id>/`; the campaign manifest
+records both the frozen campaign artifacts and the historical anchor
+provenance. A historical Windows/Linux reference probe therefore does not have
+to equal the new candidate probe, but neither identity is hidden.
+
+Use `--phase search`, `--phase validate`, or explicit `--phase all`.
+`--max-work-units 1` performs one initial/proposal probe or one
+candidate-by-shard probe, allowing safe cron execution; `0` is an unlimited
+interactive invocation. The `all` phase never derives validation candidates
+from the Pareto frontier: validation candidates remain explicit in the config.
+The companion `scripts/run_futility_campaign_cron.sh CONFIG all 1` wraps that
+command in a non-blocking `flock` and appends to the campaign's `cron.log`.
+Interrupted ordinary candidate JSONL is intentionally rerun, while completed
+probe output and atomic optimizer state are reused.
 
 ## Historical Coordinate Optimizer
 

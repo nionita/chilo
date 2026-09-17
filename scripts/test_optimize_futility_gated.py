@@ -143,6 +143,26 @@ class ParetoSearchTest(unittest.TestCase):
             self.assertEqual(result["evaluated_count"], 4)
             self.assertEqual([row["id"] for row in result["numeric_pareto_frontier"]], ["initial"])
 
+    def test_bounded_run_commits_only_one_initial_or_proposal_per_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = pareto.load_settings(self.write_config(root, self.write_anchor(root), proposals=3, workers=2))
+            run_dir = root / "run"
+            pareto.prepare(run_dir, pareto.manifest(settings))
+            key = ("positions.csv", 1, "fen")
+
+            def fake_probe(_settings, _run_dir, _identifier, _margins):
+                return {"positions": {key: {"bestmove": "e2e4", "score": 30, "completed_depth": 6, "nodes": 100, "iteration_interrupted": True}}, "summary": {}}
+
+            with patch.object(pareto, "probe_one", side_effect=fake_probe), patch.object(pareto.tune_futility, "file_identity", return_value={"path": "synthetic", "sha256": "0", "size": 0}):
+                initial = pareto.run(settings, run_dir, max_work_units=1)
+                first_proposal = pareto.run(settings, run_dir, max_work_units=1)
+            self.assertEqual(initial["status"], "running")
+            self.assertEqual(initial["work_units_completed"], 1)
+            self.assertEqual(initial["proposal_count"], 0)
+            self.assertEqual(first_proposal["work_units_completed"], 1)
+            self.assertEqual(first_proposal["proposal_count"], 1)
+
     def test_v3_state_cannot_resume_under_v4_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

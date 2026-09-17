@@ -351,20 +351,70 @@ def current_frontier(state: Mapping[str, Any]) -> List[Mapping[str, Any]]:
     return [indexed[str(identifier)] for identifier in state["frontier_ids"]]
 
 
-def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
+def write_result(settings: Settings, run_dir: Path, state: Mapping[str, Any], work_units_completed: int) -> Dict[str, Any]:
+    """Persist the current archive, including an incomplete archive after bounded work."""
+    frontier = current_frontier(state)
+    complete = state["status"] == "max_proposals"
+    shortlisted, filtering = (
+        decimate_semantic_frontier(frontier, settings.semantic_filters) if complete else ([], [])
+    )
+    result = {
+        "schema": SCHEMA,
+        "status": state["status"],
+        "initial": next(item for item in state["evaluations"] if item["id"] == "initial") if state["evaluations"] else None,
+        "evaluated_count": len(state["evaluations"]),
+        "proposal_count": state["next_proposal"],
+        "numeric_pareto_frontier": frontier,
+        "semantic_filtering": filtering,
+        "selection_shortlist": shortlisted,
+        "work_units_completed": work_units_completed,
+        "note": (
+            "All metrics are fixed full-development-population values. The selection_shortlist remains development-only "
+            "and requires one full untouched-selection evaluation before promotion."
+            if complete else
+            "The Pareto search is incomplete; semantic selection and untouched-selection promotion are deferred."
+        ),
+    }
+    atomic_write(run_dir / "pareto_frontier.json", result)
+    lines = ["# Full-development futility Pareto frontier", "", "Every evaluated tuple used the complete fixed development population. The primary frontier minimizes mean regret, squared regret, and CVaR-1%.", "", "## Numeric Pareto frontier", "", "| ID | Margins | Mean regret | Squared regret | CVaR-1% | Mate misses | Nonlosing to losing |", "|---|---|---:|---:|---:|---:|---:|"]
+    for item in frontier:
+        absolute, semantic = item["risk"]["absolute_regret"], item["semantic"]
+        lines.append(f"| {item['id']} | `{','.join(str(value) for value in item['margins'])}` | {item['metrics']['mean_normalized_regret']:.6f} | {absolute['mean_squared']:.6f} | {absolute['tail_mean']['top_0.01']:.6f} | {semantic['winning_mate_missed']} | {semantic['nonlosing_to_losing']} |")
+    if complete:
+        lines.extend(["", "## Sequential semantic filtering", "", "Worst configured fractions are discarded sequentially; ties at each cutoff are retained.", "", "| Metric | Before | Cutoff retained | Discarded | After |", "|---|---:|---:|---:|---:|"])
+        for item in filtering:
+            cutoff = "-" if item["cutoff"] is None else str(item["cutoff"])
+            lines.append(f"| {item['metric']} | {item['before']} | {cutoff} | {len(item['discarded'])} | {item['after']} |")
+        lines.extend(["", "## Untouched-selection shortlist", "", "| ID | Margins |", "|---|---|"])
+        for item in shortlisted:
+            lines.append(f"| {item['id']} | `{','.join(str(value) for value in item['margins'])}` |")
+    else:
+        lines.extend(["", "Search is incomplete; rerun with the same manifest to continue."])
+    (run_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return result
+
+
+def run(settings: Settings, run_dir: Path, max_work_units: int = 0) -> Dict[str, Any]:
+    if max_work_units < 0:
+        raise optimize_futility.OptimizationError("max_work_units must be >= 0")
     state_path = run_dir / "state.json"
     state = load_state(state_path, settings)
-    if "initial" not in evaluation_index(state):
+    work_units_completed = 0
+    if "initial" not in evaluation_index(state) and (not max_work_units or work_units_completed < max_work_units):
         initial_candidate = probe_one(settings, run_dir, "initial", settings.initial_margins)
         initial = evaluate(settings, run_dir, "initial", settings.initial_margins, initial_candidate)
         initial["kind"] = "initial"
         state["evaluations"].append(initial)
         state["frontier_ids"] = ["initial"]
         atomic_write(state_path, state)
-    while state["next_proposal"] < settings.max_proposals:
+        work_units_completed += 1
+    while state["next_proposal"] < settings.max_proposals and (not max_work_units or work_units_completed < max_work_units):
         frontier_snapshot = current_frontier(state)
         batch_start = state["next_proposal"]
-        batch_count = min(settings.workers, settings.max_proposals - batch_start)
+        remaining_budget = settings.max_proposals - batch_start
+        if max_work_units:
+            remaining_budget = min(remaining_budget, max_work_units - work_units_completed)
+        batch_count = min(settings.workers, remaining_budget)
         considered = {
             tune_futility.validate_margins(item["margins"], "Pareto evaluated margins")
             for item in state["evaluations"]
@@ -397,25 +447,12 @@ def run(settings: Settings, run_dir: Path) -> Dict[str, Any]:
             state["frontier_ids"] = [item["id"] for item in frontier]
         state["next_proposal"] += batch_count
         atomic_write(state_path, state)
+        work_units_completed += batch_count
     state["status"] = "max_proposals"
+    if state["next_proposal"] < settings.max_proposals:
+        state["status"] = "running"
     atomic_write(state_path, state)
-    frontier = current_frontier(state)
-    shortlisted, filtering = decimate_semantic_frontier(frontier, settings.semantic_filters)
-    result = {"schema": SCHEMA, "status": state["status"], "initial": next(item for item in state["evaluations"] if item["id"] == "initial"), "evaluated_count": len(state["evaluations"]), "proposal_count": state["next_proposal"], "numeric_pareto_frontier": frontier, "semantic_filtering": filtering, "selection_shortlist": shortlisted, "note": "All metrics are fixed full-development-population values. The selection_shortlist remains development-only and requires one full untouched-selection evaluation before promotion."}
-    atomic_write(run_dir / "pareto_frontier.json", result)
-    lines = ["# Full-development futility Pareto frontier", "", "Every evaluated tuple used the complete fixed development population. The primary frontier minimizes mean regret, squared regret, and CVaR-1%.", "", "## Numeric Pareto frontier", "", "| ID | Margins | Mean regret | Squared regret | CVaR-1% | Mate misses | Nonlosing to losing |", "|---|---|---:|---:|---:|---:|---:|"]
-    for item in frontier:
-        absolute, semantic = item["risk"]["absolute_regret"], item["semantic"]
-        lines.append(f"| {item['id']} | `{','.join(str(value) for value in item['margins'])}` | {item['metrics']['mean_normalized_regret']:.6f} | {absolute['mean_squared']:.6f} | {absolute['tail_mean']['top_0.01']:.6f} | {semantic['winning_mate_missed']} | {semantic['nonlosing_to_losing']} |")
-    lines.extend(["", "## Sequential semantic filtering", "", "Worst configured fractions are discarded sequentially; ties at each cutoff are retained.", "", "| Metric | Before | Cutoff retained | Discarded | After |", "|---|---:|---:|---:|---:|"])
-    for item in filtering:
-        cutoff = "-" if item["cutoff"] is None else str(item["cutoff"])
-        lines.append(f"| {item['metric']} | {item['before']} | {cutoff} | {len(item['discarded'])} | {item['after']} |")
-    lines.extend(["", "## Untouched-selection shortlist", "", "| ID | Margins |", "|---|---|"])
-    for item in shortlisted:
-        lines.append(f"| {item['id']} | `{','.join(str(value) for value in item['margins'])}` |")
-    (run_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return result
+    return write_result(settings, run_dir, state, work_units_completed)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -423,6 +460,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--max-work-units", type=int, default=0, help="Maximum initial/proposal probes this invocation; 0 means unlimited.")
     args = parser.parse_args(argv)
     try:
         settings = load_settings(Path(args.config).resolve())
@@ -430,10 +468,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.dry_run:
             print(json.dumps(value, indent=2, sort_keys=True))
             return 0
+        if args.max_work_units < 0:
+            raise optimize_futility.OptimizationError("--max-work-units must be >= 0")
         run_dir = Path(args.run_dir).resolve()
         prepare(run_dir, value)
-        result = run(settings, run_dir)
-        print(f"Pareto futility finished proposals={result['proposal_count']} frontier={len(result['numeric_pareto_frontier'])} shortlist={len(result['selection_shortlist'])}")
+        result = run(settings, run_dir, args.max_work_units)
+        print(f"Pareto futility {result['status']} proposals={result['proposal_count']} frontier={len(result['numeric_pareto_frontier'])} shortlist={len(result['selection_shortlist'])} work_units={result['work_units_completed']}")
         return 0
     except (json.JSONDecodeError, OSError, optimize_futility.OptimizationError, spsa_optimizer.OptimizationError, tune_futility.TuningError) as exc:
         print(f"fatal: {exc}", file=sys.stderr)

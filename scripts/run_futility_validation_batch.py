@@ -190,20 +190,21 @@ def load_contexts(settings: Mapping[str, Any]) -> List[Dict[str, Any]]:
     for shard in settings["shards"]:
         anchor_manifest_path = shard["anchor_dir"] / "anchor_manifest.json"
         rescue_completion = shard["rescue_dir"] / "completion.json"
-        if not anchor_manifest_path.is_file() or not rescue_completion.is_file():
-            raise BatchError(f"{shard['id']}: completed anchor manifest and mate-rescue receipt are required")
-        anchor_manifest = read_json(anchor_manifest_path, f"{shard['id']} anchor manifest")
-        for field, artifact in (("reference_probe", settings["probe"]), ("weights", settings["weights"])):
-            expected = anchor_manifest.get(field)
-            actual = tune_futility.file_identity(artifact)
-            if not isinstance(expected, dict) or any(expected.get(key) != actual.get(key) for key in ("sha256", "size")):
-                raise BatchError(f"{shard['id']}: configured {field} does not match its immutable anchor")
-        inputs = anchor_manifest.get("inputs")
-        actual_input = tune_futility.file_identity(shard["input"])
-        if not isinstance(inputs, list) or len(inputs) != 1 or not isinstance(inputs[0], dict) or any(
-            inputs[0].get(key) != actual_input.get(key) for key in ("sha256", "size")
-        ):
-            raise BatchError(f"{shard['id']}: configured input does not match its immutable anchor")
+        # Earlier per-root populations predate anchor_manifest/completion receipts.
+        # Their immutable JSONL plus mate-rescue sidecars are still validated by
+        # load_anchor below.  When an anchor manifest exists, use it to bind the
+        # input artifact, but deliberately record rather than require equality of
+        # its historical probe/net: a campaign freezes one candidate probe while
+        # the historical references can have been produced on another platform.
+        anchor_manifest = None
+        if anchor_manifest_path.is_file():
+            anchor_manifest = read_json(anchor_manifest_path, f"{shard['id']} anchor manifest")
+            inputs = anchor_manifest.get("inputs")
+            actual_input = tune_futility.file_identity(shard["input"])
+            if not isinstance(inputs, list) or len(inputs) != 1 or not isinstance(inputs[0], dict) or any(
+                inputs[0].get(key) != actual_input.get(key) for key in ("sha256", "size")
+            ):
+                raise BatchError(f"{shard['id']}: configured input does not match its immutable anchor")
         try:
             context = optimize_futility.load_anchor(
                 settings["config_path"],
@@ -218,8 +219,12 @@ def load_contexts(settings: Mapping[str, Any]) -> List[Dict[str, Any]]:
             )
         except (optimize_futility.OptimizationError, tune_futility.TuningError) as exc:
             raise BatchError(f"invalid immutable anchor for {shard['id']}: {exc}") from exc
-        contexts.append({**shard, "context": context, "anchor_manifest": tune_futility.file_identity(anchor_manifest_path),
-                         "rescue_completion": tune_futility.file_identity(rescue_completion)})
+        contexts.append({
+            **shard,
+            "context": context,
+            "anchor_manifest": tune_futility.file_identity(anchor_manifest_path) if anchor_manifest is not None else None,
+            "rescue_completion": tune_futility.file_identity(rescue_completion) if rescue_completion.is_file() else None,
+        })
     return contexts
 
 
@@ -371,31 +376,25 @@ def progress(settings: Mapping[str, Any], contexts: Sequence[Mapping[str, Any]])
     return {"schema": SCHEMA, "complete_jobs": sum(item["complete"] for item in completed), "total_jobs": len(completed), "jobs": completed}
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--candidate", action="append", help="Run only this candidate id; may be repeated.")
-    parser.add_argument("--dry-run", action="store_true", help="Validate anchors and print the serial job plan only.")
-    args = parser.parse_args(argv)
-    config_path = Path(args.config).resolve()
-    settings = load_settings(config_path)
-    contexts = load_contexts(settings)
-    expected = execution_manifest(settings, contexts)
-    selected = set(args.candidate or [item["id"] for item in settings["candidates"]])
+def run_batch(settings: Mapping[str, Any], contexts: Sequence[Mapping[str, Any]], selected: set[str], max_work_units: int = 0) -> Dict[str, Any]:
+    if max_work_units < 0:
+        raise BatchError("max_work_units must be >= 0")
     known = {item["id"] for item in settings["candidates"]}
     unknown = selected - known
     if unknown:
         raise BatchError("unknown candidate(s): " + ", ".join(sorted(unknown)))
     jobs = [(candidate, shard) for candidate in settings["candidates"] if candidate["id"] in selected for shard in contexts]
-    if args.dry_run:
-        print(f"validated {len(contexts)} immutable shards and {len(jobs)} serial candidate jobs")
-        for candidate, shard in jobs:
-            print(f"{candidate['id']} {shard['id']} margins={','.join(str(value) for value in candidate['margins'])}")
-        return 0
-    verify_or_write_manifest(settings["run_dir"], expected)
-    for index, (candidate, shard) in enumerate(jobs, 1):
+    verify_or_write_manifest(settings["run_dir"], execution_manifest(settings, contexts))
+    pending = [
+        (candidate, shard) for candidate, shard in jobs
+        if not tune_futility.probe_output_complete(
+            candidate_output_path(settings["run_dir"], candidate["id"], shard["id"]), settings["candidate_nodes"], candidate["margins"]
+        )
+    ]
+    work = pending if not max_work_units else pending[:max_work_units]
+    for index, (candidate, shard) in enumerate(work, 1):
         status = run_candidate_probe(settings, candidate, shard)
-        print(f"batch progress: {index}/{len(jobs)} {candidate['id']} {shard['id']} {status}", file=sys.stderr, flush=True)
+        print(f"batch progress: {index}/{len(work)} {candidate['id']} {shard['id']} {status}", file=sys.stderr, flush=True)
         atomic_json(settings["run_dir"] / "progress.json", progress(settings, contexts))
     current_progress = progress(settings, contexts)
     atomic_json(settings["run_dir"] / "progress.json", current_progress)
@@ -411,6 +410,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"batch complete: {current_progress['total_jobs']} candidate probes; report={settings['run_dir'] / 'report.md'}")
     else:
         print(f"batch partial: {current_progress['complete_jobs']}/{current_progress['total_jobs']} jobs complete; rerun to continue")
+    return {"work_units_completed": len(work), "progress": current_progress, "complete": current_progress["complete_jobs"] == current_progress["total_jobs"]}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--candidate", action="append", help="Run only this candidate id; may be repeated.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate anchors and print the serial job plan only.")
+    parser.add_argument("--max-work-units", type=int, default=0, help="Maximum candidate/shard probes this invocation; 0 means unlimited.")
+    args = parser.parse_args(argv)
+    config_path = Path(args.config).resolve()
+    settings = load_settings(config_path)
+    contexts = load_contexts(settings)
+    selected = set(args.candidate or [item["id"] for item in settings["candidates"]])
+    known = {item["id"] for item in settings["candidates"]}
+    unknown = selected - known
+    if unknown:
+        raise BatchError("unknown candidate(s): " + ", ".join(sorted(unknown)))
+    jobs = [(candidate, shard) for candidate in settings["candidates"] if candidate["id"] in selected for shard in contexts]
+    if args.dry_run:
+        print(f"validated {len(contexts)} immutable shards and {len(jobs)} serial candidate jobs")
+        for candidate, shard in jobs:
+            print(f"{candidate['id']} {shard['id']} margins={','.join(str(value) for value in candidate['margins'])}")
+        return 0
+    if args.max_work_units < 0:
+        raise BatchError("--max-work-units must be >= 0")
+    run_batch(settings, contexts, selected, args.max_work_units)
     return 0
 
 

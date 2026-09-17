@@ -1,0 +1,56 @@
+{
+  "schema": "chilo.futility_campaign.v1",
+  "store_root": "/home/ubuntu/futility-validation",
+  "run_id": "pareto-example",
+  "artifacts": {
+    "probe": "/home/ubuntu/futility-validation/artifacts/REPLACE/futility_probe-avx2",
+    "weights": "/home/ubuntu/futility-validation/artifacts/REPLACE/chilo-g4t1-64x8.bin"
+  },
+  "candidate_nodes": 120000,
+  "baseline_margins": [120, 240, 360],
+  "score_scale": 600,
+  "report_every": 1000,
+  "development": {
+    "id": "g3-sr4",
+    "kind": "single",
+    "path": "populations/per-root-v1/development/g3-sr4"
+  },
+  "selection": [
+    {
+      "id": "g3-sr3-r2m",
+      "kind": "single",
+      "path": "populations/per-root-v1/selection/g3-sr3-r2m"
+    },
+    {
+      "id": "sr3v-production",
+      "kind": "sharded",
+      "path": "populations/per-root-v1/selection/sr3v-production/run"
+    },
+    {
+      "id": "sr3v-smoke",
+      "kind": "sharded",
+      "path": "populations/per-root-v1/selection/sr3v-smoke/run"
+    }
+  ],
+  "pareto_search": {
+    "initial_margins": [0, 25, 139],
+    "max_proposals": 80,
+    "workers": 1,
+    "seed": 20260917,
+    "perturbation_c": 40,
+    "perturbation_gamma": 0.101,
+    "max_margin": 1200,
+    "semantic_filters": [
+      {"metric": "winning_mate_missed", "discard_worst_fraction": 0.25},
+      {"metric": "nonlosing_to_losing", "discard_worst_fraction": 0.25}
+    ]
+  },
+  "validation": {
+    "candidates": [
+      {"id": "candidate-a", "margins": [0, 25, 139]}
+    ],
+    "tail_fractions": [0.01, 0.05],
+    "regret_thresholds": [0.1, 0.25],
+    "semantic_thresholds": {"advantage_cp": 150, "loss_cp": -150}
+  }
+}
