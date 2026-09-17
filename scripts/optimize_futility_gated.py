@@ -263,6 +263,17 @@ def probe_one(settings: Settings, run_dir: Path, identifier: str, margins: Margi
     return tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
 
 
+def completed_probe_exists(settings: Settings, run_dir: Path, identifier: str, margins: Margins) -> bool:
+    output = run_dir / "probes" / f"{identifier}.jsonl"
+    if not output.is_file():
+        return False
+    try:
+        tune_futility.parse_probe_output(output, settings.candidate_nodes, margins)
+    except tune_futility.TuningError:
+        return False
+    return True
+
+
 def risk_metrics(reference: Mapping[str, Any], candidate: Mapping[str, Any], keys: Sequence[Key], score_scale: float) -> Dict[str, Any]:
     return futility_risk.compute_risk_metrics(reference, candidate, keys, score_scale, [0.01], [], 150, -150)
 
@@ -401,13 +412,15 @@ def run(settings: Settings, run_dir: Path, max_work_units: int = 0) -> Dict[str,
     state = load_state(state_path, settings)
     work_units_completed = 0
     if "initial" not in evaluation_index(state) and (not max_work_units or work_units_completed < max_work_units):
+        reused_initial = completed_probe_exists(settings, run_dir, "initial", settings.initial_margins)
         initial_candidate = probe_one(settings, run_dir, "initial", settings.initial_margins)
         initial = evaluate(settings, run_dir, "initial", settings.initial_margins, initial_candidate)
         initial["kind"] = "initial"
         state["evaluations"].append(initial)
         state["frontier_ids"] = ["initial"]
         atomic_write(state_path, state)
-        work_units_completed += 1
+        if not reused_initial:
+            work_units_completed += 1
     while state["next_proposal"] < settings.max_proposals and (not max_work_units or work_units_completed < max_work_units):
         frontier_snapshot = current_frontier(state)
         batch_start = state["next_proposal"]

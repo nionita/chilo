@@ -368,6 +368,27 @@ command in a non-blocking `flock` and appends to the campaign's `cron.log`.
 Interrupted ordinary candidate JSONL is intentionally rerun, while completed
 probe output and atomic optimizer state are reused.
 
+For a fresh search, `pareto_search.initial_margins` is measured normally. A
+later campaign can instead seed itself from a completed proposal in an earlier
+campaign, without naming or manually copying a JSONL file:
+
+```json
+"initial_evaluation": {
+  "campaign_run_id": "previous-campaign",
+  "evaluation_id": "candidate-0007"
+}
+```
+
+When this field is used, omit `pareto_search.initial_margins`; the stored
+proposal margins are authoritative. The runner obtains the raw normal-PVS
+output only from `evals/<campaign_run_id>/search/state.json`, validates its
+recorded probe/net, SR4 reference/baseline/rescue contract, and output hash,
+then atomically stages it as the new run's `search/probes/initial.jsonl`.
+It rejects a candidate from a different fixed campaign probe rather than
+silently mixing search implementations. A staged complete initial JSONL does
+not consume a work unit, so a one-unit cron invocation can begin proposal 1
+immediately.
+
 ## Historical Coordinate Optimizer
 
 `scripts/optimize_futility.py` is the original dependency-free, deterministic

@@ -163,6 +163,24 @@ class ParetoSearchTest(unittest.TestCase):
             self.assertEqual(first_proposal["work_units_completed"], 1)
             self.assertEqual(first_proposal["proposal_count"], 1)
 
+    def test_reused_initial_does_not_consume_bounded_probe_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = pareto.load_settings(self.write_config(root, self.write_anchor(root), proposals=2, workers=1))
+            run_dir = root / "run"
+            pareto.prepare(run_dir, pareto.manifest(settings))
+            key = ("positions.csv", 1, "fen")
+
+            def fake_probe(_settings, _run_dir, _identifier, _margins):
+                return {"positions": {key: {"bestmove": "e2e4", "score": 30, "completed_depth": 6, "nodes": 100, "iteration_interrupted": True}}, "summary": {}}
+
+            with patch.object(pareto, "completed_probe_exists", side_effect=lambda _settings, _run_dir, identifier, _margins: identifier == "initial"), \
+                 patch.object(pareto, "probe_one", side_effect=fake_probe), \
+                 patch.object(pareto.tune_futility, "file_identity", return_value={"path": "synthetic", "sha256": "0", "size": 0}):
+                result = pareto.run(settings, run_dir, max_work_units=1)
+            self.assertEqual(result["work_units_completed"], 1)
+            self.assertEqual(result["proposal_count"], 1)
+
     def test_v3_state_cannot_resume_under_v4_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -208,6 +209,72 @@ def context_identity(item: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def same_identity(left: Any, right: Any) -> bool:
+    return isinstance(left, dict) and isinstance(right, dict) and all(left.get(key) == right.get(key) for key in ("sha256", "size"))
+
+
+def require_reuse_contract(source: Mapping[str, Any], settings: Mapping[str, Any], source_run_id: str) -> None:
+    expected_development = context_identity(settings["development"])
+    checks = (
+        ("probe", source.get("probe"), file_identity(settings["probe"])),
+        ("weights", source.get("weights"), file_identity(settings["weights"])),
+        ("development.reference", source.get("development", {}).get("reference") if isinstance(source.get("development"), dict) else None, expected_development["reference"]),
+        ("development.baseline", source.get("development", {}).get("baseline") if isinstance(source.get("development"), dict) else None, expected_development["baseline"]),
+    )
+    for label, actual, expected in checks:
+        if not same_identity(actual, expected):
+            raise CampaignError(f"initial_evaluation source campaign {source_run_id} has incompatible {label}")
+    source_development = source.get("development")
+    if not isinstance(source_development, dict) or source.get("candidate_nodes") != settings["candidate_nodes"] or \
+       source.get("baseline_margins") != list(settings["baseline_margins"]) or source.get("score_scale") != settings["score_scale"] or \
+       source_development.get("trusted_set") != expected_development["trusted_set"] or source_development.get("rescue") != expected_development["rescue"]:
+        raise CampaignError(f"initial_evaluation source campaign {source_run_id} has an incompatible development contract")
+
+
+def resolve_initial_evaluation(settings: Mapping[str, Any], value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"campaign_run_id", "evaluation_id"}:
+        raise CampaignError("initial_evaluation must contain exactly campaign_run_id and evaluation_id")
+    source_run_id = require_identifier(value["campaign_run_id"], "initial_evaluation.campaign_run_id")
+    evaluation_id = require_identifier(value["evaluation_id"], "initial_evaluation.evaluation_id")
+    source_run = Path(settings["store_root"]) / "evals" / source_run_id
+    if source_run.resolve() == Path(settings["run_dir"]).resolve():
+        raise CampaignError("initial_evaluation cannot reference the campaign being created")
+    source_manifest_path = source_run / "campaign_manifest.json"
+    source_state_path = source_run / "search" / "state.json"
+    source_manifest = read_json(source_manifest_path, f"initial_evaluation campaign {source_run_id} manifest")
+    if source_manifest.get("schema") != MANIFEST_SCHEMA:
+        raise CampaignError(f"initial_evaluation source campaign {source_run_id} has unsupported manifest schema")
+    require_reuse_contract(source_manifest, settings, source_run_id)
+    state = read_json(source_state_path, f"initial_evaluation campaign {source_run_id} search state")
+    if state.get("schema") != optimize_futility_gated.STATE_SCHEMA or not isinstance(state.get("evaluations"), list):
+        raise CampaignError(f"initial_evaluation source campaign {source_run_id} has invalid Pareto state")
+    matches = [item for item in state["evaluations"] if isinstance(item, dict) and item.get("id") == evaluation_id]
+    if len(matches) != 1:
+        raise CampaignError(f"initial_evaluation source evaluation does not exist: {source_run_id}/{evaluation_id}")
+    record = matches[0]
+    try:
+        margins = tuple(tune_futility.validate_margins(record.get("margins"), "initial_evaluation source margins"))
+    except tune_futility.TuningError as exc:
+        raise CampaignError(f"initial_evaluation source {source_run_id}/{evaluation_id} has invalid margins") from exc
+    output_path = source_run / "search" / "probes" / f"{evaluation_id}.jsonl"
+    if not output_path.is_file() or not same_identity(record.get("output"), file_identity(output_path)):
+        raise CampaignError(f"initial_evaluation source output is missing or differs from its recorded evaluation: {source_run_id}/{evaluation_id}")
+    try:
+        tune_futility.parse_probe_output(output_path, settings["candidate_nodes"], margins)
+    except tune_futility.TuningError as exc:
+        raise CampaignError(f"initial_evaluation source output is not a complete normal-PVS probe: {source_run_id}/{evaluation_id}") from exc
+    return {
+        "campaign_run_id": source_run_id,
+        "evaluation_id": evaluation_id,
+        "margins": list(margins),
+        "campaign_manifest": file_identity(source_manifest_path),
+        "state": file_identity(source_state_path),
+        "source_output": file_identity(output_path),
+        "source_output_path": str(output_path),
+        "source_kind": record.get("kind"),
+    }
+
+
 def load_campaign(config_path: Path) -> dict[str, Any]:
     raw_bytes = config_path.read_bytes()
     try:
@@ -218,7 +285,7 @@ def load_campaign(config_path: Path) -> dict[str, Any]:
         raise CampaignError("campaign config root must be an object")
     allowed = {
         "schema", "store_root", "run_id", "artifacts", "candidate_nodes", "baseline_margins", "score_scale", "report_every",
-        "development", "selection", "pareto_search", "validation",
+        "development", "selection", "pareto_search", "validation", "initial_evaluation",
     }
     unknown = sorted(set(raw) - allowed)
     if raw.get("schema") != SCHEMA or unknown:
@@ -261,7 +328,7 @@ def load_campaign(config_path: Path) -> dict[str, Any]:
         raise CampaignError("selection shard IDs overlap")
     if development_shards[0]["id"] in set(resolved_ids):
         raise CampaignError("development position source overlaps a selection shard ID")
-    return {
+    settings = {
         "raw": raw,
         "config_path": config_path,
         "config_sha256": hashlib.sha256(raw_bytes).hexdigest(),
@@ -279,6 +346,20 @@ def load_campaign(config_path: Path) -> dict[str, Any]:
         "pareto_search": raw.get("pareto_search"),
         "validation": raw.get("validation"),
     }
+    initial_evaluation_raw = raw.get("initial_evaluation")
+    if initial_evaluation_raw is not None:
+        if not isinstance(settings["pareto_search"], dict):
+            raise CampaignError("initial_evaluation requires pareto_search")
+        if "initial_margins" in settings["pareto_search"]:
+            raise CampaignError("pareto_search.initial_margins must be omitted when initial_evaluation is supplied")
+        seed = resolve_initial_evaluation(settings, initial_evaluation_raw)
+        effective_pareto = dict(settings["pareto_search"])
+        effective_pareto["initial_margins"] = seed["margins"]
+        settings["pareto_search"] = effective_pareto
+        settings["initial_evaluation"] = seed
+    else:
+        settings["initial_evaluation"] = None
+    return settings
 
 
 def search_config(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -322,7 +403,34 @@ def campaign_manifest(settings: Mapping[str, Any]) -> dict[str, Any]:
         "development": context_identity(settings["development"]),
         "selection": [context_identity(item) for item in settings["selection"]],
         "pareto_search": settings["pareto_search"], "validation": settings["validation"],
+        "initial_evaluation": settings["initial_evaluation"],
     }
+
+
+def stage_initial_evaluation(settings: Mapping[str, Any]) -> None:
+    seed = settings["initial_evaluation"]
+    if seed is None:
+        return
+    source = Path(seed["source_output_path"])
+    target = Path(settings["run_dir"]) / "search" / "probes" / "initial.jsonl"
+    expected = seed["source_output"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if not same_identity(file_identity(target), expected):
+            raise CampaignError("existing staged initial.jsonl differs from the configured initial_evaluation source")
+    else:
+        temporary = target.with_name(target.name + ".tmp")
+        try:
+            shutil.copy2(source, temporary)
+            if not same_identity(file_identity(temporary), expected):
+                raise CampaignError("initial_evaluation source changed while staging it")
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    try:
+        tune_futility.parse_probe_output(target, settings["candidate_nodes"], tuple(seed["margins"]))
+    except tune_futility.TuningError as exc:
+        raise CampaignError("staged initial_evaluation is not a complete normal-PVS probe") from exc
 
 
 def prepare(settings: Mapping[str, Any], manifest: Mapping[str, Any]) -> None:
@@ -340,6 +448,7 @@ def prepare(settings: Mapping[str, Any], manifest: Mapping[str, Any]) -> None:
         atomic_json(run_dir / "search_config.json", search_config(settings))
     if isinstance(settings["validation"], dict):
         atomic_json(run_dir / "validation_config.json", validation_config(settings))
+    stage_initial_evaluation(settings)
 
 
 def write_progress(settings: Mapping[str, Any], phase: str, search: Mapping[str, Any] | None, validation: Mapping[str, Any] | None) -> None:
