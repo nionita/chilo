@@ -25,6 +25,17 @@ def fake_context(label: str) -> SimpleNamespace:
     )
 
 
+def fake_rescue(directory: str) -> dict[str, object]:
+    return {
+        "directory": directory,
+        "manifest": {"path": directory + "/rescue_manifest.json", "sha256": "rescue-manifest", "size": 1},
+        "results": {"path": directory + "/rescue_results.json", "sha256": "rescue-results", "size": 2},
+        "combined_population": {"path": directory + "/combined_population.json", "sha256": "rescue-population", "size": 3},
+        "reference": {"path": directory + "/rescue_reference.jsonl", "sha256": "rescue-reference", "size": 4},
+        "baseline": {"path": directory + "/rescue_baseline.jsonl", "sha256": "rescue-baseline", "size": 5},
+    }
+
+
 class CampaignPopulationTest(unittest.TestCase):
     def write_single(self, root: Path) -> None:
         (root / "inputs").mkdir(parents=True)
@@ -158,6 +169,34 @@ class CampaignPopulationTest(unittest.TestCase):
             (previous / "campaign_manifest.json").write_text(json.dumps(source_manifest), encoding="utf-8")
             with self.assertRaisesRegex(campaign.CampaignError, "incompatible probe"):
                 campaign.resolve_initial_evaluation(current, {"campaign_run_id": "previous-run", "evaluation_id": "candidate-0007"})
+
+    def test_reuse_contract_accepts_identical_rescue_evidence_at_different_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            probe, weights = root / "probe", root / "weights"
+            probe.write_text("probe", encoding="utf-8")
+            weights.write_text("weights", encoding="utf-8")
+            input_path = root / "input.csv"
+            input_path.write_text("fen\n", encoding="utf-8")
+            development = root / "development"
+            development.mkdir()
+            current_context = fake_context("development")
+            current_context.rescue = fake_rescue("/new/store/development/rescue")
+            current = {
+                "probe": probe, "weights": weights, "candidate_nodes": 120000,
+                "baseline_margins": (120, 240, 360), "score_scale": 600.0,
+                "development": {"id": "development", "population": "development", "input": input_path,
+                                "anchor_dir": development, "rescue_dir": development, "population_manifest": None,
+                                "context": current_context},
+            }
+            source_development = campaign.context_identity(current["development"])
+            source_development["rescue"] = fake_rescue("/old/store/development/rescue")
+            source = {
+                "probe": campaign.file_identity(probe), "weights": campaign.file_identity(weights),
+                "candidate_nodes": 120000, "baseline_margins": [120, 240, 360], "score_scale": 600.0,
+                "development": source_development,
+            }
+            campaign.require_reuse_contract(source, current, "previous-run")
 
     def test_campaign_injects_reused_margins_without_manual_initial_tuple(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

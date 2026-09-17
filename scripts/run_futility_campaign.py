@@ -213,6 +213,17 @@ def same_identity(left: Any, right: Any) -> bool:
     return isinstance(left, dict) and isinstance(right, dict) and all(left.get(key) == right.get(key) for key in ("sha256", "size"))
 
 
+def same_rescue_contract(left: Any, right: Any) -> bool:
+    """Compare immutable rescue evidence without tying a campaign to its host path."""
+    if left is None or right is None:
+        return left is None and right is None
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    return all(same_identity(left.get(key), right.get(key)) for key in (
+        "manifest", "results", "combined_population", "reference", "baseline",
+    ))
+
+
 def require_reuse_contract(source: Mapping[str, Any], settings: Mapping[str, Any], source_run_id: str) -> None:
     expected_development = context_identity(settings["development"])
     checks = (
@@ -227,7 +238,8 @@ def require_reuse_contract(source: Mapping[str, Any], settings: Mapping[str, Any
     source_development = source.get("development")
     if not isinstance(source_development, dict) or source.get("candidate_nodes") != settings["candidate_nodes"] or \
        source.get("baseline_margins") != list(settings["baseline_margins"]) or source.get("score_scale") != settings["score_scale"] or \
-       source_development.get("trusted_set") != expected_development["trusted_set"] or source_development.get("rescue") != expected_development["rescue"]:
+       source_development.get("trusted_set") != expected_development["trusted_set"] or \
+       not same_rescue_contract(source_development.get("rescue"), expected_development["rescue"]):
         raise CampaignError(f"initial_evaluation source campaign {source_run_id} has an incompatible development contract")
 
 
