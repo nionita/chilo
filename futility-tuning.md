@@ -256,12 +256,12 @@ G3-SR2/SR3 FEN set. Its provenance JSON records 25,000 unique FENs and zero
 overlap. The sampler itself remains single-input; do not introduce generic
 multi-shard sampling merely to support these two anchors.
 
-Keep every anchor as its own paired raw JSONL evidence and manifest. G3-SR4
-has 22,723 ordinary trusted positions and is the optimizer development shard;
-G3-SR3-R2M has 22,829 ordinary trusted positions and is the untouched
-selection shard. Do not pool them until an explicit aggregation design is
-reviewed. The full-corpus G3-SR3-R2M selection comparison of the two SPSA
-endpoints is recorded below from its durable probe output, not inferred from
+Keep every anchor as its own paired raw JSONL evidence and manifest. The
+current development/selection roles and canonical local registry are recorded
+in `~/Tune/futility/validation/README.md`; that file is the operational source
+of truth for current Pareto-search inputs, validation coverage, and archive
+cleanup. The historical full-corpus G3-SR3-R2M comparison of the two SPSA
+endpoints remains recorded below from durable probe output, not inferred from
 development results.
 
 ### Current corpus roles and extended selection store — 2026-09-17
@@ -302,10 +302,10 @@ probes, these are their first exact additive whole-selection results:
 
 These figures are exact position-weighted aggregates over all 141,099 trusted
 selection positions. P90/CVaR are non-additive order statistics, so do not
-label them as full-selection values until the small smoke reference root-score
-maps are also available locally for one raw pooled calculation. The table is
-proxy evidence only; `spsa150b`'s existing SPRT win over f21 remains the
-game-strength evidence.
+label them as full-selection values until they are recalculated from the now
+canonical raw root-score maps in one pooled pass. The table is proxy evidence
+only; `spsa150b`'s existing SPRT win over f21 remains the game-strength
+evidence.
 
 On the cloud server, keep raw evidence and candidate outputs separate:
 
@@ -332,6 +332,18 @@ It pools records by position only after each shard's anchor/rescue contract has
 validated. Use `--dry-run` before a cloud launch; rerunning the same command
 continues after an interruption, but a partially written ordinary candidate
 probe is intentionally restarted from scratch.
+
+### Forward Pareto workflow
+
+Future Pareto work should begin by choosing one or more documented starting
+tuples, then run both the development search and candidate validation on the
+cloud. The cloud retains immutable raw references and produces only the
+relevant candidate JSONL/manifests under its evaluation store. Copy those
+returned candidate results here into the local validation registry for raw
+analysis and comparison over the current selection set. Decide there which
+tuples merit SPRT; run the SPRT locally, not on the cloud. This keeps expensive
+search and validation remote while preserving the final evidence and
+promotion decision beside the local engine/test environment.
 
 ## Historical Coordinate Optimizer
 
