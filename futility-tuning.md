@@ -264,14 +264,48 @@ reviewed. The full-corpus G3-SR3-R2M selection comparison of the two SPSA
 endpoints is recorded below from its durable probe output, not inferred from
 development results.
 
-### Extended selection-store layout — 2026-09-15
+### Current corpus roles and extended selection store — 2026-09-17
 
-The five completed `sr3v-01` through `sr3v-05` anchors are a new immutable
-selection population. Their mate-rescue combined populations total 114,507
-trusted positions. The two 2k smoke shards are also valid selection evidence:
-they must remain separate (`sr3v-smoke`) and are excluded when later SR3V
-production inputs are sampled, so they can be pooled without duplicate FENs.
-Neither is development data; G3-SR4 remains the only optimizer population.
+G3-SR4 is the only development population: its mate-rescue combined reference
+has 22,825 trusted positions. It is where optimizer proposals are generated;
+do not count it as candidate validation.
+
+The current validation population contains 141,099 trusted positions under the
+same `per_root_v1`, f01-120k, `B + 2`, 2M/root contract:
+
+| Selection component | Nominal inputs | Trusted positions | Role |
+|---|---:|---:|---|
+| G3-SR3-R2M | ~25,000 | 22,934 | Original untouched selection shard |
+| SR3V production (`sr3v-01`…`05`) | 125,000 | 114,507 | Extended selection population |
+| SR3V smoke (`sr3v-test1`, `test2`) | 4,000 | 3,658 | Retained test shards; disjoint from SR3V production |
+| **Selection total** | **~154,000** | **141,099** | Current validation set |
+
+The difference between nominal and trusted counts is expected reference-quality
+filtering: a position is retained only when every legal root reaches its
+required `B + 2` depth; mate rescue restores certified rejected mate cases.
+The three components are FEN-disjoint by sampling exclusions. Keep their raw
+JSONL evidence separate and pool metrics by position, never by concatenating
+or replacing reference files.
+
+The first extended batch, retained as
+`g3-sr3v-initial-candidates-v1-results.tgz` (SHA-256
+`ffe4bf8f7adf09315c7ac42466f638b5c728bb27acede4b64ffd5cb846c41929`),
+gave f21, spsa150b, and d3-0009 complete normal-PVS 120k coverage on the
+118,165 new SR3V positions. Together with their matching full G3-SR3-R2M
+probes, these are their first exact additive whole-selection results:
+
+| Candidate | Margins | Mean regret | Move agreement | Squared regret |
+|---|---|---:|---:|---:|
+| spsa150b | `0,40,158,488,754` | **0.014176** | **57.451%** | **0.002108** |
+| d3-0009 | `0,25,139` | 0.014446 | 57.176% | 0.002141 |
+| f21 | `75,212,390,600,839` | 0.014707 | 56.938% | 0.002229 |
+
+These figures are exact position-weighted aggregates over all 141,099 trusted
+selection positions. P90/CVaR are non-additive order statistics, so do not
+label them as full-selection values until the small smoke reference root-score
+maps are also available locally for one raw pooled calculation. The table is
+proxy evidence only; `spsa150b`'s existing SPRT win over f21 remains the
+game-strength evidence.
 
 On the cloud server, keep raw evidence and candidate outputs separate:
 
