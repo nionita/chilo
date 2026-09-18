@@ -40,6 +40,7 @@ SEMANTIC_METRICS = {
     "nonlosing_to_losing",
 }
 MAX_DUPLICATE_REPLACEMENTS = 1000
+OBJECTIVES = ("mean_regret", "squared_regret", "cvar1")
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class Settings:
     max_margin: int
     semantic_filters: Tuple[SemanticFilter, ...]
     probe_cache_dir: Optional[Path]
+    objectives: Tuple[str, ...] = OBJECTIVES
 
 
 def atomic_write(path: Path, value: Any) -> None:
@@ -88,8 +90,8 @@ def require_number(value: Any, name: str, minimum: float, inclusive: bool = Fals
 
 
 def parse_semantic_filters(value: Any) -> Tuple[SemanticFilter, ...]:
-    if not isinstance(value, list) or not value:
-        raise optimize_futility.OptimizationError("pareto_search.semantic_filters must be a non-empty list")
+    if not isinstance(value, list):
+        raise optimize_futility.OptimizationError("pareto_search.semantic_filters must be a list")
     filters = []
     seen = set()
     for index, item in enumerate(value):
@@ -147,12 +149,12 @@ def load_settings(config_path: Path) -> Settings:
     pareto = raw.get("pareto_search")
     if not isinstance(pareto, dict):
         raise optimize_futility.OptimizationError("pareto_search must be an object")
-    allowed_pareto = {"initial_margins", "max_proposals", "workers", "seed", "perturbation_c", "perturbation_gamma", "max_margin", "semantic_filters"}
+    allowed_pareto = {"initial_margins", "max_proposals", "workers", "seed", "perturbation_c", "perturbation_gamma", "max_margin", "semantic_filters", "objectives"}
     unknown = sorted(set(pareto) - allowed_pareto)
     if unknown:
         raise optimize_futility.OptimizationError(f"unknown pareto_search field(s): {', '.join(unknown)}")
-    if set(pareto) != allowed_pareto:
-        missing = sorted(allowed_pareto - set(pareto))
+    if (allowed_pareto - {"objectives"}) - set(pareto):
+        missing = sorted((allowed_pareto - {"objectives"}) - set(pareto))
         raise optimize_futility.OptimizationError(f"pareto_search missing required field(s): {', '.join(missing)}")
     initial = tune_futility.validate_margins(pareto.get("initial_margins"), "pareto_search.initial_margins")
     max_margin = optimize_futility.require_int(pareto.get("max_margin"), "pareto_search.max_margin", 0)
@@ -168,6 +170,7 @@ def load_settings(config_path: Path) -> Settings:
         perturbation_c=require_number(pareto.get("perturbation_c"), "pareto_search.perturbation_c", 0),
         perturbation_gamma=require_number(pareto.get("perturbation_gamma"), "pareto_search.perturbation_gamma", 0),
         max_margin=max_margin, semantic_filters=parse_semantic_filters(pareto.get("semantic_filters")), probe_cache_dir=cache_dir,
+        objectives=parse_objectives(pareto.get("objectives", list(OBJECTIVES))),
     )
 
 
@@ -186,6 +189,7 @@ def manifest(settings: Settings) -> Dict[str, Any]:
             "semantic_filters": [{"metric": item.metric, "discard_worst_fraction": item.discard_worst_fraction} for item in settings.semantic_filters],
         },
         "probe_cache_dir": str(settings.probe_cache_dir) if settings.probe_cache_dir is not None else None,
+        **({"objectives": list(settings.objectives)} if settings.objectives != OBJECTIVES else {}),
     }
 
 
@@ -331,17 +335,24 @@ def primary_values(item: Mapping[str, Any]) -> Tuple[float, float, float]:
     return float(item["metrics"]["mean_normalized_regret"]), float(item["risk"]["absolute_regret"]["mean_squared"]), float(item["risk"]["absolute_regret"]["tail_mean"]["top_0.01"])
 
 
-def dominates(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
-    """True only for strict Pareto dominance on the three primary minimization metrics."""
+def parse_objectives(value: Any) -> Tuple[str, ...]:
+    if not isinstance(value, list) or not value or any(item not in OBJECTIVES for item in value) or len(set(value)) != len(value):
+        raise optimize_futility.OptimizationError("objectives must be a non-empty unique list of mean_regret, squared_regret, cvar1")
+    return tuple(value)
+
+
+def dominates(left: Mapping[str, Any], right: Mapping[str, Any], objectives: Sequence[str] = OBJECTIVES) -> bool:
+    """True only for strict Pareto dominance on the selected minimization metrics."""
     left_values, right_values = primary_values(left), primary_values(right)
-    return all(a <= b for a, b in zip(left_values, right_values)) and any(a < b for a, b in zip(left_values, right_values))
+    pairs = [(left_values[OBJECTIVES.index(name)], right_values[OBJECTIVES.index(name)]) for name in objectives]
+    return all(a <= b for a, b in pairs) and any(a < b for a, b in pairs)
 
 
-def archive_update(frontier: Sequence[Mapping[str, Any]], candidate: Mapping[str, Any]) -> Tuple[List[Mapping[str, Any]], Dict[str, Any]]:
-    dominators = [str(item["id"]) for item in frontier if dominates(item, candidate)]
+def archive_update(frontier: Sequence[Mapping[str, Any]], candidate: Mapping[str, Any], objectives: Sequence[str] = OBJECTIVES) -> Tuple[List[Mapping[str, Any]], Dict[str, Any]]:
+    dominators = [str(item["id"]) for item in frontier if dominates(item, candidate, objectives)]
     if dominators:
         return list(frontier), {"action": "dominated", "dominators": dominators, "removed": []}
-    removed = [str(item["id"]) for item in frontier if dominates(candidate, item)]
+    removed = [str(item["id"]) for item in frontier if dominates(candidate, item, objectives)]
     removed_set = set(removed)
     return [*([item for item in frontier if str(item["id"]) not in removed_set]), candidate], {"action": "admitted", "dominators": [], "removed": removed}
 
@@ -417,6 +428,7 @@ def write_result(settings: Settings, run_dir: Path, state: Mapping[str, Any], wo
         "evaluated_count": len(state["evaluations"]),
         "proposal_count": state["next_proposal"],
         "numeric_pareto_frontier": frontier,
+        "objectives": list(settings.objectives),
         "semantic_filtering": filtering,
         "selection_shortlist": shortlisted,
         "work_units_completed": work_units_completed,
@@ -428,7 +440,7 @@ def write_result(settings: Settings, run_dir: Path, state: Mapping[str, Any], wo
         ),
     }
     atomic_write(run_dir / "pareto_frontier.json", result)
-    lines = ["# Full-development futility Pareto frontier", "", "Every evaluated tuple used the complete fixed development population. The primary frontier minimizes mean regret, squared regret, and CVaR-1%.", "", "## Numeric Pareto frontier", "", "| ID | Margins | Mean regret | Squared regret | CVaR-1% | Mate misses | Nonlosing to losing |", "|---|---|---:|---:|---:|---:|---:|"]
+    lines = ["# Full-development futility Pareto frontier", "", "Every evaluated tuple used the complete fixed development population. Objectives: " + ", ".join(settings.objectives) + ".", "", "## Numeric Pareto frontier", "", "| ID | Margins | Mean regret | Squared regret | CVaR-1% | Mate misses | Nonlosing to losing |", "|---|---|---:|---:|---:|---:|---:|"]
     for item in frontier:
         absolute, semantic = item["risk"]["absolute_regret"], item["semantic"]
         lines.append(f"| {item['id']} | `{','.join(str(value) for value in item['margins'])}` | {item['metrics']['mean_normalized_regret']:.6f} | {absolute['mean_squared']:.6f} | {absolute['tail_mean']['top_0.01']:.6f} | {semantic['winning_mate_missed']} | {semantic['nonlosing_to_losing']} |")
@@ -495,7 +507,7 @@ def run(settings: Settings, run_dir: Path, max_work_units: int = 0) -> Dict[str,
             identifier = f"candidate-{index:04d}"
             record = evaluate(settings, run_dir, identifier, margins, candidates[index])
             record.update({"kind": "proposal", "proposal_index": index, "parent_id": parent["id"], "parent_margins": list(parent["margins"]), "direction": list(direction), "perturbation": size, "duplicate_tuple_dismissals": duplicate_dismissals, "batch_start": batch_start})
-            frontier, update = archive_update(current_frontier(state), record)
+            frontier, update = archive_update(current_frontier(state), record, settings.objectives)
             record["archive_update"] = update
             state["evaluations"].append(record)
             state["frontier_ids"] = [item["id"] for item in frontier]

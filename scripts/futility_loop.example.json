@@ -1,0 +1,47 @@
+{
+  "schema": "chilo.futility_loop.v1",
+  "store_root": "/home/ubuntu/futility-validation",
+  "loop_id": "continuous-futility",
+  "artifacts": {
+    "probe": "/home/ubuntu/futility-validation/artifacts/REPLACE/futility_probe-avx2",
+    "weights": "/home/ubuntu/futility-validation/artifacts/REPLACE/chilo-g4t1-64x8.bin"
+  },
+  "candidate_nodes": 120000,
+  "baseline_margins": [120, 240, 360],
+  "score_scale": 600,
+  "report_every": 1000,
+  "development": {
+    "id": "g3-sr4", "kind": "single",
+    "path": "populations/per-root-v1/development/g3-sr4"
+  },
+  "selection": [
+    {"id": "g3-sr3-r2m", "kind": "single", "path": "populations/per-root-v1/selection/g3-sr3-r2m"},
+    {"id": "sr3v-production", "kind": "sharded", "path": "populations/per-root-v1/selection/sr3v-production/run"},
+    {"id": "sr3v-smoke", "kind": "sharded", "path": "populations/per-root-v1/selection/sr3v-smoke/run"}
+  ],
+  "initialization": {
+    "base": {"alias": "spsa150b", "margins": [0, 40, 158, 488, 754], "provenance": "operator-confirmed SPRT best"},
+    "validation_pool": [
+      {"alias": "candidate-0014", "margins": [0, 70, 218, 578, 814], "provenance": "pareto-spsa150b-r2-15/search/candidate-0014"}
+    ],
+    "imports": []
+  },
+  "search": {
+    "max_proposals": 15, "workers": 1, "seed": 20260919,
+    "perturbation_c": 40, "perturbation_gamma": 0.101, "max_margin": 1200
+  },
+  "dev_selector": {
+    "objectives": ["mean_regret", "squared_regret", "cvar1"],
+    "semantic_filters": [
+      {"metric": "winning_mate_missed", "discard_worst_fraction": 0.25},
+      {"metric": "nonlosing_to_losing", "discard_worst_fraction": 0.25}
+    ]
+  },
+  "validation_selector": {
+    "objectives": ["mean_regret", "squared_regret", "cvar1"],
+    "semantic_filters": [
+      {"metric": "winning_mate_missed", "discard_worst_fraction": 0.25},
+      {"metric": "nonlosing_to_losing", "discard_worst_fraction": 0.25}
+    ]
+  }
+}

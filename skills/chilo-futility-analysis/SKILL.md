@@ -30,9 +30,11 @@ then retain the accepted archive under `~/Tune/futility`.
 - Compare candidates on the same complete population and exact node budget.
   State the corpus, accepted-position count, reference contract, probe/weights
   hashes, and whether the result is a subset/sample or full evaluation.
-- Mean normalized score regret remains the optimization objective. Report
-  reference-relative squared regret, P95/P99, and CVaR-1% as tail-risk
-  diagnostics; do not confuse older f01-relative gates with these values.
+- Read the configured objectives: current Pareto searches normally minimize
+  mean normalized regret, reference-relative squared regret, and CVaR-1%; the
+  continuous loop permits separate objective subsets and semantic filters for
+  dev and selection. Report P95/P99 as diagnostics. Do not confuse older
+  f01-relative gates with these reference-relative values.
 - Retain completed depth, move agreement, elapsed time, and futility counts as
   diagnostics only. SPRT, rather than a proxy result, establishes playing
   strength.
@@ -63,3 +65,12 @@ then retain the accepted archive under `~/Tune/futility`.
   evidence, use `scripts/backfill_futility_probe_cache.py --store-root STORE`
   against `STORE/evals/`; it validates manifests and outputs and never scans
   ad-hoc legacy directories.
+- For continuous-loop results, begin with `loop_state.json`: its `archive`
+  contains fully pooled selection results and its `active` field identifies
+  an unfinished phase. Inspect the raw evidence in `cycles/` and `validation/`
+  and keep those subrun manifests with any returned results. The derived
+  `sprt_queue.json` is a screening queue, not strength evidence: pending entries
+  may be superseded by later selection; running/accepted/rejected statuses
+  reflect manual updates. Only the operator changes the proven base used by
+  the next dev cycle. See `futility-tuning.md` for the loop commands and policy
+  revision rules.

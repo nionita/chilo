@@ -287,8 +287,8 @@ def resolve_initial_evaluation(settings: Mapping[str, Any], value: Any) -> dict[
     }
 
 
-def load_campaign(config_path: Path) -> dict[str, Any]:
-    raw_bytes = config_path.read_bytes()
+def load_campaign(config_path: Path, document: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    raw_bytes = config_path.read_bytes() if document is None else json.dumps(document, sort_keys=True).encode()
     try:
         raw = json.loads(raw_bytes)
     except json.JSONDecodeError as exc:

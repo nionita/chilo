@@ -41,6 +41,17 @@ package does not authorize starting an expensive run.
 - Make the launcher fail on missing artifacts and write results below a new
   `run/` directory. It must not overwrite an existing result directory.
 
+For continuous Linux dev/selection work, use `scripts/run_futility_loop.py`
+and `scripts/futility_loop.example.json`; its operator procedure is in
+`futility-tuning.md`, under "Continuous development/selection loop". This mode
+uses the established external store and writes to `store_root/evals/<loop_id>`
+instead of package-local `run/`. Bind the external population and probe/net
+artifacts in the package receipt; do not ship duplicate populations when the
+target store already has them. Include the loop's full import closure and its
+cron launcher. Preserve an existing loop's immutable initialization/contract;
+parameter changes require a graceful stop and explicit reconfiguration. A
+stopped loop remains stopped under cron until `resume`; it never launches SPRT.
+
 ## Finish
 
 - Archive Windows packages as `.zip` and Linux packages as `.tgz`.

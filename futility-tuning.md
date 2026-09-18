@@ -367,8 +367,9 @@ promotion decision beside the local engine/test environment.
 
 ### Unified campaign runner
 
-`scripts/run_futility_campaign.py` is the normal entry point for new Pareto
-campaigns. A campaign config names the immutable development and selection
+`scripts/run_futility_campaign.py` remains the entry point for individual Pareto
+searches and explicit validation batches. For continuous automatic promotion,
+use the loop below. A campaign config names the immutable development and selection
 populations, one fixed candidate probe/net pair, the common 120k/f01 scoring
 contract, Pareto parameters, and explicitly selected validation tuples. Its
 only writable location is `store_root/evals/<run_id>/`; the campaign manifest
@@ -409,6 +410,117 @@ stages its independent copy. The cache receipt is stored as
 `search/logs/initial.cache.json`; a staged complete initial JSONL does not
 consume a work unit, so a one-unit cron invocation can begin proposal 1
 immediately.
+
+### Continuous development/selection loop — 2026-09-18
+
+`scripts/run_futility_loop.py` coordinates the existing Pareto optimizer and
+full-validation batch evaluator on Linux, using only the Python standard
+library. Start from `scripts/futility_loop.example.json`. It runs indefinitely;
+preparing the config does not start any engine work. No SPRT is launched by
+this tool, and no extra holdout is introduced: pooled selection metrics screen
+candidates, while actual SPRT is the independent playing-strength decision.
+
+The phase sequence is:
+
+1. If initialization has pending validation tuples, validate them and the
+   manually designated SPRT best first. Otherwise begin with development.
+2. Start each dev cycle from that SPRT best on **SR4 only**, with a fresh
+   deterministic seed (`search.seed + cycle - 1`). Within the cycle, parents
+   come from its evolving Pareto frontier. Default: 15 proposals, one worker,
+   `perturbation_c=40`, `perturbation_gamma=0.101`, `max_margin=1200`.
+3. Apply the dev selector and schedule only tuples not already fully validated
+   under this loop's fixed contract. Validate survivors over **all configured
+   selection shards**, including rescues. Existing raw-probe cache hits avoid
+   engine work; missing candidate/shard pairs run serially. The proven base
+   also receives complete matching coverage before challenges are published.
+4. Rebuild the cumulative selection frontier from every fully validated tuple.
+   Compute pooled metrics from position-level data, never averages of shard
+   CVaRs. Publish surviving untested tuples to the manual SPRT queue and return
+   to development. A cycle with no new validation tuples goes straight to the
+   next dev cycle.
+
+`dev_selector` and `validation_selector` are independent. Each selects any
+nonempty subset of `mean_regret`, `squared_regret`, `cvar1` as minimization
+objectives (all three by default), then applies ordered semantic filters.
+Defaults discard the worst 25% by missed winning mates, followed by the worst
+25% by nonlosing-to-losing transitions. These are reference-relative metrics.
+Cutoff ties are retained, so these fractions are not hard queue-size caps;
+`semantic_filters: []` disables semantic decimation. No scalar ranking is
+implied between nondominated survivors.
+
+The example initializes the proven base to spsa150b `[0,40,158,488,754]` and
+the validation pool to candidate-0014 `[0,70,218,578,814]`. Review these before
+starting. `initialization.imports` optionally lists prior campaign or batch
+run directories. Imports verify artifact/input and recorded output hashes,
+parse complete raw probes, and populate the shared cache; they never trust
+old aggregate statistics as the new selection result. A partial-shard batch
+adds its tuples to pending validation and fills only missing probes. Prior
+campaign searches supply dev cache evidence, not selection evidence. The
+source directories are not modified. Inputs must retain accessible recorded
+artifact paths (as in the canonical cloud store); ad-hoc JSONL and older matrix
+layouts must first be migrated explicitly. Initialization is immutable once
+the loop exists.
+
+One operational directory is `store_root/evals/<loop_id>/`:
+
+| File/directory | Purpose |
+|---|---|
+| `loop_state.json` | Authoritative atomic checkpoint: fixed contract, active phase, candidates, pending validation, complete validation archive, policy revisions and queue history |
+| `control.json` | Short-lock-protected stop request, manually updated proven base, and SPRT status commands |
+| `cycles/000001/` | Automatically named dev subrun, frozen config, resumable optimizer state and raw probes |
+| `validation/000001/` | Automatically named whole-selection batch, raw probes and pooled results (number is the phase number) |
+| `selection_frontier.json`, `sprt_queue.json` | Regenerable projections of the checkpoint; queue entries include stable tuple IDs, aliases and margins |
+
+Stable tuple IDs bind margins to the full evaluation contract. Changing the
+probe/net, inputs, reference/baseline/rescue data, population membership,
+candidate budget, score scale, or metric version requires a **new loop ID**.
+The full-validation archive prevents repeat validation across cycles; this is
+separate from the shared raw cache, which can reuse matching candidate/shard
+probes even when a new loop is necessary.
+
+Operator commands (replace `loop.json` with the actual config path):
+
+```bash
+python3 scripts/run_futility_loop.py run --config loop.json
+python3 scripts/run_futility_loop.py status --config loop.json
+python3 scripts/run_futility_loop.py stop --config loop.json
+python3 scripts/run_futility_loop.py resume --config loop.json
+python3 scripts/run_futility_loop.py set-base --config loop.json --margins 0,40,158,488,754 --alias spsa150b
+python3 scripts/run_futility_loop.py sprt --config loop.json --candidate t-REPLACE --status running --note 'local SPRT started'
+```
+
+`stop` requests a graceful stop **after the entire active dev or validation
+phase**, not between candidate probes. Wait until `status` reports
+`stopped: true`. Cron invocations then remain stopped until explicit `resume`.
+A `set-base` update is read at the next dev cycle, never halfway through the
+current phase. Record SPRT `running`, `accepted`, or `rejected` manually; these
+statuses survive later frontier changes and do not change the proven base.
+Untested `pending` entries become `superseded` if no longer qualified and can
+requalify later. Status commands are applied at a phase boundary (or upon
+resume if the loop is stopped); retain SPRT evidence outside this proxy loop.
+
+To change selectors or search parameters: request `stop`, wait for the phase
+boundary, edit the config, run `reconfigure --config loop.json`, then `resume`.
+Reconfiguration records a new policy revision, reselects archived dev results
+and rebuilds the selection queue without discarding completed validation.
+Already pending validation remains pending. Editing config while a phase is
+active is rejected at its boundary; restore the prior config to stop cleanly.
+
+For cron, use `crontab -e` to add an entry like the following, with absolute
+paths and a pre-existing log directory:
+
+```cron
+*/10 * * * * bash /absolute/scripts/run_futility_loop_cron.sh /absolute/loop.json >> /absolute/loop.log 2>&1
+```
+
+The runner owns a nonblocking process lock; an existing `loop.lock` file is
+not evidence of a running process. The launcher stays alive across phases;
+later cron invocations exit while it is running. After an unexpected failure,
+the next invocation resumes the active subrun; complete probes are retained,
+but a partially written ordinary candidate probe is rerun. Use `stop`, not
+killing just the Python parent and leaving orphan engine processes. For a
+bounded local smoke test, `run --max-phases 2` returns after two whole phases
+without setting the persistent stop flag (cron would continue it).
 
 ## Historical Coordinate Optimizer
 
