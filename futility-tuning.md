@@ -522,6 +522,67 @@ killing just the Python parent and leaving orphan engine processes. For a
 bounded local smoke test, `run --max-phases 2` returns after two whole phases
 without setting the persistent stop flag (cron would continue it).
 
+### Future option: Bayesian optimization of mean regret — 2026-09-24
+
+Revisit Bayesian optimization (BO) when the current Pareto loop produces fewer
+promising new candidates, or when exploring a higher maximum futility depth.
+This is a proposed experiment, not an implemented replacement or a change to
+the running loop. It assumes that mean normalized regret is the main useful
+proxy for strength; the metric-to-Elo relationship still needs empirical
+calibration from SPRT results.
+
+BO would fit a predictive model to evaluated margin tuples and choose further
+evaluations by balancing predicted improvement against uncertainty about
+unexplored tuples. It would learn from unsuccessful evaluations as well as
+frontier members. With only 3–7 integer margins and expensive probes, this
+could reduce the number of engine evaluations required. The benefit is not
+guaranteed: small integer margin changes can produce irregular search results.
+
+The preferred first experiment is:
+
+1. Use a separate search for each fixed maximum futility depth, preserving
+   nonnegative, nondecreasing integer margins and explicit feasible bounds.
+   Keep the manually designated SPRT best as the comparison baseline; a new
+   depth needs an explicitly chosen starting tuple of that depth.
+2. Optimize mean regret on the full, fixed SR4 development population. Warm
+   start from compatible, previously evaluated tuples of the same depth,
+   including unsuccessful proposals, and retain observations between phases.
+   A short new phase should not restart learning from scratch.
+3. Give each phase a configurable budget of new probe evaluations. Reuse the
+   existing cache under matching probe, weights, inputs, and node budget;
+   model observations must also match the reference/population and metric
+   contract. Deduplicate tuples after integer projection.
+4. Nominate at most one new, actually evaluated development candidate for
+   full pooled validation. A single nominee is an operating policy, not proof
+   of a unique optimum. If the best tuple is already validated, use its saved
+   result and consider the next eligible tuple or continue development; do
+   not repeat validation merely to fill a phase.
+5. Retain tail and semantic metrics for comparison and collect SPRT outcomes.
+   Compare BO against a mean-regret random search with the same fresh-evaluation
+   budget and starting evidence, so changing the objective from Pareto to
+   mean regret is not mistaken for an improvement from BO itself.
+
+On a fixed corpus with a deterministic probe, a tuple's measured regret is
+repeatable. Finite-population uncertainty concerns generalization to other
+positions and real games; repeating the same probe does not reduce it.
+BO's uncertainty about unevaluated tuples is a separate quantity. The smaller
+development population can also reward changes that fail on validation.
+
+A later alternative is to optimize pooled validation mean regret directly:
+each call is more expensive, but the model learns the quantity used for
+selection. Validation then participates in optimization, while SPRT remains
+the final independent strength test. A more complex multi-fidelity model
+could use both dev and validation observations to allocate effort; it must
+learn their relationship rather than treat their scores as interchangeable,
+given the ranking reversals already observed between populations.
+
+Implementation should reuse the probe/cache and validation interfaces and
+preserve atomic resume, frozen contracts, cron locking, and phase-boundary
+control. An established BO library would add dependencies to the current
+standard-library runner. Library choice and model settings are deferred until
+this experiment is selected; no new reference run is required solely to
+change the optimizer.
+
 ## Historical Coordinate Optimizer
 
 `scripts/optimize_futility.py` is the original dependency-free, deterministic
