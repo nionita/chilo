@@ -1439,13 +1439,42 @@ per-root tuning runs.
   path. Keep the completed smoke artifacts and documentation, but remove this
   execution path if SPSA remains the only optimizer we intend to support.
 
-## Current SPRT Status
+## Consolidated Futility SPRT Evidence
 
-| Candidate | Opponent | Control | Status |
-|---|---|---|---|
-| `f21` | `f01` | 6+0.1 | H1 accepted. |
-| `f22`, `f23` | `f01` | 6+0.1 | Not started; lower proxy promise, no longer queued by default. |
-| `f21` | source `g4t1-64x8` futility | longer control | H1 accepted; f21 is the practical SPRT basis. |
+The machine-readable registry is kept with the backed-up validation archive at
+`~/Tune/futility/validation/evaluations/sprt/registry.json`. The raw game
+evidence remains in `~/fastchess/sprt-runs/`; the registry records each raw-run
+path and the relevant build receipt without duplicating PGNs. It contains the
+completed decisions and explicitly marks interrupted runs as incomplete.
+
+The registry keeps raw W/L/D counts for every run. Fastchess's displayed
+Elo/error/LOS report was persisted only for `loop1-c01-p0013` in the retained
+wrapper log; its `reported` object contains those exact values. The other
+`reported` objects are intentionally null and must be filled manually from the
+historical Excel record when it is recovered. Do not replace those values with
+new SPRT runs merely to recreate a report.
+
+The tested selection chain is:
+
+`source -> f01 -> f21 -> spsa150b`
+
+`f01`, `f21`, and `spsa150b` all accepted H1 in their successive comparisons.
+The direct 30+0.5 spsa150b-versus-f21 comparison was run twice; both runs
+accepted H1. `d3-0009` and loop candidate `loop1-c01-p0013` both accepted H0
+against spsa150b. The old f11 test and the current loop c06 test stopped before
+an SPRT boundary and are not strength results. SPRT decisions, not proxy
+metrics or point scores, establish playing strength.
+
+| Candidate | Opponent | Control | Games | Status |
+|---|---|---:|---:|---|
+| `f01` | source `g4t1-64x8` | 6+0.1 | 38,358 | H1 accepted |
+| `f21` | `f01` | 6+0.1 | 30,652 | H1 accepted |
+| `f21` | source `0.7.4` futility | 30+0.5 | 4,460 | H1 accepted |
+| `spsa150b` | `f21` | 30+0.5 | 4,800 + 3,528 | H1 accepted in both runs |
+| `d3-0009` | `spsa150b` | 6+0.1 | 9,084 | H0 accepted |
+| `loop1-c01-p0013` | `spsa150b` | 6+0.1 | 34,984 | H0 accepted |
+| `f11` | `f01` | 6+0.1 | 1,680 | incomplete |
+| `loop1-c06-p0012` | `spsa150b` | 6+0.1 | 380 | incomplete |
 
 ## Future: Root-Budget-Adaptive Futility Profiles
 
