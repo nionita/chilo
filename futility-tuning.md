@@ -522,7 +522,7 @@ killing just the Python parent and leaving orphan engine processes. For a
 bounded local smoke test, `run --max-phases 2` returns after two whole phases
 without setting the persistent stop flag (cron would continue it).
 
-### Future option: Bayesian optimization of mean regret — 2026-09-24
+### Future option: Bayesian optimization of mean regret — updated 2026-10-03
 
 Revisit Bayesian optimization (BO) when the current Pareto loop produces fewer
 promising new candidates, or when exploring a higher maximum futility depth.
@@ -530,6 +530,17 @@ This is a proposed experiment, not an implemented replacement or a change to
 the running loop. It assumes that mean normalized regret is the main useful
 proxy for strength; the metric-to-Elo relationship still needs empirical
 calibration from SPRT results.
+
+The 2026-10-03 loop review makes this option timely. After 22 completed dev
+cycles, 330 proposals covered 263 distinct new tuples, and the validation
+archive contained 30 fully evaluated tuples. No new SPRT queue entry had been
+produced since cycle 6. Removing dev semantic filters allowed further tuples
+through validation, but none from cycles 14–21 entered the global validation
+Pareto frontier. Cycle 22's two nominees were still awaiting validation.
+The snapshot is preserved in `~/Tune/futility/futility-loop-review-20261003.tgz`.
+This indicates diminishing screening yield, not proof that the neighbourhood
+contains no stronger tuple. Rejected SPRT candidates remain in the metric
+archive and can still dominate subsequent candidates under the current policy.
 
 BO would fit a predictive model to evaluated margin tuples and choose further
 evaluations by balancing predicted improvement against uncertainty about
@@ -558,6 +569,8 @@ The preferred first experiment is:
    result and consider the next eligible tuple or continue development; do
    not repeat validation merely to fill a phase.
 5. Retain tail and semantic metrics for comparison and collect SPRT outcomes.
+   Initially avoid adding uncalibrated hard tail gates to the scalar search;
+   validation and SPRT still decide whether a nominee deserves promotion.
    Compare BO against a mean-regret random search with the same fresh-evaluation
    budget and starting evidence, so changing the objective from Pareto to
    mean regret is not mistaken for an improvement from BO itself.
@@ -568,6 +581,16 @@ positions and real games; repeating the same probe does not reduce it.
 BO's uncertainty about unevaluated tuples is a separate quantity. The smaller
 development population can also reward changes that fail on validation.
 
+The available observations support different targets. The 263 new dev tuples
+can seed a model of SR4 metrics; only the 30 fully validated tuples can seed
+a model of full pooled validation metrics. Include the compatible initial
+control as well, deduplicate observations, and verify contracts before reuse.
+A model trained on dev mean regret predicts dev mean regret: better acquisition
+does not itself correct development-to-validation ranking reversals or the
+proxy-to-strength mismatch. Judge this first experiment by whether it finds
+better validation nominees for a fixed fresh-evaluation budget, not merely
+lower SR4 values.
+
 A later alternative is to optimize pooled validation mean regret directly:
 each call is more expensive, but the model learns the quantity used for
 selection. Validation then participates in optimization, while SPRT remains
@@ -575,6 +598,25 @@ the final independent strength test. A more complex multi-fidelity model
 could use both dev and validation observations to allocate effort; it must
 learn their relationship rather than treat their scores as interchangeable,
 given the ranking reversals already observed between populations.
+
+Validation's current three-metric Pareto target does not have to be collapsed
+into an assumed Elo exchange rate. Possible BO formulations are scalar mean
+regret, mean regret with explicit tail restrictions, or multi-objective BO over
+mean regret, squared regret, and CVaR-1%. The scalar development experiment
+above is the simplest first comparison. Tail limits still need calibration;
+multi-objective BO preserves trade-offs but adds complexity. If scalar dev BO
+mainly finds SR4-specific winners, reconsider direct validation optimization
+or a model trained on paired dev/validation observations.
+
+Targeting SPRT strength directly is deferred. We currently have too few
+comparable margin-only SPRT results to fit a useful five-dimensional strength
+model, and differences of a few Elo remain uncertain. Collect numerical Elo,
+its reported uncertainty, baseline, time control, and engine/net provenance;
+binary acceptance/rejection alone loses useful information. In particular,
+the cycle-6 comparison used a different move-ordering implementation from its
+baseline, so it is not an isolated margin observation. These outcomes can
+eventually inform a strength model, but do not yet justify making SPRT the BO
+objective.
 
 Implementation should reuse the probe/cache and validation interfaces and
 preserve atomic resume, frozen contracts, cron locking, and phase-boundary
