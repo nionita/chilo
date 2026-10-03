@@ -1,0 +1,32 @@
+{
+  "schema": "chilo.futility_bo.v1",
+  "store_root": "/home/ubuntu/futility-validation",
+  "run_id": "bo-d5-pilot1",
+  "source_loop": "futility-loop-v1",
+  "artifacts": {
+    "probe": "/home/ubuntu/futility-validation/artifacts/90e43a617cbe6b7c41b8a4faa35d6997078912eefc7f3579804eb538f2503f41-51ee64101ee3d85f69eb0948f4caa8be6d90115abdb909d82767ffb4a53ccd90/futility_probe-avx2",
+    "weights": "/home/ubuntu/futility-validation/artifacts/90e43a617cbe6b7c41b8a4faa35d6997078912eefc7f3579804eb538f2503f41-51ee64101ee3d85f69eb0948f4caa8be6d90115abdb909d82767ffb4a53ccd90/chilo-g4t1-64x8.bin"
+  },
+  "candidate_nodes": 120000,
+  "baseline_margins": [120, 240, 360],
+  "score_scale": 600,
+  "report_every": 1000,
+  "development": {"id": "g3-sr4", "kind": "single", "path": "populations/per-root-v1/development/g3-sr4"},
+  "selection": [
+    {"id": "g3-sr3-r2m", "kind": "single", "path": "populations/per-root-v1/selection/g3-sr3-r2m"},
+    {"id": "sr3v-production", "kind": "sharded", "path": "populations/per-root-v1/selection/sr3v-production/run"},
+    {"id": "sr3v-smoke", "kind": "sharded", "path": "populations/per-root-v1/selection/sr3v-smoke/run"}
+  ],
+  "base": {"alias": "spsa150b", "margins": [0,40,158,488,754], "provenance": "operator-confirmed SPRT best"},
+  "bo": {
+    "max_proposals": 5, "seed": 20261003, "pool_size": 10000,
+    "local_fraction": 0.8, "local_radius": 80, "local_centers": 10,
+    "bounds": [[0,1200],[0,1200],[0,1200],[0,1200],[0,1200]],
+    "model": {
+      "kernel": "matern52", "acquisition": "ei", "xi": 0.0, "xi_mode": "raw",
+      "noise_mode": "learned", "gp_fit_mode": "scaled", "gp_length_scale_bounds": [0.005,1000],
+      "gp_n_restarts": 8, "gp_max_iter": 100, "gp_restart_strategy": "coverage",
+      "duplicate_policy": "ignore", "n_restarts": 0
+    }
+  }
+}

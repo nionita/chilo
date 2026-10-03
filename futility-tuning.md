@@ -618,12 +618,88 @@ baseline, so it is not an isolated margin observation. These outcomes can
 eventually inform a strength model, but do not yet justify making SPRT the BO
 objective.
 
-Implementation should reuse the probe/cache and validation interfaces and
-preserve atomic resume, frozen contracts, cron locking, and phase-boundary
-control. An established BO library would add dependencies to the current
-standard-library runner. Library choice and model settings are deferred until
-this experiment is selected; no new reference run is required solely to
-change the optimizer.
+The standalone implementation below reuses the probe/cache and population
+interfaces. It is not a replacement for the continuous Pareto loop, and does
+not require a new reference run.
+
+### Standalone BO pilot — 2026-10-03
+
+`scripts/run_futility_bo.py` integrates the separately maintained `tinibo`
+library; `scripts/futility_bo.example.json` describes the first cloud pilot.
+The package builder `scripts/package_futility_bo_pilot.py` freezes both Git
+revisions, the complete Chilo Python import closure, the numerical library,
+configuration, and external artifact/population hashes. No probe, population,
+cache, or development environment is duplicated in the package.
+
+The pilot starts from the operator-designated SPRT best `spsa150b`,
+`[0,40,158,488,754]`, at depth 5 and 120k candidate nodes. It imports **all
+completed compatible development cycles** from `futility-loop-v1`, checking
+each raw probe's hash, position coverage, metric contract and target. Repeated
+tuples are deduplicated; conflicting targets fail rather than being averaged.
+Full validation records are imported separately only to exclude already
+validated nominees, never as development training labels.
+
+Five sequential new-to-model tuples are selected by expected improvement of
+SR4 mean normalized regret. Each pool contains 10,000 unseen, nonnegative,
+nondecreasing integer tuples bounded by 1200: 80% local perturbations (±80 cp
+around the base and ten best observed tuples), 20% broad samples. The qualified
+model is Matérn-5/2, scaled GP fitting, learned noise, raw `xi=0`, eight coverage
+restarts and 100 fit iterations. These are configurable, frozen run settings.
+Tail and semantic metrics remain diagnostics, not acquisition gates.
+
+Before preparing this pilot, tinibo's real-data qualification used 264 distinct
+development observations: predictive RMSE was 23.8% below the mean predictor,
+and a matched finite-pool experiment improved normalized optimization regret
+by 54.4% over random search. These establish numerical/model suitability, not
+playing strength or guaranteed improvement on new engine evaluations.
+
+Gracefully stop the source loop first and wait for its phase boundary. The
+pilot holds that loop's existing process lock without changing its control
+files; the stopped old loop can remain registered in cron. A separate pilot
+lock makes overlapping invocations no-ops. Pending tuples, acquisition
+diagnostics, pool RNG and tinibo state are checkpointed **before** probing.
+Completed raw outputs/cache entries are reused after interruption; the same
+proposal sequence is preserved on resume. Python, NumPy, helper code, config
+and effective contracts must remain unchanged within a pilot.
+
+The cloud package contains `setup.sh`, `run.sh`, `collect.sh` and a real-data
+numerical/checkpoint-replay qualification. Setup creates a small NumPy-only
+venv, verifies package hashes and external contracts, and does not search.
+Python 3.10–3.13 uses pinned NumPy 2.2.6; Python 3.14 uses 2.5.3. The target
+runtime must pass qualification before launch; these environments need not
+produce identical proposals to each other.
+
+```bash
+cd ~/futility-bo-d5-pilot1-linux
+bash setup.sh
+nohup ./run.sh > runner.log 2>&1 < /dev/null & echo $! > run.pid
+```
+
+Use the same `run.sh` to resume, or add it to cron after successful setup.
+`--max-evaluations 1` bounds an invocation, not the total five-step budget.
+Each previously unseen tuple counts once even if its probe is a cache hit.
+`SIGTERM`/foreground Ctrl-C terminates the child probe and retains the pending
+tuple. The pilot does **not** automatically validate, enqueue SPRT, or change
+the best tuple.
+
+Outputs live at `store_root/evals/bo-d5-pilot1`: `manifest.json`, frozen
+`observations.json`, authoritative `state.json`, five raw probe JSONLs,
+`results.json`, `report.md`, and `nominee.json`. At completion, at most one
+actually evaluated, previously unvalidated tuple improving the base dev mean
+regret is nominated. No improvement produces no nominee. Review locally,
+then decide whether to run full pooled validation. `bash collect.sh` archives
+this small output with the package and numerical receipts for transfer back;
+it excludes the shared cache, populations and venv.
+
+Adapter tests (using tinibo's qualified environment, without engine searches):
+
+```bash
+PYTHONPATH=../tinibo:scripts ../tinibo/.venv/bin/python -m unittest scripts.test_run_futility_bo
+```
+
+Recovery tests cover interruptions before probing, after raw-output completion,
+and during checkpoint commit, along with cache reuse, exact proposal replay,
+contract/history mismatches, locking, and development/validation separation.
 
 ## Historical Coordinate Optimizer
 

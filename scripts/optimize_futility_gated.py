@@ -253,7 +253,7 @@ def make_unique_proposal(
     )
 
 
-def probe_one(settings: Settings, run_dir: Path, identifier: str, margins: Margins) -> Mapping[str, Any]:
+def probe_one(settings: Settings, run_dir: Path, identifier: str, margins: Margins, *, run_command=None) -> Mapping[str, Any]:
     output = run_dir / "probes" / f"{identifier}.jsonl"
     log = run_dir / "logs" / f"{identifier}.log"
     receipt_path = run_dir / "logs" / f"{identifier}.cache.json"
@@ -268,7 +268,8 @@ def probe_one(settings: Settings, run_dir: Path, identifier: str, margins: Margi
                 handle.write(f"cache_key={entry.key}\ncache_status={status}\n")
             handle.write("command=" + json.dumps(command) + "\n")
             handle.flush()
-            completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, text=True, check=False)
+            completed = (run_command(command, handle) if run_command is not None else
+                         subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, text=True, check=False))
             handle.write(f"exit_code={completed.returncode}\n")
         if completed.returncode:
             raise optimize_futility.OptimizationError(f"Pareto futility {identifier} probe failed; see {log}")
