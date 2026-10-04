@@ -63,7 +63,9 @@ Existing external store: {config['store_root']}; source loop: {config['source_lo
 Explicit completed BO imports: {', '.join(config.get('import_bo_runs', [])) or 'none'}.
 Output: {config['store_root']}/evals/{config['run_id']}.
 
-First wait for the old loop's graceful phase-boundary stop. Its cron may remain enabled.
+First wait for the old loop's graceful phase-boundary stop and disable its cron
+entry during the pilot: a stopped cron invocation can briefly hold its process
+lock while checking datasets, preventing pilot startup.
 The pilot holds the old process lock while running, without changing its state.
 Setup needs Python 3.10–3.14, venv/pip and network access to install only NumPy.
 If Ubuntu reports missing venv support, install python3-venv with sudo, then
@@ -71,7 +73,7 @@ run python3 -m venv .venv and setup.sh as the normal user. Do not sudo setup.sh.
 NumPy is pinned to 2.2.6 for Python 3.10–3.13, or the qualified 2.5.3 for 3.14;
 the real-data numerical/replay check tests the configured acquisition and must
 pass before engine work. Optimizer checkpoint schema: {bo.OPTIMIZER_SCHEMA}.
-Historical v1 optimizer states cannot resume with this package; import their
+Historical v1/v2 optimizer states cannot resume with this package; import their
 completed measurements into a new run ID instead. Keep old packages unchanged.
 
 ```bash

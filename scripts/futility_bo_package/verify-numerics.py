@@ -27,6 +27,15 @@ def checkpoint_replay(X, y, bounds, model, pool):
         if not np.isclose(first.acquisition_value, first.mean - model['kappa'] * first.std,
                           rtol=0, atol=1e-15) or first.diagnostics['ei_reference'] is not None:
             raise ValueError('LCB acquisition/diagnostics differ')
+    fit = first.diagnostics['fit']
+    scales = np.asarray(fit['length_scale'])
+    expected_shape = (len(bounds),) if model['gp_ard'] else ()
+    if scales.shape != expected_shape or not np.all(np.isfinite(scales)) or np.any(scales <= 0):
+        raise ValueError('Configured scalar/ARD length-scale diagnostics differ')
+    if fit['ard'] != model['gp_ard'] or fit['kernel'] != model['kernel'] or fit['training_count'] != len(X):
+        raise ValueError('Configured surrogate diagnostics differ')
+    if not np.isclose(fit['scale_ratio'], np.max(scales) / np.min(scales)):
+        raise ValueError('ARD scale-ratio diagnostics differ')
     return saved['schema']
 
 

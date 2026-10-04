@@ -31,9 +31,9 @@ except ImportError as exc:
     raise ImportError('BO requires NumPy and tinibo on PYTHONPATH; see futility-tuning.md') from exc
 
 SCHEMA = 'chilo.futility_bo.v1'
-OPTIMIZER_SCHEMA = 'tinibo.optimizer.v2'
+OPTIMIZER_SCHEMA = 'tinibo.optimizer.v3'
 PRESET = dict(kernel='matern52', acquisition='ei', xi=0.0, xi_mode='raw',
-              kappa=2.0, ei_incumbent='observed',
+              kappa=2.0, ei_incumbent='observed', gp_ard=False,
               noise_mode='learned', gp_fit_mode='scaled', gp_length_scale_bounds=[0.005, 1000],
               gp_n_restarts=8, gp_max_iter=100, gp_restart_strategy='coverage',
               duplicate_policy='ignore', n_restarts=0)
@@ -113,6 +113,10 @@ def load_config(path):
     if not isinstance(options['model'], dict) or set(options['model']) - set(PRESET):
         raise BOError('unknown model option')
     options['model'] = {**PRESET, **options['model']}
+    if type(options['model']['gp_ard']) is not bool:
+        raise BOError('model gp_ard must be boolean')
+    if options['model']['kernel'] not in ('matern52', 'matern32', 'rbf'):
+        raise BOError('model kernel must be matern52, matern32 or rbf')
     kappa = options['model']['kappa']
     if isinstance(kappa, bool) or not isinstance(kappa, (int, float)) or not math.isfinite(kappa) or kappa < 0:
         raise BOError('model kappa must be finite and nonnegative')
@@ -342,7 +346,7 @@ def restore_optimizer(state):
     """Resume only current checkpoints; old measurements use import_bo_runs."""
     if not isinstance(state, dict) or state.get('schema') != OPTIMIZER_SCHEMA:
         raise BOError(f'unsupported optimizer checkpoint; expected {OPTIMIZER_SCHEMA}. '
-                      'Keep the original package to resume v1, or import completed measurements '
+                      'Keep the original package to resume v1/v2, or import completed measurements '
                       'via import_bo_runs into a new run ID; do not relabel old checkpoints')
     try:
         return BayesianOptimizer.from_state(state, objective=None)

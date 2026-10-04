@@ -869,7 +869,7 @@ PYTHONPATH=../tinibo OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 
 #### Pilot 3 launch — 2026-10-04
 
 The operator reports that `bo-d5-pilot3-lcb05` is running on the cloud server.
-There are no returned measurements yet. The frozen package is
+The results have now been returned and verified (see below). The frozen package is
 `~/Tune/futility/futility-bo-d5-pilot3-lcb05-linux.tgz`, SHA-256
 `c89b30389e454d51f06061c7286783ef74e8246c9bf4bc77efcaef48af9cd498`.
 It uses Chilo `8d318cf` and tinibo `4d57553`, with the same external contract
@@ -883,6 +883,113 @@ development/selection loop remains stopped; it has not been converted to BO.
 On completion, run `bash collect.sh` in the cloud package directory and return
 `bo-d5-pilot3-lcb05-results.tgz` for the review procedure below. Subsequent
 documentation commits do not change the running package's pinned revisions.
+
+#### Pilot 3 results — local LCB, kappa 0.5
+
+`bo-d5-pilot3-lcb05` completed five new normal-PVS measurements, all cache
+misses, after importing 274 distinct development measurements and 32 separate
+validation records. Summed probe time was 3h 55m; this is not wall-clock time
+including initialization/model fitting. All evaluations use the complete
+22,825-position combined SR4 development population, 120k nodes, and the
+unchanged per-root reference/rescue contract. Probe SHA-256 starts `90e43a61`,
+net SHA-256 starts `51ee6410`; the full hashes are retained in the manifest.
+
+| Candidate | Margins | Predicted mean regret | Actual mean regret | Squared regret | CVaR-1% |
+|---|---|---:|---:|---:|---:|
+| spsa150b | 0,40,158,488,754 | — | 0.014074236 | 0.002188075 | 0.329444948 |
+| bo-0000 | 73,88,220,497,764 | 0.014119497 | 0.014207805 | 0.002262828 | 0.335069873 |
+| bo-0001 | 67,80,223,483,744 | 0.014125935 | 0.014236916 | 0.002250188 | 0.333172296 |
+| bo-0002 | 58,80,170,707,917 | 0.014148916 | 0.014366341 | 0.002293863 | 0.337151618 |
+| bo-0003 | 63,82,195,502,750 | 0.014130517 | 0.014233344 | 0.002251197 | 0.332306406 |
+| bo-0004 | 53,89,197,478,733 | 0.014134557 | 0.014290833 | 0.002292573 | 0.338082481 |
+
+None beat spsa150b on any of the three principal development metrics; no
+nominee was produced. The best mean regret, bo-0000, was 0.95% worse than the
+base. Pilot 2's best remained closer (0.33% worse); these small, sequentially
+different experiments are not a matched acquisition comparison. There is no
+full-selection or SPRT evidence for these new tuples.
+
+All five predicted means were optimistic: measured minus predicted regret was
+3.10, 4.21, 3.69, 4.74 and 8.23 saved latent standard deviations, respectively.
+This is a selected-proposal diagnostic, not a coverage test or Elo uncertainty.
+Reducing exploration did not solve discovery in this pilot. These observations
+suggest investigating surrogate smoothing/coordinate sensitivity and its
+uncertainty estimates before another unchanged expensive pilot, rather than
+assuming that the acquisition switch alone is enough. They do not establish
+that BO itself cannot work.
+
+Verification matched the original package/config receipts, Chilo/tinibo code
+hashes, external contract, both previous pilots' imported measurements, raw
+probe hashes, and complete checkpoint/result history. Recomputed SR4 metrics,
+risk and semantic counts matched exactly. Offline replay reproduced all five
+10k pool hashes, selected tuples and final pool RNG; prediction comparisons
+used tolerance across different numerical runtimes. LCB values matched
+`mean - 0.5 * latent_std`, with null EI reference. The first tuple matched
+tinibo's handback prediction. No engine searches were run locally.
+
+Accepted archive: `~/Tune/futility/bo-d5-pilot3-lcb05-results.tgz`, SHA-256
+`6bcc4b637839f2e96e9d24aa26854f48b1cbdefe1c173bf0a5b918984e278198`.
+Canonical evidence and analysis: `validation/evaluations/bo-d5-pilot3-lcb05/`.
+Retain all five valid measurements: the compatible development history now
+contains 279 distinct tuples. A future continuation must explicitly import
+pilots 1, 2 and 3; imports are not recursive. The continuous loop remains a
+separate backend and is not automatically resumed or changed by this review.
+
+#### ARD surrogate handback and pilot 4 preparation — 2026-10-05
+
+The tinibo surrogate follow-up is committed at `c103340`; its report and
+`HANDBACK.md` live under `benchmarks/results/futility-surrogates-2026-10-05/`.
+The independent audit verified 293 reports, 280 selection traces and 5,600
+reveals, source/payload hashes, splits, recomputed metrics/gates and all three
+historical pilot replays. The report records 155 passing tinibo tests and one
+optional forest skip. ARD improved finite measured-pool retrieval; no setting
+passed every universal screening gate. Some strict-win gates were unattainable
+because too few starts were nonoptimal or controls had already reached the
+pool optimum. Thresholds were not weakened after seeing the results.
+
+The conditional next experiment is **ARD Matérn-5/2 with LCB kappa 0.5**.
+Important limitations remain: pilot-3 shadow RMSE was 3.2295 times the
+training-mean baseline, and 1,470 of 1,600 ARD fits touched parameter bounds.
+Do not claim calibrated uncertainty or novelty/strength gains from retrieval.
+Locality remains benchmark-only and is not integrated; Matérn-3/2 is supported
+for explicit comparison but not selected for this pilot. No default promotion.
+
+Chilo now accepts strictly boolean `bo.model.gp_ard` (default false) and
+`kernel: matern32`, retaining the previous shared-scale Matérn/EI defaults.
+New runs use **tinibo.optimizer.v3**; v1/v2 states must resume with their
+original packages or import compatible completed measurements into a new run.
+Model identity, scalar/vector length scales, training count, kernel/ARD flag,
+scale ratio, bounds and restart diagnostics remain in manifests/checkpoints
+and proposal records. Package qualification checks the configured surrogate
+and exact same-runtime proposal replay without invoking an engine.
+
+`scripts/futility_bo_ard.example.json` defines `bo-d5-pilot4-ard-lcb05`:
+five sequential full-SR4/120k measurements, seed 20261003, local-only 10k pool,
+radius 80, ten best centers plus spsa150b, unchanged bounds `[0,1200]^5` and
+learned-noise fit settings. It explicitly imports pilots 1, 2 and 3 for
+**279** unique warm measurements; validation labels remain separate. Compared
+with pilot 3, the surrogate is the experimental change; the new measured
+history also changes, so this is not a perfectly matched fresh-engine trial.
+
+Integration verification passed 150 futility Python tests, including v3
+checkpoint/pending-work replay, v1/v2 measurement imports without restoration
+or probes, validation-label exclusion, strict option validation, preservation
+of ARD diagnostics, and real 279-point/10k-pool proposal replay. No C++ search
+changes or expensive local engine probes are part of this integration.
+
+The package builder creates `~/Tune/futility/futility-bo-d5-pilot4-ard-lcb05-linux.tgz`
+from committed Chilo and tinibo sources, bound to the established cloud store.
+Package preparation does not start or upload the run. Disable the **old loop's
+cron entry** during the pilot: even stopped-loop invocations can briefly hold
+its lock while verifying data. Keep historical packages untouched. From the
+unpacked new package, run `bash setup.sh`, then:
+
+```bash
+nohup ./run.sh > runner.log 2>&1 < /dev/null & echo $! > run.pid
+```
+
+Return `bo-d5-pilot4-ard-lcb05-results.tgz` using `bash collect.sh`. Evaluate
+any nominee on full selection separately before deciding on SPRT.
 
 ### Tinibo collaboration and release procedure
 
