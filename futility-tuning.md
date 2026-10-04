@@ -866,6 +866,178 @@ skip that optional fixture check; synthetic import/resume coverage remains.
 PYTHONPATH=../tinibo OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -B -m unittest discover -s scripts -p 'test_*futility*.py'
 ```
 
+#### Pilot 3 launch — 2026-10-04
+
+The operator reports that `bo-d5-pilot3-lcb05` is running on the cloud server.
+There are no returned measurements yet. The frozen package is
+`~/Tune/futility/futility-bo-d5-pilot3-lcb05-linux.tgz`, SHA-256
+`c89b30389e454d51f06061c7286783ef74e8246c9bf4bc77efcaef48af9cd498`.
+It uses Chilo `8d318cf` and tinibo `4d57553`, with the same external contract
+as the previous pilots. Archive bytes, staged imports and configured LCB
+checkpoint replay were verified before upload to `PUBLIC/transf`; downloading
+the uploaded copy reproduced the archive hash. Five new completed measurements
+would extend the 274-point development history to 279 points.
+
+Keep this package and its environment unchanged while it runs. The old
+development/selection loop remains stopped; it has not been converted to BO.
+On completion, run `bash collect.sh` in the cloud package directory and return
+`bo-d5-pilot3-lcb05-results.tgz` for the review procedure below. Subsequent
+documentation commits do not change the running package's pinned revisions.
+
+### Tinibo collaboration and release procedure
+
+This is the maintained procedure for numerical-library changes and new BO
+experiments. Work is split between two repositories, normally sibling
+checkouts at `~/Sources/chilo` and `~/Sources/tinibo`; tinibo is not vendored
+into the Chilo source repository or installed as an untracked large subsystem.
+Only a committed copy of its runtime modules is vendored into each remote
+pilot package.
+
+| Owner | Responsibilities | Durable evidence |
+|---|---|---|
+| Chilo | Engine probes, regret scoring, artifact/corpus contracts, cache, adapters, execution and promotion | `futility-tuning.md`, scripts/configs, `~/Tune/futility/validation/evaluations/<run_id>/` |
+| tinibo | Generic NumPy GP/acquisition/API/checkpoints and offline comparisons | Handover documents, versioned benchmark fixtures, `benchmarks/results/<experiment>/` |
+| Operator | Authorize runs, designate the SPRT-best base, transfer results and decide validation/SPRT | Frozen package receipts and returned raw probe evidence; SPRT registry separately |
+
+#### 1. Prepare a Chilo-to-tinibo handover
+
+Start from accepted, verified Chilo evidence. State the problem and what would
+count as success before requesting optimizer changes. Include the exact
+objective, fixed maximum futility depth, integer/monotonic constraints and
+bounds, control tuple, probe/net/corpus/node/reference identities, feasible
+pool construction, seed, observation order, and numerical environments. Specify
+the public API and checkpoint requirements, regression controls, comparison
+protocol and acceptance criteria. Distinguish a suspected model/acquisition
+problem from a demonstrated execution bug.
+
+Place a detailed Markdown handover **in tinibo**, so an agent working there
+has the complete task without relying on a Chilo conversation. The first
+handover is `FUTILITY_BO_REQUIREMENTS.md`; the real-pilot follow-up is
+`FUTILITY_BO_PILOT_FOLLOWUP.md`. Use a new dated document or an explicitly
+versioned update for later investigations; retain the earlier decision trail.
+
+Supply a small, standalone, development-only fixture: unique tuples and
+measured mean regret, diagnostic metrics, source/probe hashes, chronological
+groups, ordered warm observations, proposal predictions/fit diagnostics and
+pool/RNG traces when available. Preserve unsuccessful evaluations. Keep original
+snapshots unchanged and reject conflicting labels for duplicate tuples.
+Reference/corpus changes or different maximum depths require separate compatible
+datasets, not silent pooling. Never merge full-selection or Elo labels into
+the development training fixture.
+
+The current examples are `benchmarks/futility_cloud/` (original 264 points)
+and `benchmarks/futility_pilots_20261004/` (274 points plus both pilot traces).
+The latter's `export_fixture.py` validates canonical evidence and writes to a
+**new** output directory; `verify_fixture.py` checks hashes and histories.
+These are concrete snapshot exporters, not automatic discovery of every future
+pilot: extend or version the exporter for later runs. The fixture must be usable
+without engine binaries, FEN corpora, cloud access or importing Chilo modules.
+
+#### 2. Investigate and qualify inside tinibo
+
+Use a focused tinibo branch and its NumPy environment. Commit the comparison
+protocol before sweeping settings. Compare current-preset and random controls
+with matched warm starts/seeds/budgets; reveal an unseen measured-pool label
+only after choosing its coordinate. Retain temporal/grouped checks, individual
+seed traces, failures and fit diagnostics. Do not manufacture labels for unknown
+tuples from surrogate predictions. Keep timing-only synthetic rows out of
+quality evidence. Fixed-corpus measurements are deterministic; learned GP noise
+is not probe-rerun noise or Elo uncertainty.
+
+Implement only generic numerical/API work there. Preserve default behavior
+unless evidence justifies changing it, test public `tell`/`ask` and replay,
+and explicitly document checkpoint schema compatibility. Record source hashes,
+revision, Python/NumPy/BLAS settings, fixtures, protocol and result hashes.
+Run numerical comparisons with one BLAS thread unless an experiment explicitly
+declares otherwise. No engine searches or Chilo deployment are part of this step.
+
+#### 3. Receive the tinibo handback
+
+Require a committed, clean tinibo revision and a results directory containing
+a readable `README.md`, a Chilo-facing `HANDBACK.md`, and auditable machine-readable
+evidence. The handback must give exact optimizer settings, option semantics and
+units, defaults, pass/fail outcomes, limitations, tests, environment, schema
+migration/rejection instructions and Chilo integration requirements. If another
+pilot is proposed, include its machine-readable settings and proposal-only
+diagnostics; identify unmeasured targets as unknown.
+
+The completed example is `benchmarks/results/futility-followup-2026-10-04/`.
+From the tinibo root, audit it without fitting models or running engines:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -B -m benchmarks.verify_pilot_followup benchmarks/results/futility-followup-2026-10-04
+```
+
+This audit is specific to that report/protocol; use the corresponding verifier
+for a future report. Read the full qualification outcome, not just the proposed
+preset. A conditional experimental setting is not a qualified replacement.
+Finite-pool/model quality is not validation or playing-strength evidence.
+
+#### 4. Integrate and freeze a Chilo pilot
+
+Review the handback here. Change the adapter's allowed options/validation and
+tests as needed, but call tinibo's public API rather than duplicating GP or
+acquisition mathematics in Chilo. Test measurement import, defaults, invalid
+options, checkpoint compatibility, pending-work resume and proposal-only replay.
+Keep v1 measurements reusable in a new v2 run without rewriting old checkpoints.
+Do not update an active package in place.
+
+Commit accepted Chilo and tinibo changes before packaging. Use
+`scripts/package_futility_bo_pilot.py` with an explicit config, `--tinibo-root`,
+a verified source loop state or BO manifest as `--source-state`, and a fresh
+`--output-dir` under `~/Tune/futility`. Set `PYTHONPATH` to the chosen tinibo
+checkout, so the imported backend is exactly the one copied into the package.
+The builder refuses dirty repositories and pins both revisions, the complete
+Chilo import closure, vendor code/config hashes and external evaluation contract.
+It references the established cloud store rather than resending populations.
+
+Explicitly list **all** completed BO runs to reuse in `import_bo_runs`;
+imports are not recursive and carry measurements, not producer GP/RNG state.
+With the source loop unchanged, pilot 3 imports pilots 1 and 2 for 274 points.
+Once pilot 3 completes, a continuation must also list `bo-d5-pilot3-lcb05` to
+reuse its new evaluations. Use a new run ID for changed config/model/code.
+
+Verify staged imports, archive contents/hashes and configured numerical replay
+before transfer. Use the FTP-transfer skill and `PUBLIC/transf`, without putting
+credentials in scripts or receipts. The normal route is workstation FTP/WebDAV
+staging, then operator SCP/SSH to the cloud; do not assume the cloud can reach
+the private LAN FTP endpoint. Archive upload does not authorize starting a run.
+
+The operator keeps the old loop stopped, runs `bash setup.sh` as the normal
+cloud user, and starts the package's `run.sh` with nohup or cron. Setup checks
+the pinned numerical runtime and effective contract without engine work. Reuse
+the same untouched package to resume. Inspect its README for exact commands,
+run ID, imports, log/output paths and result-collection instructions.
+
+#### 5. Return measurements and begin the next decision cycle
+
+After completion, use the package's `collect.sh` to return the whole small
+pilot: manifests, frozen observations, authoritative state, raw candidate JSONL,
+results/report/nominee, logs/cache receipts, package and numerical receipts.
+Do not send the venv, shared cache, populations or unrelated campaigns. Transfer
+the `<run_id>-results.tgz` archive through `PUBLIC/transf` for local review.
+
+Verify archive integrity, frozen contracts, raw-output hashes/coverage and
+completed observation history before accepting it. Retain the accepted archive
+under `~/Tune/futility` and useful evidence under
+`~/Tune/futility/validation/evaluations/<run_id>/`; the cloud's equivalent path
+is `~/futility-validation/evals/<run_id>/`. Recompute development statistics
+from raw evidence, compare with the same control/budget/population, and separate
+structural replay from tolerance-based cross-runtime prediction agreement.
+Record facts, negative outcomes and the next decision in this document.
+
+Valid new measurements, including poor ones, remain reusable. If numerical
+behavior needs investigation, export a new fixture and handover back to tinibo.
+If an actually measured development nominee merits promotion, run full pooled
+selection evaluation separately, then decide on SPRT. Do not automatically
+replace the continuous loop's backend or SPRT-best tuple from a short pilot.
+
+Push each repository's accepted source branch from its own project context.
+Pushing Chilo backs up its code/docs, not tinibo's unpushed commits, external
+fixtures/packages or raw `~/Tune` evidence; retain their separate repository
+and filesystem backups. Nothing in this procedure changes a running package
+or retroactively upgrades historical evidence.
+
 ## Historical Coordinate Optimizer
 
 `scripts/optimize_futility.py` is the original dependency-free, deterministic
