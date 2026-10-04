@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -96,6 +97,97 @@ class PilotTest(unittest.TestCase):
         observations,state = self.initialize(config)
         with patch.object(bo,'run_command',side_effect=self.fake_command):
             return bo.run(config,self.env,self.contract,observations,state,limit)
+
+    def continuation(self):
+        self.run_pilot()
+        (self.config['root']/'bo.lock').touch()
+        raw=copy.deepcopy(self.raw)
+        raw.update(run_id='next-pilot', import_bo_runs=['pilot'])
+        path=self.root/'next.json'
+        bo.write(path,raw)
+        return bo.load_config(path)
+
+    def test_previous_bo_points_are_added_without_reprobing(self):
+        config=self.continuation()
+        calls=self.probe_calls
+        observations,state=self.initialize(config)
+        self.assertEqual(self.probe_calls,calls)
+        self.assertEqual(len(observations['development']),3)
+        self.assertEqual(len(state['optimizer']['observations']['x']),3)
+        self.assertEqual(state['completed'],[])
+        self.assertEqual(observations['development'][-1]['sources'][0]['bo_run'],'pilot')
+        self.assertEqual(self.initialize(config)[1],state)
+        pool=bo.candidate_pool(config['options'],observations['development'],np.random.default_rng(1),self.base)
+        self.assertFalse({tuple(r['margins']) for r in observations['development']} & {tuple(x) for x in pool})
+
+    def test_import_is_measurement_reuse_not_old_optimizer_restore(self):
+        config=self.continuation()
+        path=self.config['root']/'state.json'
+        state=bo.read(path)
+        state['optimizer']['environment']={'python':'another runtime','numpy':'another version'}
+        bo.write(path,state)
+        config['options']['model']['gp_n_restarts']=2
+        observations,_=self.initialize(config)
+        self.assertEqual(len(observations['development']),3)
+
+    def test_resume_uses_frozen_imports_if_producer_is_unavailable(self):
+        config=self.continuation()
+        expected=self.initialize(config)
+        self.config['root'].rename(self.root/'old-evidence-unavailable')
+        self.assertEqual(self.initialize(config),expected)
+
+    def test_prior_bo_run_must_be_complete_and_contract_matching(self):
+        config=self.continuation()
+        path=self.config['root']/'state.json'
+        state=bo.read(path);state['status']='running';bo.write(path,state)
+        with self.assertRaisesRegex(bo.BOError,'must be complete'):
+            self.initialize(config)
+        state['status']='complete';bo.write(path,state)
+        path=self.config['root']/'manifest.json'
+        manifest=bo.read(path);manifest['contract']={'changed':True};bo.write(path,manifest)
+        with self.assertRaisesRegex(bo.BOError,'contract is incompatible'):
+            self.initialize(config)
+
+    def test_prior_bo_raw_history_and_frozen_observations_are_checked(self):
+        config=self.continuation()
+        prior=self.config['root']
+        state=bo.read(prior/'state.json')
+        changed=copy.deepcopy(state)
+        changed['optimizer']['observations']['y'][0]=999
+        bo.write(prior/'state.json',changed)
+        with self.assertRaisesRegex(bo.BOError,'history differs'):
+            self.initialize(config)
+        bo.write(prior/'state.json',state)
+        path=prior/'observations.json';original=path.read_text();path.write_text('corrupt')
+        with self.assertRaisesRegex(bo.BOError,'observations differ'):
+            self.initialize(config)
+        path.write_text(original)
+        (prior/'probes/bo-0000.jsonl').write_text('corrupt')
+        with self.assertRaisesRegex(bo.BOError,'raw probe differs'):
+            self.initialize(config)
+
+    def test_prior_bo_lock_prevents_active_import(self):
+        config=self.continuation()
+        with bo.loop.locked(self.config['root']/'bo.lock'):
+            with self.assertRaisesRegex(bo.BOError,'still running'):
+                self.initialize(config)
+
+    def test_cross_run_duplicate_tuples_are_deduplicated(self):
+        config=self.continuation()
+        other=self.root/'evals/duplicate-pilot'
+        shutil.copytree(self.config['root'],other)
+        manifest=bo.read(other/'manifest.json');manifest['config']['run_id']='duplicate-pilot'
+        bo.write(other/'manifest.json',manifest)
+        config['raw']['import_bo_runs'].append('duplicate-pilot')
+        observations,_=self.initialize(config)
+        self.assertEqual(len(observations['development']),3)
+        self.assertEqual(len(observations['development'][-1]['sources']),2)
+
+    def test_invalid_import_lists_fail_before_work(self):
+        for imports in ('pilot', ['pilot'], ['old-loop'], ['other','other'], ['../other']):
+            bo.write(self.path,{**self.raw,'import_bo_runs':imports})
+            with self.assertRaises((bo.BOError,bo.campaign.CampaignError)):
+                bo.load_config(self.path)
 
     def test_import_deduplicates_compatible_observations(self):
         self.add_cycle(2)

@@ -75,13 +75,19 @@ def code_identity():
 def load_config(path):
     raw = read(path)
     allowed = loop.CONTRACT_FIELDS | {'schema', 'run_id', 'source_loop', 'base',
-                                     'report_every', 'bo', 'expected_contract_sha256'}
+                                     'report_every', 'bo', 'expected_contract_sha256', 'import_bo_runs'}
     if raw.get('schema') != SCHEMA or set(raw) - allowed:
         raise BOError('invalid BO schema or unknown config fields')
     run_id = campaign.require_identifier(raw.get('run_id'), 'run_id')
     source = campaign.require_identifier(raw.get('source_loop'), 'source_loop')
     if source == run_id:
         raise BOError('source_loop must differ from run_id')
+    imports = raw.get('import_bo_runs', [])
+    if not isinstance(imports, list):
+        raise BOError('import_bo_runs must be a list of completed BO run IDs')
+    imports = [campaign.require_identifier(value, 'import_bo_runs') for value in imports]
+    if len(set(imports)) != len(imports) or run_id in imports or source in imports:
+        raise BOError('import_bo_runs must be distinct and exclude this run and source loop')
     store = campaign.resolve(path, raw.get('store_root'), 'store_root')
     if not isinstance(raw.get('bo', {}), dict):
         raise BOError('bo must be an object')
@@ -152,6 +158,26 @@ def import_observations(config, env, contract, source):
     if source.get('schema') != loop.SCHEMA or source['contract'] != contract or source['contract_sha256'] != digest(contract):
         raise BOError('source loop contract is incompatible')
     records, identities = {}, []
+
+    def add_record(record, output, provenance):
+        margins = validate_tuple(record['margins'], config['options']['bounds'])
+        if not campaign.same_identity(record.get('output'), tune.file_identity(output)):
+            raise BOError(f'source raw probe differs: {output}')
+        candidate = tune.parse_probe_output(output, env['candidate_nodes'], margins)
+        if set(candidate['positions']) != set(env['development']['context'].baseline['positions']):
+            raise BOError(f'source probe position coverage differs: {output}')
+        target = record['metrics']['mean_normalized_regret']
+        if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target):
+            raise BOError('nonfinite source target')
+        if record['metrics']['evaluated_positions'] != env['development']['context'].trusted_set['trusted_position_count']:
+            raise BOError('source scored population differs')
+        if margins in records and records[margins]['metrics']['mean_normalized_regret'] != target:
+            raise BOError('conflicting targets for an imported tuple')
+        if margins not in records:
+            records[margins] = {k: record[k] for k in ('margins', 'metrics', 'risk', 'semantic')}
+            records[margins]['sources'] = []
+        records[margins]['sources'].append({**provenance, 'output': tune.file_identity(output)})
+
     for state_path in sorted(config['source'].glob('cycles/*/search/state.json')):
         state = read(state_path)
         if state.get('status') != 'max_proposals':
@@ -169,27 +195,50 @@ def import_observations(config, env, contract, source):
             raise BOError('source development input differs')
         identities.append({'state': tune.file_identity(state_path), 'manifest': tune.file_identity(manifest_path)})
         for record in state['evaluations']:
-            margins = validate_tuple(record['margins'], config['options']['bounds'])
             alias = campaign.require_identifier(record['id'], 'source evaluation id')
             output = state_path.parent / 'probes' / f'{alias}.jsonl'
-            if not campaign.same_identity(record.get('output'), tune.file_identity(output)):
-                raise BOError(f'source raw probe differs: {output}')
-            candidate = tune.parse_probe_output(output, env['candidate_nodes'], margins)
-            if set(candidate['positions']) != set(env['development']['context'].baseline['positions']):
-                raise BOError(f'source probe position coverage differs: {output}')
-            target = record['metrics']['mean_normalized_regret']
-            if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target):
-                raise BOError('nonfinite source target')
-            if record['metrics']['evaluated_positions'] != env['development']['context'].trusted_set['trusted_position_count']:
-                raise BOError('source scored population differs')
-            if margins in records and records[margins]['metrics']['mean_normalized_regret'] != target:
-                raise BOError('conflicting targets for an imported tuple')
-            provenance = {'cycle': state_path.parents[1].name, 'alias': alias, 'output': tune.file_identity(output)}
-            if margins not in records:
-                records[margins] = {k: record[k] for k in ('margins', 'metrics', 'risk', 'semantic')}
-                records[margins]['sources'] = []
-            records[margins]['sources'].append(provenance)
+            add_record(record, output, {'cycle': state_path.parents[1].name, 'alias': alias})
         print(f'BO import cycle={state_path.parents[1].name} unique={len(records)}', flush=True)
+    for identifier in config['raw'].get('import_bo_runs', []):
+        root = config['store'] / 'evals' / identifier
+        # Read under the existing producer lock. Evidence reuse is independent
+        # of the producer's Python/NumPy/model settings; do not restore its GP.
+        with (root / 'bo.lock').open('r') as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise BOError(f'imported BO run is still running: {identifier}') from exc
+            manifest_path, state_path = root/'manifest.json', root/'state.json'
+            prior_manifest, prior_state = read(manifest_path), read(state_path)
+            if prior_manifest.get('schema') != SCHEMA or prior_manifest.get('contract') != contract or \
+               prior_manifest.get('contract_sha256') != digest(contract) or \
+               prior_manifest.get('config', {}).get('run_id') != identifier:
+                raise BOError(f'imported BO run contract is incompatible: {identifier}')
+            completed = prior_state.get('completed')
+            expected = prior_manifest['config'].get('bo', {}).get('max_proposals', DEFAULTS['max_proposals'])
+            if prior_state.get('schema') != SCHEMA or prior_state.get('status') != 'complete' or \
+               prior_state.get('pending') is not None or not isinstance(completed, list) or len(completed) != expected:
+                raise BOError(f'imported BO run must be complete: {identifier}')
+            observations_path = root/'observations.json'
+            if not campaign.same_identity(prior_manifest.get('observations'), tune.file_identity(observations_path)):
+                raise BOError(f'imported BO observations differ: {identifier}')
+            frozen = read(observations_path)
+            history = frozen['development'] + completed
+            if prior_state.get('optimizer', {}).get('observations') != {
+                'x': [[float(v) for v in r['margins']] for r in history],
+                'y': [float(r['metrics']['mean_normalized_regret']) for r in history],
+            }:
+                raise BOError(f'imported BO history differs: {identifier}')
+            identities.append({'bo_run': identifier, 'state': tune.file_identity(state_path),
+                               'manifest': tune.file_identity(manifest_path),
+                               'observations': tune.file_identity(observations_path)})
+            before = len(records)
+            for index, record in enumerate(completed):
+                if record['id'] != f'bo-{index:04d}':
+                    raise BOError(f'imported BO evaluation is misnumbered: {identifier}')
+                add_record(record, root/'probes'/f"{record['id']}.jsonl",
+                           {'bo_run': identifier, 'alias': record['id']})
+            print(f'BO import run={identifier} added={len(records)-before} unique={len(records)}', flush=True)
     if tuple(config['base']['margins']) not in records:
         raise BOError('SPRT base has no completed compatible development evaluation')
     count = sum(len(s['context'].trusted_keys) for s in env['selection'])

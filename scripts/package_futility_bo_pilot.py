@@ -21,7 +21,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',required=True)
     parser.add_argument('--tinibo-root',required=True)
-    parser.add_argument('--source-state',required=True,help='Verified returned loop_state.json for the external contract receipt')
+    parser.add_argument('--source-state',required=True,help='Verified loop_state.json or BO manifest.json for the external contract receipt')
     parser.add_argument('--output-dir',required=True)
     args=parser.parse_args()
     repo=Path(__file__).resolve().parent.parent
@@ -52,17 +52,22 @@ def main():
             (output/path.name).chmod(0o755)
     shutil.copy2(backend/'benchmarks/futility_cloud/development.jsonl',output/'verification/development.jsonl')
     (output/'config/pilot.json').write_text(json.dumps(config,indent=2)+'\n')
+    options={**bo.DEFAULTS, **config.get('bo', {})}
     readme=f'''# Futility BO depth-5 pilot
 
 Source revisions: Chilo {revisions['chilo']}; tinibo {revisions['tinibo']}.
-Five sequential new-to-model development observations, one worker, 120k nodes.
-80% local / 20% broad candidate pool. No automatic validation or SPRT.
+{options['max_proposals']} sequential new-to-model development observations, one worker, 120k nodes.
+{100*options['local_fraction']:g}% local / {100*(1-options['local_fraction']):g}% broad candidate pool.
+No automatic validation or SPRT.
 Existing external store: {config['store_root']}; source loop: {config['source_loop']}.
+Explicit completed BO imports: {', '.join(config.get('import_bo_runs', [])) or 'none'}.
 Output: {config['store_root']}/evals/{config['run_id']}.
 
 First wait for the old loop's graceful phase-boundary stop. Its cron may remain enabled.
 The pilot holds the old process lock while running, without changing its state.
 Setup needs Python 3.10–3.14, venv/pip and network access to install only NumPy.
+If Ubuntu reports missing venv support, install python3-venv with sudo, then
+run python3 -m venv .venv and setup.sh as the normal user. Do not sudo setup.sh.
 NumPy is pinned to 2.2.6 for Python 3.10–3.13, or the qualified 2.5.3 for 3.14;
 the real-data numerical/replay check must pass before engine work.
 
@@ -79,7 +84,7 @@ For cron, after successful setup add (do not replace your other entries):
 */10 * * * * /home/ubuntu/{output.name}/run.sh >> /home/ubuntu/{output.name}/cron.log 2>&1
 ```
 
-Cron also exits harmlessly when another pilot process is running or all five steps are done.
+Cron also exits harmlessly when another pilot process is running or all steps are done.
 Comment out the pilot entry after completion. Keep the old loop stopped until then.
 To bound a test invocation, use ./run.sh --max-evaluations 1. This does not disable cron.
 SIGTERM/foreground Ctrl-C terminates the probe process group and retains the pending tuple.
@@ -90,13 +95,13 @@ state.json is the authoritative checkpoint, with proposal predictions and diagno
 Nomination requires an unvalidated pilot tuple with lower dev mean regret than spsa150b.
 Cache hits count as an acquired observation, and their receipt distinguishes saved work.
 
-Collect the full small pilot, including its five raw probes:
+Collect the full small pilot, including its raw probes:
 
 ```bash
 bash collect.sh
 ```
 
-Copy bo-d5-pilot1-results.tgz back through PUBLIC/transf for local review. Do not send
+Copy {config['run_id']}-results.tgz back through PUBLIC/transf for local review. Do not send
 the old loop, shared probe cache, all populations or the package-local .venv.
 Neither the setup nor packaging starts an engine probe. Only run.sh does.
 '''

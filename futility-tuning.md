@@ -701,6 +701,61 @@ Recovery tests cover interruptions before probing, after raw-output completion,
 and during checkpoint commit, along with cache reuse, exact proposal replay,
 contract/history mismatches, locking, and development/validation separation.
 
+#### Pilot 1 outcome and local-only continuation — 2026-10-04
+
+The first pilot imported 264 distinct development observations and 32 full
+validation records. All five probes were cache misses; summed probe time was
+3h 48m. The returned archive is `~/Tune/futility/bo-d5-pilot1-results.tgz`
+(SHA-256 `a6035e391eb151fbd23da52c91b5ba5953dcd479294775f05837bcfcb0972f13`).
+Raw outputs and diagnostic replay are preserved under
+`validation/evaluations/bo-d5-pilot1/`. Hashes, raw normal-PVS records and
+recomputed full SR4 metrics matched; all selected tuples and candidate-pool
+hashes were reproduced offline.
+
+| Candidate | Margins | Predicted mean regret | Actual mean regret | Squared regret | CVaR-1% |
+|---|---|---:|---:|---:|---:|
+| spsa150b | 0,40,158,488,754 | — | 0.014074236 | 0.002188075 | 0.329444948 |
+| bo-0000 | 1018,1019,1126,1194,1198 | 0.014228287 | 0.016771965 | 0.002874692 | 0.372479662 |
+| bo-0001 | 53,88,116,1124,1168 | 0.014125525 | 0.014426743 | 0.002324253 | 0.339487444 |
+| bo-0002 | 63,173,1105,1129,1143 | 0.014666246 | 0.014718863 | 0.002278023 | 0.335573453 |
+| bo-0003 | 2,20,69,119,237 | 0.014323384 | 0.014401331 | 0.002257035 | 0.332991009 |
+| bo-0004 | 25,958,980,1136,1147 | 0.014975192 | 0.015379624 | 0.002506884 | 0.347690624 |
+
+No tuple improved the base on any of the three main metrics, so no nominee
+was produced. All five selections came from the 20% broad pool component;
+an 80% local pool is not an evaluation quota. EI favoured high uncertainty
+outside the observed region. Imported depth-1 margins spanned only 0–77,
+whereas the first proposal used 1018; its measured result was about 12 latent
+model standard deviations above prediction. No zero-EI fallback occurred.
+This exposes extrapolation/calibration weakness; it is not evidence of a
+probe failure, nor sufficient evidence to abandon BO within the measured
+neighbourhood.
+
+Completed BO runs can now be imported explicitly with `import_bo_runs`:
+
+```json
+"import_bo_runs": ["bo-d5-pilot1"]
+```
+
+The runner imports their **completed evaluations**, including poor ones, after
+checking the frozen metric/population contract, producer lock, complete state,
+raw output hashes and coverage, frozen observation hash and recorded history.
+It deduplicates tuples against the loop and other imported runs; conflicting
+targets fail. Numerical runtime/model settings may differ between experiments:
+these are measurements, not restored GP checkpoints. Imports are frozen in the
+new run's `observations.json`, so resume does not require rereading old BO runs.
+For later continuations, explicitly list every earlier BO run whose completed
+evaluations should be carried forward; imports are not discovered recursively.
+
+The second pilot configuration is `scripts/futility_bo_local.example.json`:
+`bo-d5-pilot2`, five new sequential evaluations, the same seed, model, probe,
+weights and node budget, but `local_fraction=1.0`. It adds the five pilot-1
+measurements to the 264 loop observations (269 total with the loop unchanged).
+The aim is to isolate candidate-domain effects, not promise improvement.
+Keep the source loop stopped, leave the old package/results untouched, and
+launch the new package through its own setup/run scripts. The collection
+script now derives the result archive name from the configured run ID.
+
 ## Historical Coordinate Optimizer
 
 `scripts/optimize_futility.py` is the original dependency-free, deterministic

@@ -10,7 +10,7 @@ c=json.loads(Path(sys.argv[1]).read_text())
 print(c['store_root'],c['run_id'])
 PY
 )
-target="${1:-$package_root/bo-d5-pilot1-results.tgz}"
+target="${1:-$package_root/$run_id-results.tgz}"
 if [[ -e "$target" ]]; then
     echo "Refusing to overwrite $target" >&2
     exit 2
