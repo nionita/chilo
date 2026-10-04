@@ -31,7 +31,9 @@ except ImportError as exc:
     raise ImportError('BO requires NumPy and tinibo on PYTHONPATH; see futility-tuning.md') from exc
 
 SCHEMA = 'chilo.futility_bo.v1'
+OPTIMIZER_SCHEMA = 'tinibo.optimizer.v2'
 PRESET = dict(kernel='matern52', acquisition='ei', xi=0.0, xi_mode='raw',
+              kappa=2.0, ei_incumbent='observed',
               noise_mode='learned', gp_fit_mode='scaled', gp_length_scale_bounds=[0.005, 1000],
               gp_n_restarts=8, gp_max_iter=100, gp_restart_strategy='coverage',
               duplicate_policy='ignore', n_restarts=0)
@@ -111,6 +113,11 @@ def load_config(path):
     if not isinstance(options['model'], dict) or set(options['model']) - set(PRESET):
         raise BOError('unknown model option')
     options['model'] = {**PRESET, **options['model']}
+    kappa = options['model']['kappa']
+    if isinstance(kappa, bool) or not isinstance(kappa, (int, float)) or not math.isfinite(kappa) or kappa < 0:
+        raise BOError('model kappa must be finite and nonnegative')
+    if options['model']['ei_incumbent'] not in ('observed', 'posterior_mean'):
+        raise BOError('model ei_incumbent must be observed or posterior_mean')
     # Validate the public optimizer settings before reading any engine data.
     BayesianOptimizer(objective=None, bounds=bounds, seed=options['seed'], **options['model'])
     return dict(path=path, raw=raw, store=store, root=store / 'evals' / run_id,
@@ -254,6 +261,7 @@ def import_observations(config, env, contract, source):
 
 def manifest(config, contract):
     return {'schema': SCHEMA, 'config': config['raw'], 'contract': contract,
+            'optimizer_schema': OPTIMIZER_SCHEMA,
             'contract_sha256': digest(contract), 'code': code_identity(),
             'environment': {'python': platform.python_version(), 'numpy': np.__version__,
                             'blas_threads': {k: os.environ.get(k) for k in
@@ -301,7 +309,7 @@ def validate_state(config, observations, state):
     if not isinstance(completed, list) or len(completed) > config['options']['max_proposals'] or \
        (state['status'] == 'complete') != (len(completed) == config['options']['max_proposals']):
         raise BOError('checkpoint evaluation count/status differs')
-    optimizer = BayesianOptimizer.from_state(state['optimizer'], objective=None)
+    optimizer = restore_optimizer(state.get('optimizer'))
     fresh = BayesianOptimizer(objective=None, bounds=config['options']['bounds'],
                               seed=config['options']['seed'], **config['options']['model'])
     if optimizer.get_state()['settings'] != fresh.get_state()['settings']:
@@ -328,6 +336,18 @@ def validate_state(config, observations, state):
             raise BOError('invalid pending proposal')
     rng = np.random.default_rng()
     rng.bit_generator.state = state['pool_rng']
+
+
+def restore_optimizer(state):
+    """Resume only current checkpoints; old measurements use import_bo_runs."""
+    if not isinstance(state, dict) or state.get('schema') != OPTIMIZER_SCHEMA:
+        raise BOError(f'unsupported optimizer checkpoint; expected {OPTIMIZER_SCHEMA}. '
+                      'Keep the original package to resume v1, or import completed measurements '
+                      'via import_bo_runs into a new run ID; do not relabel old checkpoints')
+    try:
+        return BayesianOptimizer.from_state(state, objective=None)
+    except ValueError as exc:
+        raise BOError(f'invalid optimizer checkpoint: {exc}') from exc
 
 
 def candidate_pool(options, observations, rng, base):
@@ -426,7 +446,7 @@ def run(config, env, contract, observations, state, limit=0):
     root = config['root']
     for directory in ('probes', 'logs'):
         (root / directory).mkdir(exist_ok=True)
-    optimizer = BayesianOptimizer.from_state(state['optimizer'], objective=None)
+    optimizer = restore_optimizer(state['optimizer'])
     rng = np.random.default_rng()
     rng.bit_generator.state = state['pool_rng']
     done = 0

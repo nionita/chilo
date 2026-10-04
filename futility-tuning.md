@@ -756,6 +756,116 @@ Keep the source loop stopped, leave the old package/results untouched, and
 launch the new package through its own setup/run scripts. The collection
 script now derives the result archive name from the configured run ID.
 
+#### Pilot 2 outcome — 2026-10-04
+
+The local-only continuation correctly imported all 269 distinct observations,
+including the five measured pilot-1 points, and retained 32 full validation
+records separately. Five new normal-PVS probes were completed (all cache
+misses), using 3h 50m summed probe time. Archive:
+`~/Tune/futility/bo-d5-pilot2-results.tgz`, SHA-256
+`dacad4f0c91b71eacc628148f1843a99673f809bd9462258fa023cb5fc40eec6`.
+Canonical evidence: `validation/evaluations/bo-d5-pilot2/`.
+
+| Candidate | Margins | Predicted mean regret | Actual mean regret | Squared regret | CVaR-1% |
+|---|---|---:|---:|---:|---:|
+| spsa150b | 0,40,158,488,754 | — | 0.014074236 | 0.002188075 | 0.329444948 |
+| bo-0000 | 103,105,222,374,578 | 0.014153970 | 0.014423719 | 0.002316794 | 0.338962906 |
+| bo-0001 | 2,115,189,786,856 | 0.014154079 | 0.014323163 | 0.002261677 | 0.331050825 |
+| bo-0002 | 0,0,324,786,830 | 0.014319889 | 0.014632794 | 0.002329913 | 0.337368484 |
+| bo-0003 | 46,50,178,786,984 | 0.014262149 | 0.014121074 | 0.002283102 | 0.338180558 |
+| bo-0004 | 87,92,327,442,815 | 0.014214647 | 0.014296046 | 0.002314955 | 0.338255247 |
+
+All five were worse than the base on all three main development metrics; no
+nominee was produced. The best mean regret was bo-0003, 0.33% worse than the
+base. There is no full-selection or SPRT evidence for these BO candidates.
+The source experiment's numbering is package-local: distinguish
+`bo-d5-pilot2/bo-0003` from the earlier pilot's `bo-0003`.
+
+Verification matched the producer/backend hashes, contract, five prior
+measurement imports, raw probe hashes, checkpoint/results history, and
+recomputed complete SR4 metrics/risk/semantic counts. Offline replay reproduced
+the five candidate-pool hashes, selected tuples and final pool RNG; numerical
+predictions were compared with tolerance because the local Python/NumPy runtime
+differs from the cloud runtime. No zero-EI fallback occurred.
+
+Removing broad exploration did not produce an improvement in this small
+sample. Four proposals lay 80 cp from their nearest measured tuple in maximum
+coordinate distance; the fifth lay 74 cp away. The model's predictions at the
+known controls expose smoothing: initially it predicts 0.014195 for the base
+(measured 0.014074) and 0.014141 for `[30,66,188,454,656]` (measured 0.013911,
+the best imported development target). EI compares with that best **measured**
+target, not the fitted mean at the incumbent. Consequently, a promising
+low-uncertainty pool point can have very little EI, while a more uncertain edge
+point wins. This is an acquisition/surrogate diagnostic, not proof of a bug.
+The learned noise represents a modeling approximation; fixed-probe scores
+remain deterministic and these standard deviations are not Elo uncertainty.
+
+On these five acquisition-selected points, saved prediction RMSE was 0.000213
+versus 0.000203 for a sequential running-mean predictor. This is a tiny,
+selection-biased diagnostic, not an independent model qualification failure.
+The accumulated 274 development measurements should inform offline comparison
+of GP smoothing/noise, coordinate sensitivity and noisy-incumbent acquisition
+behaviour before another unchanged expensive pilot. Keep all ten new BO
+measurements; there is no reason to discard valid poor results.
+
+#### Tinibo follow-up and acquisition integration — 2026-10-04
+
+Tinibo's completed offline comparison is recorded in
+`~/Sources/tinibo/benchmarks/results/futility-followup-2026-10-04/README.md`
+and `HANDBACK.md` (final evidence commit `4d57553`). Its report audit passed:
+source/payload hashes, splits and label-reveal order, recomputed statistics,
+both historical pilot replays and practical limits. The report records 117
+passing tinibo tests. No replacement passed all predeclared qualification
+gates. Learned Matérn-5/2 remains the strongest retained surrogate; posterior
+incumbent EI is available for explicit comparison, not a new default.
+
+LCB with kappa 0.5 improved the augmented 274-tuple finite-pool results but
+worsened the original 264-tuple results. Treat it as an **unqualified exploratory
+pilot**, not a promoted acquisition. The Chilo adapter now permits
+`bo.model.kappa` (finite nonnegative number) and `bo.model.ei_incumbent`
+(`observed` or `posterior_mean`). Omitting them retains observed-incumbent EI
+and the library's kappa 2.0; the application default is still EI. For LCB use
+`"acquisition": "ucb", "kappa": 0.5`; the historical API name means minimizing
+`mean - kappa * latent_std`. A null `ei_reference` is expected for LCB and is
+retained in proposal diagnostics. Posterior-mean incumbent EI uses the minimum
+fitted mean over observed training coordinates, not over the unseen pool;
+it is not integrated noisy EI.
+
+New runs use `tinibo.optimizer.v2`, recorded in the run/package manifests and
+numerical qualification receipt. V1 checkpoints are explicitly rejected for
+resume; never relabel them or edit historical run manifests. Keep the original
+package/runtime to resume old work, or use a **new run ID** with
+`import_bo_runs` to reuse completed v1 measurements. Import checks raw evidence
+and ordered observation history without restoring the old model or RNG.
+New v2 checkpoints still require unchanged config/code/Python/NumPy to resume.
+Package qualification now replays the **configured acquisition**, not just EI,
+and checks LCB units and null EI reference before any engine work.
+
+`scripts/futility_bo_lcb.example.json` describes the proposed five-measurement
+pilot: unchanged probe/net/SR4 contract, 120k nodes, local-only 10k pool, radius
+80, seed 20261003, ten best centers plus spsa150b. It explicitly imports both
+completed pilots as well as the stopped loop, yielding 274 unique development
+observations without remeasurement. Validation/Elo labels stay separate. The
+tinibo diagnostic first proposal is `[73,88,220,497,764]`; its true target is
+unknown and cross-runtime numeric replay is tolerance-based. No package or
+engine run is started by this integration. Decide on full selection evaluation
+and SPRT only after fresh measured results.
+
+Integration verification passed 147 futility Python tests plus four discrete
+optimizer tests. The 31 BO tests also passed separately under tinibo's pinned
+Python 3.14.3 / NumPy 2.5.3 environment (the Chilo venv currently uses NumPy
+2.4.4). Tests cover invalid option rejection, defaults, 274 ordered measurement
+imports from v1 producers without probes/model restoration, v2 round-trip and
+pending-work replay, null LCB EI-reference logging and frozen model/runtime
+receipts. With the checked-out tinibo benchmark evidence available, the
+real-data test also reproduces the handback pool hash and first LCB proposal
+within the predeclared 1e-9 numeric tolerance. Core-only tinibo installations
+skip that optional fixture check; synthetic import/resume coverage remains.
+
+```bash
+PYTHONPATH=../tinibo OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -B -m unittest discover -s scripts -p 'test_*futility*.py'
+```
+
 ## Historical Coordinate Optimizer
 
 `scripts/optimize_futility.py` is the original dependency-free, deterministic

@@ -69,7 +69,10 @@ Setup needs Python 3.10–3.14, venv/pip and network access to install only NumP
 If Ubuntu reports missing venv support, install python3-venv with sudo, then
 run python3 -m venv .venv and setup.sh as the normal user. Do not sudo setup.sh.
 NumPy is pinned to 2.2.6 for Python 3.10–3.13, or the qualified 2.5.3 for 3.14;
-the real-data numerical/replay check must pass before engine work.
+the real-data numerical/replay check tests the configured acquisition and must
+pass before engine work. Optimizer checkpoint schema: {bo.OPTIMIZER_SCHEMA}.
+Historical v1 optimizer states cannot resume with this package; import their
+completed measurements into a new run ID instead. Keep old packages unchanged.
 
 ```bash
 cd ~/{output.name}
@@ -108,6 +111,7 @@ Neither the setup nor packaging starts an engine probe. Only run.sh does.
     (output/'README.md').write_text(readme)
     files={str(p.relative_to(output)):bo.tune.file_identity(p) for p in sorted(output.rglob('*')) if p.is_file()}
     receipt={'schema':'chilo.futility_bo_package.v1','revisions':revisions,
+             'optimizer_schema':bo.OPTIMIZER_SCHEMA,
              'external_contract':source['contract'],'external_contract_sha256':source['contract_sha256'],
              'command':'nohup ./run.sh > runner.log 2>&1 < /dev/null & echo $! > run.pid',
              'files':{name:{k:v for k,v in identity.items() if k!='path'} for name,identity in files.items()}}

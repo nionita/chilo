@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import shutil
 import sys
@@ -106,6 +108,219 @@ class PilotTest(unittest.TestCase):
         path=self.root/'next.json'
         bo.write(path,raw)
         return bo.load_config(path)
+
+    def test_model_options_keep_ei_default_and_accept_explicit_lcb(self):
+        self.assertEqual(self.config['options']['model']['acquisition'], 'ei')
+        self.assertEqual(self.config['options']['model']['ei_incumbent'], 'observed')
+        self.assertEqual(self.config['options']['model']['kappa'], 2.0)
+        for model in ({'acquisition': 'ucb', 'kappa': 0.5},
+                      {'acquisition': 'ucb', 'kappa': 0},
+                      {'ei_incumbent': 'posterior_mean'}):
+            with self.subTest(model=model):
+                raw = copy.deepcopy(self.raw)
+                raw['bo']['model'].update(model)
+                bo.write(self.path, raw)
+                actual = bo.load_config(self.path)['options']['model']
+                for key, value in model.items():
+                    self.assertEqual(actual[key], value)
+        self.assertFalse(self.config['root'].exists())
+
+    def test_invalid_acquisition_options_fail_before_work(self):
+        for kappa in (-1, float('inf'), float('-inf'), float('nan'), True, None, '0.5', []):
+            with self.subTest(kappa=kappa):
+                raw = copy.deepcopy(self.raw)
+                raw['bo']['model']['kappa'] = kappa
+                bo.write(self.path, raw)
+                with self.assertRaisesRegex(bo.BOError, 'kappa must be finite and nonnegative'):
+                    bo.load_config(self.path)
+        for mode in ('unknown', None, True, [], {}):
+            with self.subTest(mode=mode):
+                raw = copy.deepcopy(self.raw)
+                raw['bo']['model']['ei_incumbent'] = mode
+                bo.write(self.path, raw)
+                with self.assertRaisesRegex(bo.BOError, 'ei_incumbent must be'):
+                    bo.load_config(self.path)
+        self.assertFalse(self.config['root'].exists())
+
+    def test_v1_checkpoint_is_rejected_for_resume_but_not_measurement_import(self):
+        config = self.continuation()
+        path = self.config['root'] / 'state.json'
+        state = bo.read(path)
+        state['optimizer']['schema'] = 'tinibo.optimizer.v1'
+        state['optimizer']['settings'].pop('ei_incumbent')
+        state['optimizer']['environment'] = {'python': 'old', 'numpy': 'old'}
+        bo.write(path, state)
+        # The manifest has the current code: this isolates the schema guard.
+        with self.assertRaisesRegex(bo.BOError, 'import completed measurements.*new run ID'):
+            self.initialize()
+        observations, fresh = self.initialize(config)
+        self.assertEqual(len(observations['development']), 3)
+        self.assertEqual(fresh['optimizer']['schema'], bo.OPTIMIZER_SCHEMA)
+        self.assertEqual(fresh['completed'], [])
+
+    def test_v2_round_trip_and_next_pool_replay_for_lcb_and_posterior_ei(self):
+        for overrides in ({'acquisition': 'ucb', 'kappa': 0.5},
+                          {'ei_incumbent': 'posterior_mean'}):
+            with self.subTest(model=overrides):
+                raw = copy.deepcopy(self.raw)
+                raw['run_id'] = 'replay-' + overrides.get('acquisition', 'ei')
+                raw['bo']['model'].update(overrides)
+                bo.write(self.path, raw)
+                config = bo.load_config(self.path)
+                observations, state = self.initialize(config)
+                saved = json.loads(json.dumps(state, allow_nan=False))
+                self.assertEqual(saved['optimizer']['schema'], 'tinibo.optimizer.v2')
+                a, b = bo.restore_optimizer(state['optimizer']), bo.restore_optimizer(saved['optimizer'])
+                rng_a, rng_b = np.random.default_rng(), np.random.default_rng()
+                rng_a.bit_generator.state = state['pool_rng']
+                rng_b.bit_generator.state = saved['pool_rng']
+                pool_a = bo.candidate_pool(config['options'], observations['development'], rng_a, self.base)
+                pool_b = bo.candidate_pool(config['options'], observations['development'], rng_b, self.base)
+                np.testing.assert_array_equal(pool_a, pool_b)
+                first, second = a.ask(candidates=pool_a, return_info=True), b.ask(candidates=pool_b, return_info=True)
+                np.testing.assert_array_equal(first.x, second.x)
+                self.assertEqual(first.acquisition_value, second.acquisition_value)
+                self.assertEqual(first.diagnostics, second.diagnostics)
+                self.assertEqual(rng_a.bit_generator.state, rng_b.bit_generator.state)
+                if overrides.get('acquisition') == 'ucb':
+                    self.assertIsNone(first.diagnostics['ei_reference'])
+                    self.assertAlmostEqual(first.acquisition_value, first.mean - 0.5 * first.std, places=15)
+                else:
+                    self.assertEqual(first.diagnostics['ei_incumbent'], 'posterior_mean')
+                    self.assertIsNotNone(first.diagnostics['ei_reference'])
+
+    def test_lcb_logging_pending_resume_and_option_mismatch(self):
+        raw = copy.deepcopy(self.raw)
+        raw['bo']['model'].update(acquisition='ucb', kappa=0.5)
+        bo.write(self.path, raw)
+        config = bo.load_config(self.path)
+        observations, state = self.initialize(config)
+        with patch.object(bo, 'evaluate_pending', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                bo.run(config, self.env, self.contract, observations, state)
+        saved = bo.read(config['root'] / 'state.json')
+        self.assertIsNone(saved['pending']['proposal']['diagnostics']['ei_reference'])
+        result = self.run_pilot(config)
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual(result['evaluations'][0]['margins'], saved['pending']['margins'])
+        for record in result['evaluations']:
+            proposal = record['proposal']
+            self.assertIsNone(proposal['diagnostics']['ei_reference'])
+            self.assertAlmostEqual(proposal['acquisition_value'],
+                                   proposal['mean'] - 0.5 * proposal['std'], places=15)
+        self.assertTrue((config['root'] / 'report.md').exists())
+        raw['bo']['model']['kappa'] = 1.0
+        bo.write(self.path, raw)
+        with self.assertRaisesRegex(bo.BOError, 'manifest mismatch'):
+            self.initialize(bo.load_config(self.path))
+
+    def test_package_numerical_replay_uses_configured_acquisition(self):
+        path = Path(bo.__file__).parent / 'futility_bo_package/verify-numerics.py'
+        spec = importlib.util.spec_from_file_location('verify_bo_numerics', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        X = np.asarray([self.base, [10, 60, 200, 500, 800]], dtype=float)
+        y = np.asarray([0.01, 0.02])
+        pool = np.asarray([[1, 50, 180, 490, 790], [20, 70, 230, 540, 900]])
+        for overrides in ({}, {'acquisition': 'ucb', 'kappa': 0.5},
+                          {'ei_incumbent': 'posterior_mean'}):
+            with self.subTest(model=overrides):
+                model = {**self.config['options']['model'], **overrides}
+                self.assertEqual(module.checkpoint_replay(X, y, [[0, 1200]] * 5, model, pool),
+                                 bo.OPTIMIZER_SCHEMA)
+
+    def test_package_numerical_receipt_locks_model_fixture_and_runtime(self):
+        path = Path(bo.__file__).parent / 'futility_bo_package/verify-numerics.py'
+        spec = importlib.util.spec_from_file_location('verify_bo_receipt', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        package = self.root / 'package'
+        (package / 'config').mkdir(parents=True)
+        (package / 'verification').mkdir()
+        raw = copy.deepcopy(self.raw)
+        raw['bo']['model'].update(acquisition='ucb', kappa=0.5)
+        bo.write(package / 'config/pilot.json', raw)
+        fixture = package / 'verification/development.jsonl'
+        fixture.write_text(''.join(json.dumps({'margins': [k, k+1, k+2, k+3, k+4],
+                                              'target': k * 0.01}) + '\n' for k in range(1, 7)))
+        # Isolate receipt/config handling; actual numerical replay is tested above.
+        gp = SimpleNamespace(fit=lambda *_args, **_kwargs: None,
+                             predict=lambda X, **_kwargs: X[:, 0] * 0.01)
+        with patch.object(module, 'GP', return_value=gp), \
+             patch.object(module, 'checkpoint_replay', return_value=bo.OPTIMIZER_SCHEMA) as replay, \
+             contextlib.redirect_stdout(io.StringIO()):
+            module.main(package)
+            receipt = bo.read(package / 'numerics-check.json')
+            self.assertEqual(replay.call_args.args[3]['kappa'], 0.5)
+            self.assertEqual(receipt['model']['acquisition'], 'ucb')
+            self.assertEqual(receipt['optimizer_schema'], bo.OPTIMIZER_SCHEMA)
+            module.main(package)
+            for key, changed in (('model', {**receipt['model'], 'kappa': 1.0}),
+                                 ('fixture_sha256', 'changed'), ('numpy', 'changed'),
+                                 ('python', 'changed'), ('optimizer_schema', 'tinibo.optimizer.v1')):
+                bo.write(package / 'numerics-check.json', {**receipt, key: changed})
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'runtime/model/fixture changed'):
+                    module.main(package)
+                self.assertEqual(bo.read(package / 'numerics-check.json')[key], changed)
+
+    def test_274_observations_import_from_two_v1_pilots_without_restore_or_probes(self):
+        cycle = self.source / 'cycles/000001/search'
+
+        def evaluation(root, alias, margins):
+            (root / 'probes').mkdir(parents=True, exist_ok=True)
+            (root / 'logs').mkdir(exist_ok=True)
+            output = root / 'probes' / (alias + '.jsonl')
+            write_probe_output(output, [position_record('positions.csv', 1, 'fen', margins, 100,
+                                                       move='d2d4')], margins, 100)
+            return bo.probes.evaluate(bo.probe_settings(self.config, self.env), root, alias, margins,
+                                     bo.tune.parse_probe_output(output, 100, margins))
+
+        records = [bo.read(cycle / 'state.json')['evaluations'][0]]
+        records.extend(evaluation(cycle, f'candidate-{index:04d}',
+                                  [0, 40, 158, 488, 754 + index]) for index in range(1, 264))
+        bo.write(cycle / 'state.json', {'schema': bo.probes.STATE_SCHEMA, 'status': 'max_proposals',
+                                      'evaluations': records})
+        for index in (1, 2):
+            root = self.root / 'evals' / f'old-pilot{index}'
+            root.mkdir()
+            (root / 'bo.lock').touch()
+            warm = copy.deepcopy(records)
+            completed = [evaluation(root, f'bo-{n:04d}', [0, 40, 158, 488 + index, 800 + n])
+                         for n in range(5)]
+            bo.write(root / 'observations.json', {'schema': bo.SCHEMA, 'development': warm,
+                                                'validated': []})
+            old = bo.BayesianOptimizer(None, bounds=[[0, 1200]] * 5,
+                                      **self.config['options']['model'])
+            for record in warm + completed:
+                old.tell(record['margins'], record['metrics']['mean_normalized_regret'])
+            checkpoint = old.get_state()
+            checkpoint['schema'] = 'tinibo.optimizer.v1'
+            checkpoint['settings'].pop('ei_incumbent')
+            checkpoint['environment'] = {'python': 'historical', 'numpy': 'historical'}
+            bo.write(root / 'state.json', {'schema': bo.SCHEMA, 'status': 'complete', 'pending': None,
+                                         'completed': completed, 'optimizer': checkpoint})
+            bo.write(root / 'manifest.json', {'schema': bo.SCHEMA, 'contract': self.contract,
+                'contract_sha256': bo.digest(self.contract),
+                'config': {'run_id': root.name, 'bo': {'max_proposals': 5}},
+                'observations': bo.tune.file_identity(root / 'observations.json')})
+            records.extend(completed)
+        raw = copy.deepcopy(self.raw)
+        raw['import_bo_runs'] = ['old-pilot1', 'old-pilot2']
+        raw['bo']['model'].update(acquisition='ucb', kappa=0.5)
+        bo.write(self.path, raw)
+        config = bo.load_config(self.path)
+        with patch.object(bo, 'run_command', side_effect=AssertionError('Must not probe')), \
+             patch.object(bo.BayesianOptimizer, 'from_state', side_effect=AssertionError('Must not restore v1')):
+            observations, state = self.initialize(config)
+        self.assertEqual(len(observations['development']), 274)
+        self.assertEqual(state['optimizer']['observations']['x'], [r['margins'] for r in records])
+        self.assertEqual(state['optimizer']['observations']['y'],
+                         [r['metrics']['mean_normalized_regret'] for r in records])
+        self.assertEqual(state['optimizer']['schema'], 'tinibo.optimizer.v2')
+        self.assertEqual(self.initialize(config)[1], state)
+        pool = bo.candidate_pool(config['options'], observations['development'], np.random.default_rng(1), self.base)
+        self.assertFalse({tuple(r['margins']) for r in records} & {tuple(x) for x in pool})
+        self.assertEqual(self.probe_calls, 0)
 
     def test_previous_bo_points_are_added_without_reprobing(self):
         config=self.continuation()
@@ -330,6 +545,55 @@ class PilotTest(unittest.TestCase):
                 bo.run_command(['fixture-probe'], None)
         kill.assert_called_once_with(12345, bo.signal.SIGTERM)
         self.assertEqual(process.wait.call_count, 2)
+
+
+class HandoffReplayTest(unittest.TestCase):
+    """Optional real-data check when PYTHONPATH points at the tinibo checkout.
+
+    Installed/core-only tinibo distributions need not ship benchmark evidence.
+    This fits two small GPs, never loads or executes an engine binary.
+    """
+    def test_real_274_point_lcb_proposal_and_checkpoint_replay(self):
+        backend = Path(bo.tinibo.__file__).resolve().parent.parent
+        fixture = backend / 'benchmarks/futility_pilots_20261004'
+        report = backend / 'benchmarks/results/futility-followup-2026-10-04/next_pilot_diagnostics.json'
+        if not (fixture / 'manifest.json').exists() or not report.exists():
+            self.skipTest('Real-data handoff fixture/report is not shipped with this tinibo installation')
+        metadata = bo.read(fixture / 'manifest.json')
+        for name, identity in metadata['files'].items():
+            self.assertTrue(bo.campaign.same_identity(identity, bo.tune.file_identity(fixture / name)))
+        rows = {r['row_id']: r for r in map(json.loads, (fixture / 'development.jsonl').read_text().splitlines())}
+        prior = bo.read(fixture / 'pilot_runs.json')['runs'][-1]
+        ids = prior['warm_row_ids'] + [p['row_id'] for p in prior['proposals']]
+        records = [{'margins': rows[key]['margins'],
+                    'metrics': {'mean_normalized_regret': rows[key]['target']}} for key in ids]
+        self.assertEqual(len(records), 274)
+        self.assertEqual(len({tuple(r['margins']) for r in records}), 274)
+        config = bo.load_config(Path(bo.__file__).parent / 'futility_bo_lcb.example.json')
+        self.assertEqual(config['raw']['import_bo_runs'], ['bo-d5-pilot1', 'bo-d5-pilot2'])
+        rng = np.random.default_rng(config['options']['seed'])
+        pool = bo.candidate_pool(config['options'], records, rng, config['base']['margins'])
+        evidence = bo.read(report)
+        self.assertEqual(bo.digest(evidence['result']), evidence['sha256'])
+        self.assertEqual(ids, evidence['result']['warm_ids'])
+        self.assertEqual(bo.digest(pool.tolist()), evidence['result']['pool_sha256'])
+        opt = bo.BayesianOptimizer(None, bounds=config['options']['bounds'],
+                                  seed=config['options']['seed'], **config['options']['model'])
+        for record in records:
+            opt.tell(record['margins'], record['metrics']['mean_normalized_regret'])
+        saved = json.loads(json.dumps(opt.get_state(), allow_nan=False))
+        with patch.object(bo, 'run_command', side_effect=AssertionError('Must not probe')):
+            first = opt.ask(candidates=pool, return_info=True)
+            second = bo.restore_optimizer(saved).ask(candidates=pool, return_info=True)
+        expected = evidence['result']['proposals']['lcb_0.5']
+        np.testing.assert_array_equal(first.x, expected['margins'])
+        np.testing.assert_array_equal(first.x, second.x)
+        self.assertEqual(first.diagnostics, second.diagnostics)
+        for key in ('mean', 'std', 'acquisition_value'):
+            self.assertAlmostEqual(getattr(first, key), expected[key], delta=1e-9)
+            self.assertEqual(getattr(first, key), getattr(second, key))
+        self.assertIsNone(first.diagnostics['ei_reference'])
+        self.assertAlmostEqual(first.acquisition_value, first.mean - 0.5 * first.std, places=15)
 
 
 if __name__=='__main__':
