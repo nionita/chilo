@@ -35,7 +35,8 @@ def main():
     for path in closure.values():
         shutil.copy2(path, target / 'scripts' / path.name)
     shutil.copytree(tinibo / 'tinibo', target / 'vendor/tinibo', ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-    for path in (repo / 'scripts/futility_bo_loop_package').iterdir():
+    for name in ('configure.py','setup.sh','loop.sh','run.sh'):
+        path = repo / 'scripts/futility_bo_loop_package' / name
         shutil.copy2(path, target / path.name)
         if path.suffix == '.sh': (target / path.name).chmod(0o755)
     shutil.copy2(repo / 'scripts/futility_bo_package/verify-numerics.py', target / 'verify-numerics.py')
