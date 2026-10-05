@@ -611,19 +611,139 @@ multi-objective BO preserves trade-offs but adds complexity. If scalar dev BO
 mainly finds SR4-specific winners, reconsider direct validation optimization
 or a model trained on paired dev/validation observations.
 
-Targeting SPRT strength directly is deferred. We currently have too few
+Targeting game strength directly remains a future experiment after the current
+2–3 day SR4 BO loop review (see the plan below). We currently have too few
 comparable margin-only SPRT results to fit a useful five-dimensional strength
 model, and differences of a few Elo remain uncertain. Collect numerical Elo,
 its reported uncertainty, baseline, time control, and engine/net provenance;
 binary acceptance/rejection alone loses useful information. In particular,
 the cycle-6 comparison used a different move-ordering implementation from its
 baseline, so it is not an isolated margin observation. These outcomes can
-eventually inform a strength model, but do not yet justify making SPRT the BO
-objective.
+eventually inform a strength model, but do not yet justify replacing the
+production objective with SPRT outcomes.
 
-The standalone implementation below reuses the probe/cache and population
-interfaces. It is not a replacement for the continuous Pareto loop, and does
-not require a new reference run.
+The initial standalone implementation below reused the probe/cache and
+population interfaces without replacing the continuous Pareto loop. BO has
+since been integrated as its development backend; see "BO in the continuous
+loop" for current operation. Neither path requires a new reference run.
+
+### Future: Direct game-outcome BO with sequential matches
+
+Revisit this after the current 2–3 day BO loop run, alongside its new full
+validation results and the `bo4-p0001` SPRT. This is a design proposal, not an
+implemented backend or authority to launch another expensive experiment.
+
+The objective would be playing strength measured in engine matches, rather
+than score regret or a synthetic combination of mean/tail metrics. Describe
+it as **BO over game outcomes with SPRT stopping**, not optimization of binary
+SPRT pass/fail. Keep accepted, rejected and budget-limited/inconclusive runs as
+numerical observations with uncertainty. Proxy observations may suggest initial
+coordinates or eventually support a qualified multi-fidelity model, but must
+not be relabelled as Elo observations.
+
+Potential advantages are avoiding proxy-to-strength mismatch, early termination
+of clearly inferior proposals, and obtaining game-strength evidence during the
+optimization itself. Clearly superior candidates can also finish quickly;
+near-equal candidates or candidates near the SPRT decision boundary can be
+exceptionally expensive. BO may increasingly propose such small improvements.
+Early rejection does not guarantee lower total cost than proxy screening.
+
+#### Measurements and BO support
+
+- Freeze the reference opponent, engine/search source, net, opening policy,
+  resource budget and adjudication rules within the first experiment. Start
+  locally around spsa150b and use only comparable margin-only historical match
+  measurements. Changing the opponent changes the target; do not automatically
+  switch it after finding a winner. Mixing opponents would require an explicit
+  strength/comparison model, not simply adding Elo differences as common labels.
+- Retain paired-game pentanomial counts, numerical strength estimates and
+  uncertainty, game counts, stopping reason, resource consumption, and exact
+  tuple/source/net/opponent/opening provenance. Preserve negative and
+  inconclusive observations as well as successes. Fast rejection is a useful
+  decision, not a guarantee of a precise effect-size estimate.
+- Begin with per-observation variance estimates supplied to the GP, rather
+  than a second model learning the noise function over parameter space. Match
+  lengths and outcome distributions differ, so one shared observation-noise
+  level is inadequate. Tinibo currently supports shared learned noise; it
+  needs an explicit variance API, correct scaling into standardized target
+  units, replay/checkpoint support, and replacement/aggregation of a tuple's
+  measurement when further game batches arrive. Its current duplicate-ignore
+  behavior cannot silently discard those additional measurements.
+- Choose the estimation procedure before implementation. Sequential stopping
+  and adaptive selection complicate interpreting terminal Elo/error bars;
+  do not blindly regard every displayed pair as an unbiased Gaussian sample.
+  Use pentanomial-aware uncertainty and qualify the approximation under the
+  actual stopping rule. A likelihood-based outcome model is a later alternative
+  if Gaussian strength summaries prove unreliable.
+- Evaluate in resumable game-pair batches, with a hard maximum budget and
+  retained inconclusive results. Permit allocating further games to a promising
+  but uncertain existing tuple, not only proposing new tuples. Acquisition
+  should use uncertainty about latent strength rather than chase the luckiest
+  raw estimate; evaluate whether variable measurement cost warrants explicit
+  cost-aware allocation.
+- A short-control H1 acceptance still has false-positive risk, amplified by
+  repeatedly selecting promising measurements. Fresh confirmation for finalists
+  is valuable; longer-control confirmation remains necessary for pruning and
+  reductions. No fitted proxy-to-Elo exchange rate is assumed.
+
+Tinibo work should follow our usual requirements/fixture handover and handback
+procedure. Qualification should include unequal-variance weighting, continued
+measurements, exact checkpoint replay, synthetic known-strength matches under
+the chosen sequential stopping rule, and matched-budget comparisons with the
+existing proposal method. Judge progress by confirmed strength per total
+compute budget, not merely the number of H1 decisions or a lower fitted loss.
+
+#### Fixed-node games on the cloud
+
+The proposed first variant allocates the same fixed node budget per move to
+both players. Identical search code and weights differ only in runtime futility
+tuples; later the parameter interface could cover other pruning/reduction
+methods. Cloud load then changes completion time rather than the competitive
+search allowance. It does **not** eliminate game noise or the compute cost of
+near-equal comparisons.
+
+The source already exposes `SearchLimits.nodeLimit` and runtime
+`SearchParameters` for futility. `chilo.cpp` accepts UCI `go nodes`.
+`selfplay_collect.cpp` currently offers depth/time-driven training-data games,
+stochastic early move selection and leaf collection, so it is reusable game
+logic, not an already complete fixed-node match runner.
+
+The lowest-infrastructure prototype is fixed-node fastchess, retaining its
+existing SPRT, paired games, adjudication, logs and recovery. Its engine
+configuration supports `nodes=N`. Initially use matched-source tuple binaries;
+a later runtime UCI tuple option could let both players use the same binary.
+This option is not presently exposed by our UCI interface, and our wrapper
+still needs node-budget configuration support. Verify installed fastchess
+behavior and watchdog/recovery handling before an unattended run.
+
+If an integrated runner is worthwhile later, reuse the collector's move/game
+logic but disable training leaf collection and stochastic move sampling during
+competitive play. Required additions are per-player parameters/node budgets,
+paired openings with colours reversed, completed-pair journaling, robust game
+termination/adjudication, resumable statistics and sequential stopping. Search
+currently has global state including its transposition table: two alternating
+tuples must not share the other's cached search results. Use separate player
+contexts/processes, or deliberately isolated searches for both with the loss
+of between-move TT reuse explicitly documented. Parallel matches must not run
+unsafe shared-global searches in threads.
+
+Fixed-node strength is not identical to equal-time strength. Pruning can change
+cost per node, and constant nodes per move removes normal time allocation.
+Treat node budgets as distinct experimental conditions; verify speed effects
+and confirm finalists under normal short and longer time controls. This first
+experiment should retain a fixed budget rather than pool results from several
+budgets or time controls as interchangeable labels.
+
+Useful primary references:
+
+- [Fishtest statistical methods](https://official-stockfish.github.io/docs/fishtest-wiki/Fishtest-Mathematics.html)
+  for pentanomial outcomes and sequential Elo estimation.
+- [Fishtest FAQ](https://official-stockfish.github.io/docs/fishtest-wiki/Fishtest-FAQ.html)
+  for uncertainty, selection bias and staged testing.
+- [BoTorch model documentation](https://botorch.org/docs/models)
+  for supplied observation variance versus learned heteroscedastic noise.
+- [Fastchess manual](https://github.com/Disservin/fastchess/blob/master/man.md)
+  for fixed-node engine configuration and match/SPRT facilities.
 
 ### Standalone BO pilot — 2026-10-03
 
