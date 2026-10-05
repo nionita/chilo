@@ -195,6 +195,75 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(self.state["cycle"], 3)
         self.assertEqual(self.state["next_phase"], "dev")
 
+    def request_validation(self, margins='13,23,33', alias='valbo', note='offline-validation-bo'):
+        return loop.main(['enqueue','--config',str(self.path),'--margins',margins,
+                          '--alias',alias,'--note',note])
+
+    def test_enqueue_during_dev_is_control_only_and_bypasses_dev_selection(self):
+        def dev(_config, _env, state):
+            saved = loop.read(self.config['root']/'loop_state.json')
+            active = copy.deepcopy(state['active'])
+            with loop.locked(self.config['root']/'loop.lock') as acquired, \
+                 patch.object(loop,'environment',side_effect=AssertionError('no probe or context loading')):
+                self.assertTrue(acquired)
+                self.request_validation()
+                first = self.control()
+                self.request_validation()
+                self.assertEqual(self.control(),first)
+            self.assertEqual(loop.read(self.config['root']/'loop_state.json'),saved)
+            self.assertEqual(state['active'],active)
+            return [record('initial',[10,20,30])]  # external tuple was not a dev proposal
+        self.assertEqual(self.run_phases(2,dev=dev),(1,1))
+        key = loop.tuple_id(self.state,[13,23,33])
+        self.assertIn(key,self.state['archive'])
+        self.assertEqual(self.state['candidates'][key]['provenance'],['offline-validation-bo'])
+        self.assertEqual(self.state['applied_validation_requests'][key],1)
+        self.assertEqual(self.state['base_id'],loop.tuple_id(self.state,[10,20,30]))
+        # Replaying a consumed/validated tuple adds no probe work or pending entry.
+        snapshot = copy.deepcopy(self.state)
+        loop.apply_validation_requests(self.state,self.control())
+        self.assertEqual(self.state,snapshot)
+
+    def test_enqueue_during_validation_does_not_change_frozen_batch(self):
+        self.run_phases(1)
+        batches = []
+        def validate(_config,_env,state):
+            frozen = list(state['active']['candidates'])
+            batches.append(frozen)
+            if len(batches)==1:
+                self.request_validation()
+                self.assertEqual(state['active']['candidates'],frozen)
+                with self.assertRaisesRegex(loop.LoopError,'phase boundary'):
+                    loop.apply_validation_requests(state,self.control())
+            return validation_results(state)
+        self.assertEqual(self.run_phases(2,validation=validate),(0,2))
+        key = loop.tuple_id(self.state,[13,23,33])
+        self.assertNotIn(key,batches[0])
+        self.assertIn(key,batches[1])
+        self.assertIn(key,self.state['archive'])
+
+    def test_enqueue_validation_and_old_state_compatibility(self):
+        before = self.control()
+        for margins in ('1,2','1,2,1300','30,20,10','1,-2,3','x,2,3'):
+            with self.assertRaises((loop.LoopError,ValueError,loop.tune.TuningError)):
+                self.request_validation(margins)
+            self.assertEqual(self.control(),before)
+        self.state.update(stopped=True)
+        loop.save(self.config['root'],self.state)
+        self.request_validation()
+        self.assertTrue(loop.read(self.config['root']/'loop_state.json')['stopped'])
+        loop.apply_validation_requests(self.state,self.control())
+        self.assertEqual(self.state['next_phase'],'validation')
+        self.assertTrue(self.state['stopped'])
+        loop.save(self.config['root'],self.state)
+        restored = loop.initialize(self.config,self.contract)
+        loop.apply_validation_requests(restored,self.control())
+        self.assertEqual(restored,self.state)
+        bo_options = copy.deepcopy(self.state['options'])
+        bo_options['search'].update(backend='bo',bo={'bounds':[[0,12],[0,30],[0,40]]})
+        with self.assertRaisesRegex(loop.LoopError,'outside BO bounds'):
+            loop.validation_candidate({'margins':[13,23,33]},self.state['initialization'],bo_options)
+
     def test_initial_pool_validates_before_first_search(self):
         self.raw["loop_id"] = "with-pool"
         self.raw["initialization"]["validation_pool"] = [{"margins": [11, 21, 31]}]

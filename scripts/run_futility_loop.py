@@ -183,6 +183,42 @@ def enqueue(state, key):
         state["pending"].append(key)
 
 
+def validation_candidate(item, initialization, options):
+    item = candidate(item)
+    margins = item['margins']
+    search = options['search']
+    if len(margins) != len(initialization['base']['margins']):
+        raise LoopError('enqueue max futility depth differs from this loop')
+    if max(margins) > search['max_margin']:
+        raise LoopError('enqueue margins exceed max_margin')
+    if search.get('backend') == 'bo' and any(
+        not low <= margin <= high for margin, (low, high) in zip(margins, search['bo']['bounds'])
+    ):
+        raise LoopError('enqueue margins are outside BO bounds')
+    return item
+
+
+def apply_validation_requests(state, control):
+    """Consume operator requests only at a phase boundary; replay is idempotent."""
+    if state['active'] is not None:
+        raise LoopError('validation requests require a phase boundary')
+    pending = []
+    for key, command in control.get('validation_requests', {}).items():
+        item = validation_candidate(command['candidate'], state['initialization'], state['options'])
+        revision = command['revision']
+        if key != tuple_id(state, item['margins']) or isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise LoopError('invalid validation request identity/revision')
+        if state.get('applied_validation_requests', {}).get(key) != revision:
+            pending.append((key, item, revision))
+    # Validate every request before mutating the authoritative transaction.
+    for key, item, revision in pending:
+        register(state, item)
+        enqueue(state, key)  # already validated/pending tuples are no-ops
+        state.setdefault('applied_validation_requests', {})[key] = revision
+    if state['pending']:
+        state['next_phase'] = 'validation'
+
+
 def set_status(state, key, status, reason):
     record = state["sprt_queue"].setdefault(key, {"status": None, "history": []})
     if record["status"] != status:
@@ -438,6 +474,7 @@ def run_loop(config, env, state, max_phases=0):
         control = read(config["root"] / "control.json")
         if state["active"] is None:
             apply_test_updates(state, control)
+            apply_validation_requests(state, control)
             rebuild(state)
             if control["stop_requested"]:
                 state["stopped"] = True
@@ -561,10 +598,10 @@ def import_validation(config, env, state, directory):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["run", "status", "stop", "resume", "reconfigure", "set-base", "sprt", "import-validation"])
+    parser.add_argument("command", choices=["run", "status", "stop", "resume", "reconfigure", "set-base", "sprt", "import-validation", "enqueue"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--max-phases", type=int, default=0)
-    parser.add_argument("--margins", help="comma-separated new proven base")
+    parser.add_argument("--margins", help="comma-separated proven base or validation candidate")
     parser.add_argument("--alias", default="sprt-best")
     parser.add_argument("--candidate", help="stable tuple ID from sprt_queue.json")
     parser.add_argument("--status", choices=["pending", "running", "accepted", "rejected", "superseded"])
@@ -580,7 +617,7 @@ def main(argv=None):
         print(json.dumps({key: state[key] for key in ("stopped", "cycle", "active", "next_phase", "pending", "base_id", "selection", "sprt_queue")}, indent=2))
         print(json.dumps({"control": read(root / "control.json")}, indent=2))
         return 0
-    if args.command in {"stop", "set-base", "sprt"}:
+    if args.command in {"stop", "set-base", "sprt", "enqueue"}:
         def update(control):
             if args.command == "stop":
                 control["stop_requested"] = True
@@ -588,6 +625,18 @@ def main(argv=None):
                 if not args.margins:
                     raise LoopError("set-base requires --margins")
                 control["base"] = candidate({"margins": [int(v) for v in args.margins.split(",")], "alias": args.alias, "provenance": args.note})
+            elif args.command == 'enqueue':
+                if not args.margins:
+                    raise LoopError('enqueue requires --margins')
+                item = validation_candidate({'margins': [int(v) for v in args.margins.split(',')],
+                    'alias': args.alias, 'provenance': args.note}, config['initialization'], config['options'])
+                state = read(root / 'loop_state.json')
+                key = tuple_id(state, item['margins'])
+                requests = control.setdefault('validation_requests', {})
+                previous = requests.get(key)
+                if previous is None or previous['candidate'] != item:
+                    requests[key] = {'candidate': item, 'revision': (previous['revision'] if previous else 0) + 1}
+                print(f'validation tuple={key}; '+('already validated (no probes)' if key in state['archive'] else 'requested'), flush=True)
             else:
                 state = read(root / "loop_state.json")
                 if args.candidate not in state["archive"] or not args.status:

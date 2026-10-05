@@ -1155,6 +1155,26 @@ loading/scoring, idempotent import and changed-receipt rejection; no probes
 are launched. Repair the stopped package in place, then repeat only the
 `import-validation` command before marking SPRT status and resuming.
 
+External validation proposals can be submitted with
+`./loop.sh enqueue --margins 0,35,158,553,754 --alias valbo-v1 --note
+"validation-bo-offline-v1"`. This writes a revisioned request under
+`control.json.validation_requests`, using the control lock, not the active
+loop-state transaction. Requests are consumed at a phase boundary, retaining
+alias/provenance and scheduling full validation without dev selection. Pending
+or validated tuples are not reprobed. Dimension, monotonicity, max-margin and
+BO bounds are checked; the proven base is unchanged. Requests during validation
+never modify that frozen batch; they enter a following batch. Existing state
+and control files need no manual migration.
+
+Installing this controller upgrade requires a graceful stop with
+`stopped=true, active=null`; never replace code during an active BO phase.
+`scripts/install_futility_loop_upgrade.py` accepts receipt-bound known script
+hashes, checks package integrity and the loop contract under its lock, preserves
+old files, and updates package receipts/checksums. It changes neither venv,
+config, data nor state. After installation, enqueue and explicitly resume;
+no numerical requalification is needed for this controller-only change.
+Future enqueue commands can be issued while the loop runs.
+
 `scripts/package_futility_bo_loop.py` prepares a small Linux upgrade package
 with the pinned tinibo runtime and complete Python import closure. Its setup
 reads the live old config and stopped checkpoint, retains initialization,
