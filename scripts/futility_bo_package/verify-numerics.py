@@ -3,6 +3,7 @@ import hashlib
 import json
 import platform
 import time
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -39,8 +40,13 @@ def checkpoint_replay(X, y, bounds, model, pool):
     return saved['schema']
 
 
-def main(root):
-    config = load_config(root / 'config/pilot.json')
+def main(root, loop_config=None):
+    if loop_config:
+        import run_futility_loop
+        parsed = run_futility_loop.load_config(Path(loop_config).resolve())
+        config = {'options': parsed['options']['search']['bo']}
+    else:
+        config = load_config(root / 'config/pilot.json')
     model, bounds = config['options']['model'], config['options']['bounds']
     fixture = root / 'verification/development.jsonl'
     rows = [json.loads(s) for s in fixture.read_text().splitlines()]
@@ -78,6 +84,9 @@ def main(root):
 
 if __name__ == '__main__':
     try:
-        main(Path(__file__).resolve().parent)
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('--loop-config')
+        args = parser.parse_args()
+        main(Path(__file__).resolve().parent, args.loop_config)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

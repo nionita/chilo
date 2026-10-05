@@ -490,9 +490,74 @@ def reconfigure(config, state):
     save(config["root"], state)
 
 
+def import_validation(config, env, state, directory):
+    """Adopt a completed full-selection batch at a stopped boundary, without probes."""
+    if not state['stopped'] or state['active'] is not None:
+        raise LoopError('import-validation requires a graceful phase-boundary stop')
+    directory = Path(directory).expanduser().resolve()
+    manifest = read(directory / 'batch_manifest.json')
+    completion = read(directory / 'complete.json')
+    for name, filename in (('batch_manifest', 'batch_manifest.json'), ('results', 'results.json')):
+        if not campaign.same_identity(completion.get(name), tune.file_identity(directory / filename)):
+            raise LoopError(f'import-validation: {name} completion hash differs')
+    for name in ('probe', 'weights'):
+        if not campaign.same_identity(manifest.get(name), tune.file_identity(env[name])):
+            raise LoopError(f'import-validation: incompatible {name}')
+    if manifest.get('schema') != batch.MANIFEST_SCHEMA or completion.get('schema') != batch.SCHEMA or manifest.get('candidate_nodes') != env['candidate_nodes'] or \
+       manifest.get('baseline_margins') != list(env['baseline_margins']) or manifest.get('score_scale') != env['score_scale']:
+        raise LoopError('import-validation: incompatible scoring/search contract')
+    expected = batch.execution_manifest({**env, 'candidates': manifest['candidates']}, env['selection'])
+    if portable(manifest['shards']) != portable(expected['shards']):
+        raise LoopError('import-validation: full selection populations differ')
+    original = read(directory / 'results.json')
+    candidates = manifest['candidates']
+    if len(original['candidates']) != len(candidates) or len({r['id'] for r in candidates}) != len(candidates) or \
+       {r['id'] for r in original['candidates']} != {r['id'] for r in candidates}:
+        raise LoopError('import-validation: candidate coverage differs')
+    for row in original['candidates']:
+        if len(row['shards']) != len(env['selection']) or {s['id'] for s in row['shards']} != {s['id'] for s in env['selection']}:
+            raise LoopError('import-validation: incomplete shard coverage')
+        for shard in row['shards']:
+            path = batch.candidate_output_path(directory, row['id'], shard['id'])
+            if not campaign.same_identity(shard['output'], tune.file_identity(path)):
+                raise LoopError('import-validation: raw output hash differs')
+    settings = {**env, 'run_dir': directory, 'candidates': candidates,
+                'tail_fractions': [0.01, 0.05], 'regret_thresholds': [0.1, 0.25],
+                'advantage_cp': 150, 'loss_cp': -150}
+    recomputed = batch.calculate_results(settings, env['selection'])
+    if recomputed['trusted_position_count'] != completion['trusted_position_count']:
+        raise LoopError('import-validation: trusted count differs')
+    for old, new in zip(original['candidates'], recomputed['candidates']):
+        if old['id'] != new['id'] or old['margins'] != new['margins'] or \
+           old['pooled_metrics'] != new['pooled_metrics'] or old['pooled_risk'] != new['pooled_risk']:
+            raise LoopError('import-validation: recorded metrics differ from raw evidence')
+    # Validate the complete batch before committing any loop-state mutation.
+    updated = copy.deepcopy(state)
+    for row in recomputed['candidates']:
+        key = register(updated, candidate({'margins': row['margins'], 'alias': row['id'],
+                                           'provenance': str(directory)}))
+        value = dict(id=key, margins=row['margins'], metrics=row['pooled_metrics'],
+                     risk=row['pooled_risk'], semantic=row['pooled_risk']['semantic_regressions_vs_reference'],
+                     shards=row['shards'])
+        if key in updated['archive']:
+            previous = updated['archive'][key]
+            if any(previous[k] != value[k] for k in ('margins', 'metrics', 'risk', 'semantic')):
+                raise LoopError('import-validation: conflicting existing tuple metrics')
+        else:
+            updated['archive'][key] = value
+    updated['pending'] = [key for key in updated['pending'] if key not in updated['archive']]
+    if not updated['pending'] and updated['next_phase'] == 'validation':
+        updated['next_phase'] = 'dev'
+    rebuild(updated)
+    save(config['root'], updated)
+    state.clear()
+    state.update(updated)
+    print(f'imported full validation: {len(candidates)} tuples; no engine probes', flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["run", "status", "stop", "resume", "reconfigure", "set-base", "sprt"])
+    parser.add_argument("command", choices=["run", "status", "stop", "resume", "reconfigure", "set-base", "sprt", "import-validation"])
     parser.add_argument("--config", required=True)
     parser.add_argument("--max-phases", type=int, default=0)
     parser.add_argument("--margins", help="comma-separated new proven base")
@@ -500,6 +565,7 @@ def main(argv=None):
     parser.add_argument("--candidate", help="stable tuple ID from sprt_queue.json")
     parser.add_argument("--status", choices=["pending", "running", "accepted", "rejected", "superseded"])
     parser.add_argument("--note", default="operator")
+    parser.add_argument('--validation-dir', help='completed full-selection batch for import-validation')
     args = parser.parse_args(argv)
     if args.max_phases < 0:
         raise LoopError("max-phases must be nonnegative")
@@ -535,6 +601,11 @@ def main(argv=None):
             raise LoopError("loop is running; wait for its phase-boundary stop")
         env, contract = environment(config)
         state = initialize(config, contract)
+        if args.command == 'import-validation':
+            if not args.validation_dir:
+                raise LoopError('import-validation requires --validation-dir')
+            import_validation(config, env, state, args.validation_dir)
+            return 0
         if args.command == "reconfigure":
             reconfigure(config, state)
             return 0

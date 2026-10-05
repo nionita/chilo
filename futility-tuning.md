@@ -1017,9 +1017,9 @@ The first three improve the base's development mean regret. **bo-0001** is
 the automatic nominee: 1.32% lower mean than spsa150b, and modestly lower
 squared regret and CVaR-1% too. Its mean also beats the previous best measured
 SR4 tuple `[30,66,188,454,656]` (0.013910572); bo-0002 does as well, although
-its tails are worse than spsa150b. Neither has new selection or SPRT evidence.
-The proposed next step is full pooled selection evaluation of bo-0001 first;
-bo-0002 is an optional second development candidate, not a validated promotion.
+its tails are worse than spsa150b. At pilot completion neither had new selection
+or SPRT evidence. Bo-0001's subsequent pooled selection result is recorded below;
+bo-0002 remains an optional development candidate, not a validated promotion.
 
 This is the first successful new-tuple discovery among these four small BO
 pilots. It supports further testing of ARD, not universal/default promotion,
@@ -1076,14 +1076,90 @@ receipt. Return `bo-d5-pilot4-bo0001-validation-results.tgz` via `bash collect.s
 retain raw probes, manifests and receipts for local analysis. Preparation and
 upload do not authorize starting the job.
 
+#### Pilot 4 bo-0001: full-selection results — 2026-10-05
+
+The serial cloud validation completed all 16 candidate/shard probes for
+`pilot4-bo0001 = [20,23,315,512,810]` and spsa150b. The compatible eight-shard
+selection population contains **141,099 trusted positions**, including mate
+rescues, with normal-PVS candidate searches at 120k nodes, score scale 600,
+and the existing `per_root_v1` references. Probe SHA-256 is
+`90e43a617cbe6b7c41b8a4faa35d6997078912eefc7f3579804eb538f2503f41`;
+net SHA-256 is
+`51ee64101ee3d85f69eb0948f4caa8be6d90115abdb909d82767ffb4a53ccd90`.
+
+| Candidate | Margins | Mean regret | P90 | Squared regret | CVaR-1% | Move agreement | Mean depth |
+|---|---|---:|---:|---:|---:|---:|---:|
+| spsa150b | 0,40,158,488,754 | 0.014176040 | 0.041639442 | 0.002107537 | 0.320262583 | 57.4512% | 9.7405 |
+| pilot4-bo0001 | 20,23,315,512,810 | 0.014262621 | 0.041893579 | 0.002107664 | 0.319042554 | 57.1655% | 9.6092 |
+
+Bo-0001's 1.32% SR4 mean-regret improvement did **not** generalize to the pooled
+selection set: its mean is 0.61% worse, P90 is 0.61% worse, and squared regret
+is essentially unchanged (0.006% worse). CVaR-1% improves by 0.38%, so this is
+a mean-versus-tail trade-off, not dominance by either tuple on the three
+continuous objectives. Reference-winning mates missed increase from 1,223 to
+1,297; nonlosing-to-losing counts increase from 98 to 100. Mean regret improves
+on three of eight individual shards (SR3-R2M, SR3V-02 and SR3V-05), but the
+decision uses the pooled population, not a vote over shards. No paired
+significance test or Elo conversion was established by this comparison.
+
+Conclusion: ARD BO has demonstrated development discovery, but this nominee
+does not establish a validation improvement or deserve automatic promotion
+over spsa150b. It remains a measured trade-off; no SPRT was started and the
+operator-confirmed base is unchanged. Keep selection results out of BO
+training labels; retain the valid SR4 observation for future compatible fits.
+
+Canonical evidence:
+`~/Tune/futility/validation/evaluations/bo-d5-pilot4-bo0001-validation/`.
+Accepted archive: `~/Tune/futility/bo-d5-pilot4-bo0001-validation-results.tgz`,
+SHA-256 `67cee003571a6d6a60857963f1916e92b8cb624fc7554da51efe4cfae034a328`.
+Verified gzip/tar integrity, cloud-original hash, completion receipts, all
+eight local population identities/trusted-key hashes and all 16 raw-output
+hashes. Independently recomputed every per-shard and raw-pooled score/risk
+metric against local references; results match. The local verification receipt
+and returned package metadata are retained with the evidence. No engine probes
+were run locally.
+
+Transfer incident: two earlier staged copies failed gzip validation; the cloud
+original and the Windows local copy were valid. Recopying to a new WebDAV
+filename and checking SHA-256 at cloud, Windows staging and local download
+resolved it. Never accept equal byte counts as an integrity substitute; damaged
+copies were not imported into the canonical store.
+
 ### BO in the continuous loop — 2026-10-05
 
 `run_futility_loop.py` now accepts `search.backend: "bo"`; omitted means the
 original `"pareto"` backend. Only development proposal generation changes.
 Development selection, full pooled validation, tuple identities, validation
 novelty checks, the SPRT queue, and manual SPRT-best updates are unchanged.
-The pilot-4 nominee still requires its separate validation; its discovery is
-not evidence of playing strength or an automatic base promotion.
+The pilot-4 nominee's separate validation is now complete (see the results
+above); neither its discovery nor validation is playing-strength evidence or
+an automatic base promotion.
+
+For completed external full-selection evidence, the stopped-boundary command
+`import-validation --validation-dir BATCH_DIR` validates completion receipts,
+probe/net/node/scoring identities, the complete ordered shard contract and raw
+output hashes, then recomputes pooled metrics without engine searches. It adds
+the tuples to the existing validation archive, preserves manual SPRT statuses
+and removes already validated tuples from pending work. Repeating the import
+is idempotent; conflicting metrics or incomplete/mismatched batches fail before
+loop-state changes. It never changes the proven base.
+
+`scripts/package_futility_bo_loop.py` prepares a small Linux upgrade package
+with the pinned tinibo runtime and complete Python import closure. Its setup
+reads the live old config and stopped checkpoint, retains initialization,
+selectors and SPRT history, and changes only the development search settings.
+It imports pilot4-bo0001's completed batch and leaves the loop stopped for an
+explicit operator resume. All four pilots and completed loop development cycles
+seed BO; the expected current minimum is 284 unique SR4 measurements. The old
+cron command must be disabled before the new package's command is enabled.
+
+The agreed next experiment is a 2–3 day BO loop run, a separate local SPRT of
+`pilot4-bo0001` against spsa150b, and a separate offline validation-target BO
+study. The production loop continues to train only on SR4 labels. Any model
+using pooled validation labels is an explicitly separate analysis, with
+held-out predictive checks and no assumed proxy-to-Elo exchange rates. The
+SPRT build must use the same engine basis as spsa150b, not unrelated newer
+search/move-ordering changes from the working checkout.
 
 BO uses mean normalized regret on SR4 only. Its initial settings reproduce the
 tested pilot policy: ARD Matérn-5/2, scaled GP with learned noise, LCB

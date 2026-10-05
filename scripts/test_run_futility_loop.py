@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +52,76 @@ class LoopTest(unittest.TestCase):
 
     def control(self):
         return loop.read(self.config["root"] / "control.json")
+
+    def validation_import_fixture(self):
+        directory = self.root / 'external-validation'
+        directory.mkdir()
+        probe, net = self.root / 'probe', self.root / 'net'
+        probe.write_text('probe')
+        net.write_text('net')
+        shard = {'id': 'selection'}
+        rows = [{'id': 'nominee', 'margins': [12,22,32]}]
+        output = loop.batch.candidate_output_path(directory, 'nominee', 'selection')
+        output.parent.mkdir(parents=True)
+        output.write_text('raw output')
+        r = record('nominee', [12,22,32])
+        r['risk']['semantic_regressions_vs_reference'] = r['semantic']
+        results = {'trusted_position_count': 3, 'candidates': [{
+            'id':'nominee', 'margins':[12,22,32], 'pooled_metrics':r['metrics'],
+            'pooled_risk':r['risk'], 'shards':[{'id':'selection', 'output':loop.tune.file_identity(output)}]}]}
+        env = dict(probe=probe, weights=net, candidate_nodes=120000,
+                   baseline_margins=[10,20,30], score_scale=600, selection=[shard])
+        manifest = {**env, 'schema':loop.batch.MANIFEST_SCHEMA, 'shards':[shard], 'candidates':rows}
+        manifest.pop('selection')
+        manifest.update(probe=loop.tune.file_identity(probe), weights=loop.tune.file_identity(net))
+        loop.write(directory / 'batch_manifest.json', manifest)
+        loop.write(directory / 'results.json', results)
+        loop.write(directory / 'complete.json', dict(schema=loop.batch.SCHEMA, trusted_position_count=3,
+            batch_manifest=loop.tune.file_identity(directory/'batch_manifest.json'),
+            results=loop.tune.file_identity(directory/'results.json')))
+        self.state.update(stopped=True, active=None)
+        return directory, env, results
+
+    def test_validation_import_is_idempotent_and_preserves_control(self):
+        directory, env, results = self.validation_import_fixture()
+        control = self.control()
+        with patch.object(loop.batch,'execution_manifest',return_value={'shards':[{'id':'selection'}]}), \
+             patch.object(loop.batch,'calculate_results',return_value=results) as score:
+            loop.import_validation(self.config,env,self.state,directory)
+            first = copy.deepcopy(self.state)
+            loop.import_validation(self.config,env,self.state,directory)
+        self.assertEqual(self.state,first)
+        self.assertEqual(self.control(),control)
+        self.assertEqual(score.call_count,2)
+        key = loop.tuple_id(self.state,[12,22,32])
+        self.assertIn(key,self.state['archive'])
+        loop.enqueue(self.state,key)
+        self.assertNotIn(key,self.state['pending'])
+
+    def test_validation_import_refuses_active_partial_or_corrupt_evidence(self):
+        directory,env,results = self.validation_import_fixture()
+        original = copy.deepcopy(self.state)
+        with patch.object(loop.batch,'execution_manifest',return_value={'shards':[{'id':'selection'}]}), \
+             patch.object(loop.batch,'calculate_results',return_value=results):
+            self.state['stopped'] = False
+            with self.assertRaisesRegex(loop.LoopError,'phase-boundary'):
+                loop.import_validation(self.config,env,self.state,directory)
+            self.state.update(original)
+            path = loop.batch.candidate_output_path(directory,'nominee','selection')
+            path.write_text('corrupt')
+            with self.assertRaisesRegex(loop.LoopError,'raw output'):
+                loop.import_validation(self.config,env,self.state,directory)
+            self.assertEqual(self.state,original)
+            path.write_text('raw output')
+            with patch.object(loop.batch,'execution_manifest',return_value={'shards':[]}):
+                with self.assertRaisesRegex(loop.LoopError,'populations differ'):
+                    loop.import_validation(self.config,env,self.state,directory)
+            changed = copy.deepcopy(results)
+            changed['candidates'][0]['pooled_metrics']['mean_normalized_regret'] += 1
+            with patch.object(loop.batch,'calculate_results',return_value=changed):
+                with self.assertRaisesRegex(loop.LoopError,'metrics differ'):
+                    loop.import_validation(self.config,env,self.state,directory)
+            self.assertEqual(self.state,original)
 
     def run_phases(self, count, dev=None, validation=None):
         if dev is None:
