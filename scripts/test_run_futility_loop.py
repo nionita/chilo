@@ -85,7 +85,8 @@ class LoopTest(unittest.TestCase):
     def test_validation_import_is_idempotent_and_preserves_control(self):
         directory, env, results = self.validation_import_fixture()
         control = self.control()
-        with patch.object(loop.batch,'execution_manifest',return_value={'shards':[{'id':'selection'}]}), \
+        with patch.object(loop.batch,'load_contexts',return_value=env['selection']), \
+             patch.object(loop.batch,'execution_manifest',return_value={'shards':[{'id':'selection'}]}), \
              patch.object(loop.batch,'calculate_results',return_value=results) as score:
             loop.import_validation(self.config,env,self.state,directory)
             first = copy.deepcopy(self.state)
@@ -101,7 +102,8 @@ class LoopTest(unittest.TestCase):
     def test_validation_import_refuses_active_partial_or_corrupt_evidence(self):
         directory,env,results = self.validation_import_fixture()
         original = copy.deepcopy(self.state)
-        with patch.object(loop.batch,'execution_manifest',return_value={'shards':[{'id':'selection'}]}), \
+        with patch.object(loop.batch,'load_contexts',return_value=env['selection']), \
+             patch.object(loop.batch,'execution_manifest',return_value={'shards':[{'id':'selection'}]}), \
              patch.object(loop.batch,'calculate_results',return_value=results):
             self.state['stopped'] = False
             with self.assertRaisesRegex(loop.LoopError,'phase-boundary'):
@@ -122,6 +124,58 @@ class LoopTest(unittest.TestCase):
                 with self.assertRaisesRegex(loop.LoopError,'metrics differ'):
                     loop.import_validation(self.config,env,self.state,directory)
             self.assertEqual(self.state,original)
+
+    def test_validation_import_with_real_campaign_shards_and_batch_loader(self):
+        fixture = optimizer_fixtures.OptimizerAdapterTest()
+        anchor = self.root / 'anchor'
+        fixture.write_per_root_anchor_with_rejection(anchor)
+        rescue = fixture.write_rescue_run(self.root, anchor)
+        inputs = self.root / 'positions.csv'
+        inputs.write_text('fen\nfen-complete\nfen-rescue\n')
+        probe, weights = self.root / 'probe', self.root / 'weights'
+        probe.write_text('probe')
+        weights.write_text('weights')
+        loop.write(anchor / 'anchor_manifest.json', {'inputs': [loop.tune.file_identity(inputs)]})
+        context = loop.campaign.optimize_futility.load_anchor(
+            self.path, 'tiny', {'reference_dir': str(anchor), 'contract': 'per_root_v1',
+                                'rescue_dir': str(rescue)}, 100, (120,240,360))
+        shard = dict(id='tiny', population='tiny', input=inputs, anchor_dir=anchor,
+                     rescue_dir=rescue, context=context)
+        self.assertNotIn('anchor_manifest', shard)
+        self.assertNotIn('rescue_completion', shard)
+        directory = self.root / 'external-batch'
+        rows = [{'id': 'nominee', 'margins': [12,22,32]}]
+        env = dict(config_path=self.path, config_sha256='fixture', probe=probe, weights=weights,
+                   candidate_nodes=100, baseline_margins=(120,240,360), score_scale=600,
+                   selection=[shard], probe_cache_dir=None)
+        settings = dict(env, shards=[shard], candidates=rows, run_dir=directory,
+                        tail_fractions=[0.01,0.05], regret_thresholds=[0.1,0.25],
+                        advantage_cp=150, loss_cp=-150)
+        output = loop.batch.candidate_output_path(directory, 'nominee', 'tiny')
+        output.parent.mkdir(parents=True)
+        write_probe_output(output, [position_record('positions.csv',i,fen,[12,22,32],100,
+                           move='e2e4',score=30,depth=6)
+                           for i,fen in enumerate(('fen-complete','fen-rescue'),1)], [12,22,32], 100)
+        contexts = loop.batch.load_contexts(settings)
+        manifest = loop.batch.execution_manifest(settings, contexts)
+        results = loop.batch.calculate_results(settings, contexts)
+        loop.write(directory / 'batch_manifest.json', manifest)
+        loop.write(directory / 'results.json', results)
+        loop.write(directory / 'complete.json', dict(schema=loop.batch.SCHEMA, trusted_position_count=2,
+                   batch_manifest=loop.tune.file_identity(directory/'batch_manifest.json'),
+                   results=loop.tune.file_identity(directory/'results.json')))
+        self.state.update(stopped=True, active=None)
+        with patch.object(loop.pareto.subprocess, 'run', side_effect=AssertionError('must not launch probes')):
+            loop.import_validation(self.config,env,self.state,directory)
+            snapshot = copy.deepcopy(self.state)
+            loop.import_validation(self.config,env,self.state,directory)
+        self.assertEqual(self.state,snapshot)
+        self.assertEqual(len(self.state['archive']),1)
+        # Actual receipt changes remain fail-closed, not masked by optional keys.
+        loop.write(anchor/'anchor_manifest.json',{'inputs':[loop.tune.file_identity(inputs)],'changed':True})
+        with self.assertRaisesRegex(loop.LoopError,'populations differ'):
+            loop.import_validation(self.config,env,self.state,directory)
+        self.assertEqual(self.state,snapshot)
 
     def run_phases(self, count, dev=None, validation=None):
         if dev is None:

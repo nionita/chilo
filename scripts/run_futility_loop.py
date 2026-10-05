@@ -506,7 +506,11 @@ def import_validation(config, env, state, directory):
     if manifest.get('schema') != batch.MANIFEST_SCHEMA or completion.get('schema') != batch.SCHEMA or manifest.get('candidate_nodes') != env['candidate_nodes'] or \
        manifest.get('baseline_margins') != list(env['baseline_margins']) or manifest.get('score_scale') != env['score_scale']:
         raise LoopError('import-validation: incompatible scoring/search contract')
-    expected = batch.execution_manifest({**env, 'candidates': manifest['candidates']}, env['selection'])
+    # Campaign records omit the batch-specific optional receipt identities.
+    # Use the same loader as ordinary validation rather than assuming shapes
+    # match or defaulting missing receipts to None (which weakens validation).
+    contexts = batch.load_contexts({**env, 'shards': env['selection']})
+    expected = batch.execution_manifest({**env, 'candidates': manifest['candidates']}, contexts)
     if portable(manifest['shards']) != portable(expected['shards']):
         raise LoopError('import-validation: full selection populations differ')
     original = read(directory / 'results.json')
@@ -524,7 +528,7 @@ def import_validation(config, env, state, directory):
     settings = {**env, 'run_dir': directory, 'candidates': candidates,
                 'tail_fractions': [0.01, 0.05], 'regret_thresholds': [0.1, 0.25],
                 'advantage_cp': 150, 'loss_cp': -150}
-    recomputed = batch.calculate_results(settings, env['selection'])
+    recomputed = batch.calculate_results(settings, contexts)
     if recomputed['trusted_position_count'] != completion['trusted_position_count']:
         raise LoopError('import-validation: trusted count differs')
     for old, new in zip(original['candidates'], recomputed['candidates']):

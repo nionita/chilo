@@ -1144,6 +1144,17 @@ and removes already validated tuples from pending work. Repeating the import
 is idempotent; conflicting metrics or incomplete/mismatched batches fail before
 loop-state changes. It never changes the proven base.
 
+The first cloud setup exposed a campaign/batch context-shape mismatch:
+`import-validation` passed campaign shards directly to `execution_manifest`,
+which requires batch-specific `anchor_manifest` and `rescue_completion`
+identities. Numerical qualification and reconfiguration had succeeded, but
+the import failed before archive changes or searches. The import now uses the
+ordinary batch loader to bind those receipts and recompute metrics with the
+matching contexts. A regression test uses campaign-shaped shards, real batch
+loading/scoring, idempotent import and changed-receipt rejection; no probes
+are launched. Repair the stopped package in place, then repeat only the
+`import-validation` command before marking SPRT status and resuming.
+
 `scripts/package_futility_bo_loop.py` prepares a small Linux upgrade package
 with the pinned tinibo runtime and complete Python import closure. Its setup
 reads the live old config and stopped checkpoint, retains initialization,
