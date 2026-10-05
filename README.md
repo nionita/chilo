@@ -465,9 +465,10 @@ python3 scripts/tune_futility.py \
   --jobs 4
 ```
 
-The reference probe uses `--all-root-scores`, which searches every root move
-with a full alpha-beta window and records its final completed-iteration score
-in `root_scores`; normal candidate records remain PVS-only and do not contain
+The anchor uses `--per-root-reference`, which searches every root move with a
+full alpha-beta window to the baseline depth plus the configured gap, with an
+independent node cap per root. Only complete reference records retain the
+`root_scores` map; normal candidate records remain PVS-only and do not contain
 that map. For every candidate-selected move, the tuner maps its reference score
 through `tanh(score / score_scale)` (with winning/losing mates mapped to `+1`/
 `-1`) and computes regret versus the best reference-root score. The shortlist
@@ -517,6 +518,33 @@ The builder refuses to replace existing binaries unless `--overwrite` is
 supplied and writes a build receipt beside the manifest with source revision,
 build commands, and output hashes. Use `--dry-run` to validate a manifest and
 inspect its planned commands without compiling.
+
+### Continuous Futility Optimization
+
+`scripts/run_futility_loop.py` runs resumable, cron-safe development and pooled
+validation phases against a fixed artifact/population contract. It maintains
+a screening queue for manually run SPRT tests; only the operator records SPRT
+outcomes and changes the proven starting base. Use
+`scripts/futility_loop.example.json` for the default Pareto backend or
+`scripts/futility_loop_bo.example.json` for opt-in Bayesian development.
+These examples require real artifact paths and the existing initialization
+when reconfiguring a loop; they are not ready-to-run replacements.
+
+BO uses mean normalized regret on G3-SR4 only, not validation or Elo labels.
+It imports compatible completed measurements and uses the sibling tinibo
+library, pinned into remote packages with its numerical environment. BO
+proposals are sequential (`search.workers: 1`); development and validation
+selection policies remain separate. Current ARD Matérn-5/2 LCB uses
+`kappa=0.5` and a local candidate pool. The ten-seed measured-pool comparison
+did not establish a clear replacement policy or prove game-strength gains.
+
+Read [futility-tuning.md](futility-tuning.md) for the stop/reconfigure/resume
+procedure, pilot results, tinibo handovers, numerical replay constraints and
+scaling/refitting guidance. The local data-store
+`~/Tune/futility/validation/README.md` describes the canonical development and
+selection populations: 22,825 trusted development positions and 141,099 pooled
+selection positions across eight shards. Do not merge incompatible probe/net/
+budget/corpus contracts when reusing observations after engine changes.
 
 ### Fastchess SPRT
 

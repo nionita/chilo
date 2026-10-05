@@ -34,7 +34,8 @@ artifacts, inputs, `per_root_v1` anchors, rescue sidecars, controls, probe,
 and weights all match the package manifest. Analysis uses 22,825 trusted SR4
 and 22,934 trusted SR3-R2M positions.
 
-The SR3-R2M table is the current validation view. Lower is better for every
+The SR3-R2M table is the historical single-shard validation view, not the
+extended 141,099-position selection population documented below. Lower is better for every
 metric except that the semantic columns are direct regression counts, which
 are also lower-is-better. `Clear` is clear advantage lost and `Adv-><=0` is a
 clear advantage becoming non-positive.
@@ -55,11 +56,11 @@ ordering therefore agree for the two direct edges `f01 < f21 < spsa150b`.
 This is encouraging calibration evidence, not an Elo conversion or a license
 to promote a proxy winner without SPRT.
 
-`d3-0009` is the best untouched-selection proxy tuple, including every
-continuous risk metric. It has no game-strength evidence, so its apparent
-advantage over `spsa150b` is a hypothesis for a direct SPRT, not a claim of
-superior playing strength. `d3-0062` trails both on SR3-R2M and has no current
-reason to receive priority over that comparison.
+At the time of this matrix, `d3-0009` was the best single-shard selection proxy
+tuple, including every continuous risk metric. Its subsequent SPRT against
+`spsa150b` did not pass; the table's "Not tested" entry records the historical
+snapshot, not its later status. This is an example of proxy ranking not proving
+superior playing strength. `d3-0062` trailed both on SR3-R2M.
 
 ### Pareto-v4 cloud search and 0041 evaluation — 2026-09-04
 
@@ -90,8 +91,9 @@ regressed relative to `spsa150b` on mean regret (`0.014521` vs `0.014452`) and
 P95/P99, although it had a slightly lower CVaR-1% (`0.319430` vs `0.321794`).
 It also had more clear-advantage losses (225 vs 221). Thus 0041 is a useful
 recorded Pareto trade-off, but not a compelling new SPRT priority over the
-already SPRT-validated `spsa150b`. The selection table above is the current
-matched view of all these candidates.
+already SPRT-validated `spsa150b`. The selection table above is the matched
+single-shard view at that time; use the later pooled-selection evidence for
+extended validation.
 
 ## G3-SR1 Candidate Filter — 2026-08-21
 
@@ -522,12 +524,13 @@ killing just the Python parent and leaving orphan engine processes. For a
 bounded local smoke test, `run --max-phases 2` returns after two whole phases
 without setting the persistent stop flag (cron would continue it).
 
-### Future option: Bayesian optimization of mean regret — updated 2026-10-03
+### BO motivation and original proposal — historical 2026-10-03
 
-Revisit Bayesian optimization (BO) when the current Pareto loop produces fewer
-promising new candidates, or when exploring a higher maximum futility depth.
-This is a proposed experiment, not an implemented replacement or a change to
-the running loop. It assumes that mean normalized regret is the main useful
+The proposal below motivated the subsequent pilots. BO is now implemented as
+an opt-in continuous-loop backend; see "BO in the continuous loop — 2026-10-05"
+for current operation. Implementation does not imply that a remote loop has
+been switched or that BO candidates have passed validation/SPRT. BO assumes
+that mean normalized regret is the main useful
 proxy for strength; the metric-to-Elo relationship still needs empirical
 calibration from SPRT results.
 
@@ -1174,6 +1177,105 @@ PYTHONPATH=../tinibo .venv/bin/python scripts/compare_futility_bo_lcb.py \
   --completed /home/nicu/Tune/futility/validation/evaluations/bo-d5-pilot4-ard-lcb05/state.json \
   --output /tmp/futility-lcb-284.json
 ```
+
+#### Ten-seed matched LCB results — 2026-10-05
+
+After committing the integration as `ff24c98`, ran the planned comparison on
+all **284 measured SR4 tuples** (full 22,825 trusted positions, 120k candidate
+nodes, matching per-root reference contract). Frozen runtime source was tinibo
+`c7afbbb`; its numerical code is unchanged from `c103340`. Used one BLAS
+thread, seeds 0–9, warm sizes 40/120, kappa 0/0.2/0.5 and 15 reveals: **60
+trajectories, 900 fits, 1,050.5 seconds (17m30.5s)**. No engine probes ran.
+
+Retained evidence:
+`~/Tune/futility/validation/evaluations/bo-lcb-284-10seeds-20261005/`, including
+`results.json`, `analysis.json`, `report.md`, frozen observations/development
+contract, code, replay scripts, manifest, timing log and completion/hash
+receipts. Verified all revealed labels, warm-start assignments, prefix scores,
+paired statistics and input/code identities. No selection or Elo labels were
+used; this is finite measured-pool screening, not novel-tuple qualification.
+
+Exclude starts already containing the global measured optimum from the table:
+40-observation starts have 9/10 informative seeds; 120-observation starts have
+5/10. All 60 trajectories remain in the raw results. Values below are the
+mean best normalized regret after 15 reveals; lower is better.
+
+| Kappa | Warm 40 mean best | Optimum hits | Warm 120 mean best | Optimum hits |
+|---:|---:|---:|---:|---:|
+| 0 | 0.013933173 | 1/9 | 0.013897421 | 3/5 |
+| 0.2 | 0.013929456 | 1/9 | 0.013888654 | 5/5 |
+| 0.5 | 0.013931891 | 0/9 | 0.013888654 | 5/5 |
+
+For warm 40, kappa 0.2 versus 0.5 has two wins, five ties and two losses;
+its small mean advantage is not broad seed-wise superiority. For warm 120,
+0.2 and 0.5 tie at step 15, while 0.5 is faster by step 10 (mean best
+0.013890413 versus 0.013903546). Greedy kappa 0 loses to 0.5 on two rich-warm
+seeds and ties on three. Thus 0.2 is a plausible alternative, but this small,
+adaptively collected measured pool does not establish a clear replacement.
+**Retain the configured 0.5 policy; no defaults changed.** Novel proposals and
+full selection/SPRT evidence remain separate decisions.
+
+#### Scaling, exploration and future refitting — 2026-10-05
+
+Tinibo currently refits the full dense GP for every proposal; it does not use
+an incremental rank-one fitting update. Let `n` be all retained compatible
+measurements, `d` the tuple length and `M` the proposal-pool size (currently
+10,000). Cholesky factorization and likelihood-gradient work have cubic time
+components in `n`, repeated during hyperparameter fitting (currently eight
+restarts, up to 100 iterations each). ARD training memory is approximately
+`O(d*n^2)` because pairwise coordinate/gradient arrays coexist with several
+dense matrices. Pool prediction costs approximately `O(M*n^2)` and is chunked
+at 1,024 points to limit temporary memory. Starting a new cycle does not reset
+`n`: all compatible imported observations still count.
+
+Planning estimates, **not measured capacity limits**:
+
+| Retained measurements | Planning guidance |
+|---:|---|
+| 300–500 | Expected to be comfortable |
+| Around 1,000 | Probably practical; benchmark before reaching this size |
+| Around 2,000 | Full refitting may become a significant overhead |
+| 5,000+ | Consider local/subset or sparse models rather than assuming global dense refitting remains practical |
+
+Doubling `n` roughly quadruples matrix memory and multiplies the cubic fitting
+component by eight; these are scaling laws, not whole-run timing predictions.
+The ten-seed timings above used 40/120 warm observations plus at most 15
+reveals, so they do not establish fitting time at 1,000 or 2,000 observations.
+Before choosing a retention/model policy, benchmark single-proposal wall time
+and peak memory at 500/1,000/2,000 observations with the actual ARD settings,
+10k pool, one BLAS thread and target hardware. Include fitting and prediction
+separately and compare their combined cost with an engine probe. Moving from
+five to seven coordinates increases ARD array/model costs; the exponential
+coverage difficulty of higher-dimensional search is a separate issue.
+
+For a short budget seeking improvement near an already good tuple, broad
+exploration becomes harder to justify as dimensions increase. This is not a
+general rule that higher dimension requires a smaller exploration multiplier:
+it also increases the risk of missing useful basins. Restricting/adapting the
+search neighbourhood is another lever. Our fully local pool already provides
+geographic restriction; a future trust-region policy could adapt its radius
+and restart after stagnation. See [TuRBO](https://arxiv.org/abs/1910.01739) for
+local BO rather than globally overemphasized exploration.
+
+LCB minimizes `mean - kappa * latent_std`. Even with fixed `kappa`, posterior
+uncertainty changes as evidence accumulates. With fixed kernel/noise settings,
+additional observations reduce uncertainty; repeated hyperparameter fitting
+means this need not be monotonic everywhere in our runs. An explicit schedule
+is possible but is not a universally preferable SGD-like decay. Theoretical
+[GP-UCB schedules](https://www.dna.caltech.edu/Papers/Srinivas-2010-regret-ICML.pdf)
+can increase the confidence multiplier over time while uncertainty shrinks.
+The current implementation has no automatic schedule. Keep `kappa=0.5` for
+now, based on the matched comparison above; test lower kappa, a schedule or
+adaptive neighbourhoods as distinct policies before changing the default.
+
+When engine/search/evaluation changes require retuning, distinguish a new
+numerical fit from a new measurement contract. Model/acquisition changes can
+reuse compatible measured labels at a stopped phase boundary via a fresh
+model epoch. A changed probe, net, corpus, node budget or scoring/reference
+contract must pass compatibility checks; do not mix old targets into the new
+fit just to retain a large history. Re-evaluate suitable seed tuples under the
+new contract and keep the old evidence historical. Retain the separate
+development, pooled validation and SPRT decisions after any refit.
 
 ### Tinibo collaboration and release procedure
 

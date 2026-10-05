@@ -35,6 +35,13 @@ then retain the accepted archive under `~/Tune/futility`.
   continuous loop permits separate objective subsets and semantic filters for
   dev and selection. Report P95/P99 as diagnostics. Do not confuse older
   f01-relative gates with these reference-relative values.
+- For `search.backend: "bo"`, distinguish the SR4 mean-regret training target
+  from the separate development and pooled-selection selectors. Read the BO
+  sections of `futility-tuning.md` and inspect the phase's observation receipt,
+  pending/completed measurements and numerical checkpoint. Offline measured-
+  pool results, novel-tuple discovery, validation and SPRT are separate claims;
+  validation/Elo must not be treated as BO training labels. Only compatible
+  measurement contracts can seed a refit after engine changes.
 - Retain completed depth, move agreement, elapsed time, and futility counts as
   diagnostics only. SPRT, rather than a proxy result, establishes playing
   strength.

@@ -52,6 +52,15 @@ cron launcher. Preserve an existing loop's immutable initialization/contract;
 parameter changes require a graceful stop and explicit reconfiguration. A
 stopped loop remains stopped under cron until `resume`; it never launches SPRT.
 
+For `search.backend: "bo"`, also read "BO in the continuous loop" and "Tinibo
+collaboration and release procedure" in `futility-tuning.md`. Use
+`scripts/futility_loop_bo.example.json` only as a configuration guide. Include
+the committed tinibo runtime/import closure and pin Python/NumPy/BLAS in the
+receipt; do not ship a workstation `.venv`. Preserve the numerical runtime of
+an active phase, use one BO worker, and distinguish compatible observation
+imports from restoring an exact checkpoint. Old engine-contract targets must
+not silently seed a changed probe/net/budget/corpus run.
+
 ## Finish
 
 - Archive Windows packages as `.zip` and Linux packages as `.tgz`.
