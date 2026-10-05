@@ -1161,6 +1161,52 @@ held-out predictive checks and no assumed proxy-to-Elo exchange rates. The
 SPRT build must use the same engine basis as spsa150b, not unrelated newer
 search/move-ordering changes from the working checkout.
 
+The upgrade package is `~/Tune/futility/futility-loop-bo-d5-linux.tgz`
+(Chilo source `680bfd8`, tinibo `c7afbbbf`). Disable the old cron entry, wait
+for a stopped boundary, then unpack as ubuntu and run `bash setup.sh` (no
+sudo). Start explicitly with `nohup ./loop.sh resume > loop.log 2>&1 <
+/dev/null &`; enable only the new package's cron `run.sh`. Use `./loop.sh stop`
+after the intended 2–3 days; the current phase will finish. The package README
+contains the full commands and checks. Numerical replay and staged imports
+passed locally; setup repeats qualification in the cloud's pinned environment.
+
+Pilot4-bo0001's local SPRT identity is `bo4-p0001`, loop tuple ID
+`t-ca00778ec42198a28c7168ac`, margins `[20,23,315,512,810]`. The Linux engine
+uses clean archived source `98dbfdc364b65cd4735f307d3eab35302f53e70c`, matching
+the spsa150b build receipt. Its build receipt is in the backed-up
+`validation/evaluations/sprt/bo4-p0001.build-receipt.json`. The short-control
+test started against spsa150b at 6+0.1, two workers, normalized SPRT `[0,2]`
+Elo, alpha/beta 0.05, at most 52,000 games. Evidence and the wrapper log are
+`~/fastchess/sprt-runs/bo4-p0001/` and `~/fastchess/logs/bo4-p0001.log`.
+It is running, not an accepted candidate. After importing its validation on
+the cloud, mark this tuple running explicitly; no loop base change is implied.
+
+### Separate validation-target BO study — 2026-10-05
+
+`scripts/analyze_futility_validation_bo.py` is read-only with respect to the
+loop and never launches probes. It merges matching full-population validation
+labels, optionally using a hash-verified newer BO observations manifest. SR4
+data supplies **coordinates only** for an unvalidated proposal pool, never
+validation-target labels. It retains provenance, training rows, disjoint
+five-fold predictions, model diagnostics and alternative LCB proposals.
+
+The first study has 33 unique five-margin labels over exactly 141,099 trusted
+positions, and 252 unvalidated, already-SR4-measured tuples to choose from.
+Held-out RMSE is `0.000042777` for isotropic Matérn-5/2 and `0.000035816`
+for ARD, against `0.000078153` for a training-mean constant predictor
+(ratios 0.547 and 0.458). Both use scaled fitting, learned noise, eight
+coverage restarts and the same folds. ARD is the exploratory winner.
+
+LCB kappa 0, 0.2 and 0.5 all choose `[0,35,158,553,754]`, with predicted
+validation mean regret `0.01416257` and posterior standard deviation
+`0.00003365`. These are three alternative policies, **not** three sequential
+BO steps. The nominal improvement over spsa150b is smaller than that
+uncertainty; one fitted length scale reaches its lower bound. Adaptive sampling
+and the small labelled set also limit the predictive claim. No new validation
+or SPRT was launched for this proposal, and it does not change the production
+loop. Results and the source loop snapshot are backed up under
+`validation/evaluations/validation-bo-offline-v1/`.
+
 BO uses mean normalized regret on SR4 only. Its initial settings reproduce the
 tested pilot policy: ARD Matérn-5/2, scaled GP with learned noise, LCB
 (`acquisition: "ucb"`, `kappa: 0.5`), eight coverage restarts, a 10,000-point
