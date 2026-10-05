@@ -991,6 +991,190 @@ nohup ./run.sh > runner.log 2>&1 < /dev/null & echo $! > run.pid
 Return `bo-d5-pilot4-ard-lcb05-results.tgz` using `bash collect.sh`. Evaluate
 any nominee on full selection separately before deciding on SPRT.
 
+#### Pilot 4 results — ARD/LCB
+
+`bo-d5-pilot4-ard-lcb05` completed all five new normal-PVS measurements after
+importing 279 distinct development tuples and 32 separate validation records.
+All five probes were cache misses; summed probe time was **3h 50m**, excluding
+initialization/model-fitting overhead. The full 22,825-position combined SR4,
+120k-node, per-root reference/rescue contract and probe/net hashes remained
+unchanged. The package used Chilo `80b5d80`, tinibo `c103340`, Python 3.12.3 /
+NumPy 2.2.6, one BLAS thread, ARD Matérn-5/2 and LCB kappa 0.5, schema v3.
+
+| Candidate | Margins | Predicted mean regret | Actual mean regret | Squared regret | CVaR-1% |
+|---|---|---:|---:|---:|---:|
+| spsa150b | 0,40,158,488,754 | — | 0.014074236 | 0.002188075 | 0.329444948 |
+| bo-0000 | 51,128,238,476,603 | 0.013831968 | 0.014011699 | 0.002268603 | 0.334579045 |
+| bo-0001 | 20,23,315,512,810 | 0.013932298 | 0.013888654 | 0.002182332 | 0.328601459 |
+| bo-0002 | 27,28,377,484,843 | 0.013894300 | 0.013897449 | 0.002258511 | 0.330314236 |
+| bo-0003 | 43,58,109,458,601 | 0.013913825 | 0.014234255 | 0.002371830 | 0.347375170 |
+| bo-0004 | 43,123,237,472,581 | 0.013863221 | 0.014148362 | 0.002350190 | 0.342601976 |
+
+The first three improve the base's development mean regret. **bo-0001** is
+the automatic nominee: 1.32% lower mean than spsa150b, and modestly lower
+squared regret and CVaR-1% too. Its mean also beats the previous best measured
+SR4 tuple `[30,66,188,454,656]` (0.013910572); bo-0002 does as well, although
+its tails are worse than spsa150b. Neither has new selection or SPRT evidence.
+The proposed next step is full pooled selection evaluation of bo-0001 first;
+bo-0002 is an optional second development candidate, not a validated promotion.
+
+This is the first successful new-tuple discovery among these four small BO
+pilots. It supports further testing of ARD, not universal/default promotion,
+calibrated uncertainty, or a claim of improved playing strength. All five fits
+put the fourth coordinate's length scale at its upper bound; scale ratios
+were about 63k–65k. Retain these diagnostics: they do not establish that this
+margin has no effect. Pilot comparisons differ in warm history and are not
+perfectly matched engine experiments.
+
+Accepted archive: `~/Tune/futility/bo-d5-pilot4-ard-lcb05-results.tgz`, SHA-256
+`6825e7c880e73547c8cd886b0dddac870df80be731dcc04a1c9ae35fe87efcf7`.
+Canonical evidence: `validation/evaluations/bo-d5-pilot4-ard-lcb05/`.
+The compatible development history now contains **284 distinct measured tuples**;
+future runs must explicitly import all four pilot runs to reuse them.
+
+Verification matched the frozen package/config, code/backend and external
+contract hashes, imported measurements from all three prior pilots, raw-probe
+hashes and complete 284-point checkpoint/result history. Recomputed full-SR4
+metrics, risk and semantic counts matched exactly; all five 10k pool hashes,
+selected tuples and final pool RNG replayed, with tolerance-based numerical
+prediction comparisons across runtimes. Nominee selection matched the eligible
+unvalidated records. No local engine searches were run during this review.
+
+#### Pilot 4 bo-0001: full-selection validation package
+
+Prepared `~/Tune/futility/futility-bo-d5-pilot4-bo0001-validation-linux.tgz`
+for `pilot4-bo0001 = [20,23,315,512,810]` and the spsa150b control. Archive
+SHA-256: `1e1dde74e0c9e9ee3e0ec70251c3a9308c6e58c64603c5c0bcbed9bc4088c4a2`.
+The package uses the committed `80b5d80` campaign/batch runner import closure
+and hashes its custom validation-only contract-check/launch/collection scripts.
+It freezes the pilot's exact external probe/net/population identities and
+nominee provenance. No tinibo/NumPy, venv, pip or sudo setup is needed.
+
+Run ID: `bo-d5-pilot4-bo0001-validation`. One serial worker evaluates all eight
+selection shards, pooled over **141,099 trusted positions**, at 120k nodes.
+The control uses matching shared-cache entries; missing entries are evaluated,
+not assumed present. No SR4 candidate evaluation, reference search, automatic
+loop promotion or SPRT runs. Allow approximately 5–7 hours plus any uncached
+control work; keep the development loop stopped to leave the other CPU free.
+
+Package verification passed the standard-library import closure, actual local
+population/artifact dry validation against the frozen pilot contract, no-write/
+no-probe dry-run checks, changed budget/net/tuple rejection, overlapping-launch
+locking and refusal to collect incomplete results. Shell syntax, archive bytes
+and file hashes were checked. On the cloud, `bash setup.sh` repeats external
+validation; then start `nohup ./run.sh > runner.log 2>&1 < /dev/null & echo $! > run.pid`.
+The package-local lock protects both manual and cron starts without polluting
+the campaign's first-init directory. Completed candidate/shard outputs survive
+restart; an interrupted individual shard probe is rerun from its beginning.
+
+Output: `~/futility-validation/evals/bo-d5-pilot4-bo0001-validation/validation/`.
+Inspect `progress.json`, then the pooled `report.md`/`results.json` and completion
+receipt. Return `bo-d5-pilot4-bo0001-validation-results.tgz` via `bash collect.sh`;
+retain raw probes, manifests and receipts for local analysis. Preparation and
+upload do not authorize starting the job.
+
+### BO in the continuous loop — 2026-10-05
+
+`run_futility_loop.py` now accepts `search.backend: "bo"`; omitted means the
+original `"pareto"` backend. Only development proposal generation changes.
+Development selection, full pooled validation, tuple identities, validation
+novelty checks, the SPRT queue, and manual SPRT-best updates are unchanged.
+The pilot-4 nominee still requires its separate validation; its discovery is
+not evidence of playing strength or an automatic base promotion.
+
+BO uses mean normalized regret on SR4 only. Its initial settings reproduce the
+tested pilot policy: ARD Matérn-5/2, scaled GP with learned noise, LCB
+(`acquisition: "ucb"`, `kappa: 0.5`), eight coverage restarts, a 10,000-point
+fully local pool, radius 80, ten best development centers plus the manually
+designated SPRT base, and bounds `[0,1200]` at each coordinate. There is no
+automatic exploration schedule. `search.max_proposals` remains the per-cycle
+budget; BO requires `search.workers: 1`. Native BLAS threads should also be one.
+
+For an existing loop, preserve the evaluation contract, loop ID and the exact
+`initialization` block; edit only the search settings at a graceful stop:
+`scripts/futility_loop_bo.example.json` is an illustrative full config, not a
+replacement for the existing initialization or selector policies.
+
+```json
+"search": {
+  "backend": "bo", "max_proposals": 15, "workers": 1,
+  "seed": 20261005, "max_margin": 1200,
+  "bo": {
+    "import_bo_runs": [
+      "bo-d5-pilot1", "bo-d5-pilot2", "bo-d5-pilot3-lcb05",
+      "bo-d5-pilot4-ard-lcb05"
+    ],
+    "pool_size": 10000, "local_fraction": 1.0,
+    "local_radius": 80, "local_centers": 10,
+    "bounds": [[0,1200],[0,1200],[0,1200],[0,1200],[0,1200]],
+    "model": {"gp_ard": true, "kernel": "matern52",
+              "acquisition": "ucb", "kappa": 0.5}
+  }
+}
+```
+
+Stop and wait until `stopped=true` and `active=null`, then install the matching
+committed script closure and pinned tinibo runtime, configure Python/NumPy,
+edit the config, and run `reconfigure`, followed by `resume`. Use the existing
+command interface and process lock; subsequent cron invocations use `run`.
+Disable the old cron entry while replacing the package/command, then register
+only the new command with the numerical runtime available. Switching back to
+Pareto uses the same boundary procedure: set `backend: "pareto"` and remove
+`search.bo`. Neither switch resets the validation archive or SPRT statuses.
+Keep one fixed tuple length/max futility depth per loop.
+
+All completed compatible legacy development cycles and explicitly listed BO
+pilots seed the first BO phase (284 unique tuples with the current evidence).
+Every completed BO cycle, including its poor proposals, seeds later phases.
+The adapter validates raw hashes, coverage, measured targets and recomputed
+score/risk diagnostics; conflicts fail instead of being averaged. Validation
+and Elo never become model labels. The SPRT base must already have a compatible
+completed development measurement. Imported observations are frozen for each
+phase, in order, with raw provenance; previously measured tuples are excluded
+from candidate pools even if they were never selected for validation.
+Stable producer IDs resolve relocated raw evidence; absolute cloud paths in
+older provenance are informational when the matching local producer exists.
+
+Each BO phase has `cycles/NNNNNN/search/{manifest,observations,state}.json`,
+raw `probes/` and `logs/`. Its manifest pins settings, code, Python/NumPy/BLAS,
+the evaluation contract and the observation receipt. `state.json` contains the
+v3 tinibo checkpoint, pool RNG, pending proposal, acquisition diagnostics and
+completed measurements. The pending tuple is saved before the probe; complete
+raw output is reused after interruption, and each committed result is told
+exactly once. Finishing a phase twice after a controller crash is idempotent.
+The existing development selector receives that cycle's new measurements and
+the measured SPRT base; it does not send the entire warm history to validation.
+
+Changing numerical code/runtime during an active phase fails closed: finish
+using its original package before reconfiguring. A stopped boundary can start
+a fresh numerical model epoch from all retained measured labels, with changed
+model/kappa settings. Do not relabel old checkpoints. The manual `set-base`
+command still controls the next development cycle; the best SR4 tuple does not
+silently replace the SPRT best. No cloud job is started by this integration.
+
+#### Offline exploration/exploitation comparison
+
+`scripts/compare_futility_bo_lcb.py` compares kappa 0, 0.2 and 0.5 with the same
+ARD model, matched shuffled warm starts and measured coordinate pools. Defaults
+are seeds 0–4, warm sizes 40/120 and 15 reveals; it reports best target and
+optimization regret at prefixes 5/10/15, paired wins/ties/losses, and separates
+cases where the optimum was already warm. Hidden labels are revealed only
+after selection. This is a finite measured-pool check, not evidence for novel
+tuples or validation/game strength. The complete sweep is an explicit separate
+task; implementation tests use a small synthetic run and real-data proposal
+replay without engine searches.
+
+To use all 284 currently measured tuples, combine the frozen 279-row tinibo
+fixture with the five pilot-4 completed measurements:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+PYTHONPATH=../tinibo .venv/bin/python scripts/compare_futility_bo_lcb.py \
+  --observations ../tinibo/benchmarks/futility_surrogates_20261005/development.jsonl \
+  --completed /home/nicu/Tune/futility/validation/evaluations/bo-d5-pilot4-ard-lcb05/state.json \
+  --output /tmp/futility-lcb-284.json
+```
+
 ### Tinibo collaboration and release procedure
 
 This is the maintained procedure for numerical-library changes and new BO

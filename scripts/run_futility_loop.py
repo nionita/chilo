@@ -13,6 +13,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import signal
 import sys
 from pathlib import Path
 
@@ -28,7 +29,8 @@ METRIC_VERSION = "reference_regret_risk_v1"
 FILTERS = [{"metric": "winning_mate_missed", "discard_worst_fraction": 0.25},
            {"metric": "nonlosing_to_losing", "discard_worst_fraction": 0.25}]
 SEARCH_DEFAULTS = dict(max_proposals=15, workers=1, seed=20260919,
-                       perturbation_c=40, perturbation_gamma=0.101, max_margin=1200)
+                       perturbation_c=40, perturbation_gamma=0.101, max_margin=1200,
+                       backend='pareto')
 CONTRACT_FIELDS = {"store_root", "artifacts", "candidate_nodes", "baseline_margins",
                    "score_scale", "development", "selection"}
 
@@ -89,8 +91,12 @@ def load_config(path):
     if not isinstance(raw.get("search", {}), dict):
         raise LoopError("search must be an object")
     search = {**SEARCH_DEFAULTS, **raw.get("search", {})}
-    if set(search) != set(SEARCH_DEFAULTS):
+    if set(search) - (set(SEARCH_DEFAULTS) | {'bo'}):
         raise LoopError("unknown search parameter")
+    if not isinstance(search['backend'], str) or search['backend'] not in {'pareto', 'bo'}:
+        raise LoopError('search.backend must be pareto or bo')
+    if search['backend'] == 'pareto' and 'bo' in search:
+        raise LoopError('search.bo requires backend=bo')
     for key in ("max_proposals", "workers", "seed", "max_margin"):
         campaign.require_int(search[key], key, 0 if key in {"seed", "max_margin"} else 1)
     for key in ("perturbation_c", "perturbation_gamma"):
@@ -101,6 +107,9 @@ def load_config(path):
     base = candidate(init.get("base"))
     if max(base["margins"]) > search["max_margin"]:
         raise LoopError("base exceeds max_margin")
+    if search['backend'] == 'bo':
+        import futility_bo_backend as bo
+        search['bo'] = bo.options(search, base['margins'], identifier)
     pool = init.get("validation_pool", [])
     imports = init.get("imports", [])
     if not isinstance(pool, list) or not isinstance(imports, list) or any(not isinstance(p, str) for p in imports):
@@ -231,6 +240,10 @@ def initialize(config, contract):
             raise LoopError("evaluation contract changed; create a new loop")
         if state["initialization"] != config["initialization"]:
             raise LoopError("initialization changed; use control commands for an existing loop")
+        # Legacy v1 states implicitly used Pareto. Do not require a new loop.
+        for options in [state['options'], *(r['options'] for r in state['revisions']),
+                        *([state['active']['options']] if state['active'] else [])]:
+            options['search'].setdefault('backend', 'pareto')
         return state
     # Allow remnants of a failed first atomic write, not a pre-existing campaign
     # or an evaluation directory whose authoritative state has been lost.
@@ -309,8 +322,13 @@ def begin_phase(state, control):
     phase = state["next_phase"]
     if phase == "dev":
         base = candidate(control["base"])
+        if len(base['margins']) != len(state['initialization']['base']['margins']):
+            raise LoopError('max futility depth changed; create a separate loop')
         if max(base["margins"]) > options["search"]["max_margin"]:
             raise LoopError("new base exceeds max_margin")
+        if options['search'].get('backend') == 'bo':
+            import futility_bo_backend as bo
+            bo.core.validate_tuple(base['margins'], options['search']['bo']['bounds'])
         state["base_id"] = register(state, base)
         if state["base_id"] not in state["proven_bases"]:
             state["proven_bases"].append(state["base_id"])
@@ -330,7 +348,7 @@ def search_settings(env, state, root):
     options = active["options"]
     policy = options["dev_selector"]
     settings = {**env, "report_every": options["report_every"], "pareto_search": {
-        **options["search"], "seed": active["seed"], "initial_margins": state["candidates"][active["base_id"]]["margins"],
+        **{k: v for k, v in options['search'].items() if k != 'backend'}, "seed": active["seed"], "initial_margins": state["candidates"][active["base_id"]]["margins"],
         **policy}}
     path = root / "cycles" / f"{active['cycle']:06d}" / "search_config.json"
     value = campaign.search_config(settings)
@@ -342,6 +360,13 @@ def search_settings(env, state, root):
 
 
 def execute_dev(config, env, state):
+    if state['active']['options']['search'].get('backend', 'pareto') == 'bo':
+        import futility_bo_backend as bo
+        frozen = bo.phase_config(config, state)
+        result, records = bo.run(frozen, env, state)
+        if result['status'] != 'complete':
+            raise LoopError('BO development phase did not finish')
+        return records
     settings, run_dir = search_settings(env, state, config["root"])
     pareto.prepare(run_dir, pareto.manifest(settings))
     result = pareto.run(settings, run_dir)
@@ -379,7 +404,8 @@ def finish_phase(state, results):
     active = state["active"]
     if active["phase"] == "dev":
         _, survivors, _ = select(results, active["options"]["dev_selector"])
-        state["dev_results"].append({"cycle": active["cycle"], "base_id": active["base_id"]})
+        state["dev_results"].append({"cycle": active["cycle"], "base_id": active["base_id"],
+                                    "backend": active['options']['search'].get('backend', 'pareto')})
         for record in survivors:
             key = register(state, candidate({"margins": record["margins"], "alias": record["id"],
                                             "provenance": f"cycle-{active['cycle']}"}))
@@ -446,7 +472,14 @@ def reconfigure(config, state):
     # Re-select previous development evidence, scheduling only new survivors.
     for completed in state["dev_results"]:
         path = config["root"] / "cycles" / f"{completed['cycle']:06d}" / "search" / "state.json"
-        records = read(path)["evaluations"]
+        evidence = read(path)
+        if completed.get('backend', 'pareto') == 'bo':
+            frozen = read(path.parent / 'observations.json')
+            base = next(r for r in frozen['development']
+                        if r['margins'] == state['candidates'][completed['base_id']]['margins'])
+            records = [dict(base, id='initial'), *evidence['completed']]
+        else:
+            records = evidence['evaluations']
         _, survivors, _ = select(records, state["options"]["dev_selector"])
         for record in survivors:
             enqueue(state, register(state, candidate({"margins": record["margins"], "alias": record["id"],
@@ -516,9 +549,15 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    def interrupted(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         raise SystemExit(main())
+    except KeyboardInterrupt:
+        print('loop interrupted; active phase retained for resume', file=sys.stderr)
+        raise SystemExit(130)
     except (LoopError, campaign.CampaignError, batch.BatchError, pareto.optimize_futility.OptimizationError,
-            tune.TuningError, cache.CacheError, OSError, ValueError, RuntimeError) as exc:
+            tune.TuningError, cache.CacheError, OSError, ValueError, RuntimeError, ImportError) as exc:
         print(f"fatal: {exc}", file=sys.stderr)
         raise SystemExit(1)
