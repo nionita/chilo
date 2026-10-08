@@ -702,11 +702,10 @@ methods. Cloud load then changes completion time rather than the competitive
 search allowance. It does **not** eliminate game noise or the compute cost of
 near-equal comparisons.
 
-The source already exposes `SearchLimits.nodeLimit` and runtime
-`SearchParameters` for futility. `chilo.cpp` accepts UCI `go nodes`.
-`selfplay_collect.cpp` currently offers depth/time-driven training-data games,
-stochastic early move selection and leaf collection, so it is reusable game
-logic, not an already complete fixed-node match runner.
+The source exposes `SearchLimits.nodeLimit` and runtime `SearchParameters`
+for futility. `chilo.cpp` accepts UCI `go nodes`. The single-process match mode
+described below now implements paired fixed-node matches and SPRT; the BO
+controller over game outcomes remains future work.
 
 The lowest-infrastructure prototype is fixed-node fastchess, retaining its
 existing SPRT, paired games, adjudication, logs and recovery. Its engine
@@ -716,16 +715,10 @@ This option is not presently exposed by our UCI interface, and our wrapper
 still needs node-budget configuration support. Verify installed fastchess
 behavior and watchdog/recovery handling before an unattended run.
 
-If an integrated runner is worthwhile later, reuse the collector's move/game
-logic but disable training leaf collection and stochastic move sampling during
-competitive play. Required additions are per-player parameters/node budgets,
-paired openings with colours reversed, completed-pair journaling, robust game
-termination/adjudication, resumable statistics and sequential stopping. Search
-currently has global state including its transposition table: two alternating
-tuples must not share the other's cached search results. Use separate player
-contexts/processes, or deliberately isolated searches for both with the loss
-of between-move TT reuse explicitly documented. Parallel matches must not run
-unsafe shared-global searches in threads.
+The integrated mode uses independent player search contexts; there is no
+cross-player TT sharing. Existing default-context callers retain their prior
+behavior. Only sequential match execution is supported. Training collection
+keeps its own sampling behavior and is not used to choose competitive moves.
 
 Fixed-node strength is not identical to equal-time strength. Pruning can change
 cost per node, and constant nodes per move removes normal time allocation.
@@ -733,6 +726,89 @@ Treat node budgets as distinct experimental conditions; verify speed effects
 and confirm finalists under normal short and longer time controls. This first
 experiment should retain a fixed budget rather than pool results from several
 budgets or time controls as interchangeable labels.
+
+#### Implemented match mode — 2026-10-08
+
+Branch `selfplay-futility-sprt` adds `--match-config` to `selfplay_collect`.
+The entry point dispatches into separate match/statistics modules. Both named
+players use the same compiled engine and explicit NNUE `.bin`; each player's
+`parameters.futility_margins` array defines depths 1 through its length (up to
+7; empty disables futility). A zero entry is a zero margin, not a disabled
+depth. Different maximum depths and identical tuples are supported. Names must
+differ. Other reduction parameters and game-level node allocation are not
+implemented. The budget object has start-game, next-search-limits and actual
+node-accounting operations so a later allocation policy can maintain balances.
+
+Copy `scripts/selfplay_match.example.json` and set the local paths. Relative
+paths are resolved from the config directory. Its defaults are 120k nodes per
+move, 26,000 pairs, normalized Elo hypotheses `[0,2]`, alpha/beta 0.05,
+resignation at 600 cp for three moves, draw adjudication at move 34 after eight
+moves within 20 cp, and a 200-move cap. Setting an adjudication `movecount` to
+zero disables that score rule. Only normalized pentanomial SPRT is accepted;
+unsupported settings fail rather than silently falling back.
+
+```bash
+make selfplay_collect
+build/release/selfplay_collect --match-config match.json --run-dir match-run
+# Subsequent invocations, including cron restarts:
+build/release/selfplay_collect --match-config match.json --run-dir match-run --resume
+```
+
+The opening file accepts standard-chess FEN or EPD (including optional
+`hmvc`/`fmvn` counters). PGN books, forced opening moves, Chess960 and tablebase
+adjudication are outside this first version. Malformed positions and duplicate
+normalized FENs fail preflight. A frozen seeded permutation selects openings
+without replacement; each gets two games with colors reversed. Opening
+exhaustion is inconclusive rather than recycling deterministic games.
+
+Each player retains its own TT between moves; both start each game fresh,
+matching fastchess `restart=on`. Search heuristics retain the engine's existing
+per-search reset behavior. Actual moves update both player histories. The
+match referee recognizes threefold repetition separately from search's
+two-occurrence heuristic, normalizes uncapturable en-passant fields for
+repetition, and gives mate/stalemate priority over adjudication. Insufficient
+material, resignation/draw counters and move limits follow the installed
+fastchess `072859b` rules. Search takes its ordinary last completed result,
+without stochastic opening choices or training-leaf collection.
+
+Evidence is kept in one run directory:
+
+- `manifest.json`: effective settings, engine/network/opening SHA-256 receipts,
+  source revision (marked dirty for development builds), reference fastchess
+  revision, and the frozen opening order.
+- `games.jsonl`: a checksummed record per completed game, with pair/opening ID,
+  colors, result, termination reason and every UCI move's score, mate flag,
+  completed depth, actual/completed nodes and elapsed time.
+- `status.json` and terminal `results.json`: complete-pair pentanomial counts,
+  separate WL/DD counts, WDL, score/variance, Elo and normalized Elo with 95%
+  errors, LOS, LLR/bounds, resource totals and outcome. Undefined estimates
+  are JSON null; game/opening limits have outcome `inconclusive`.
+
+SPRT checks boundaries only after complete pairs. The journal is authoritative;
+resume verifies its checksums and sequence and reconstructs statistics. It
+retains a completed first game, restarts an unfinished game, and discards only
+an unterminated final journal line after a crash. Corrupt committed records or
+contract changes fail. Reported node/time totals cover committed games, not
+discarded interrupted attempts. Elo errors are conventional pentanomial
+estimates, not a correction for adaptive proposal selection or sequential
+stopping; the future BO noise model still needs qualification.
+
+An OS-held `run.lock` prevents duplicate writers and releases on process death;
+the lock file itself may remain. Create `match-run/STOP` for a portable graceful
+stop after the current pair. SIGINT/SIGTERM provide the same behavior on Linux.
+Remove `STOP` and use `--resume` to continue. Terminal matches are idempotent.
+Preserve the config, executable, network, opening file and entire run directory
+for recovery. No cloud run or BO integration is started by building this mode.
+
+Verification includes context isolation and state restoration, the pinned
+fastchess normalized likelihood fixtures, referee boundary cases, interrupted
+pair/journal recovery, contract mismatches, locking and legacy collection.
+`make selfplay-match-tests` runs short C++ and real-process Python tests using
+a generated tiny network. An additional six-game fixed-node comparison with
+fastchess matched every move and outcome at 3,000 nodes/move, using two distinct
+profiles and the shared g4t1 net. Pre-refactor/current UCI completed-iteration
+traces also matched on three positions at that budget. These are compatibility
+checks, not playing-strength measurements.
 
 Useful primary references:
 

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <new>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -150,6 +151,29 @@ std::vector<MoveOrderingEntry> collectMoveOrderingDiagnostics(
 bool loadNnueWeightsFile(const std::string& path, std::string& error);
 
 struct SearchResult;
+struct SearchLimits;
+
+// Independent player state. Explicit contexts are for sequential searches;
+// immutable evaluator weights are shared. Existing APIs use the default context.
+class SearchContext {
+public:
+    struct Impl;
+    SearchContext();
+    ~SearchContext();
+    SearchContext(const SearchContext&) = delete;
+    SearchContext& operator=(const SearchContext&) = delete;
+    void clearForNewGame();
+    void requestStop();
+private:
+    std::unique_ptr<Impl> impl_;
+    friend SearchResult searchBestMove(SearchContext&, Position&, const SearchLimits&);
+    friend void resetDrawHistory(SearchContext&, const Position&);
+    friend void recordRealMoveForDrawHistory(SearchContext&, const Position&, const Move&, const Position&);
+};
+
+SearchResult searchBestMove(SearchContext&, Position&, const SearchLimits&);
+void resetDrawHistory(SearchContext&, const Position&);
+void recordRealMoveForDrawHistory(SearchContext&, const Position&, const Move&, const Position&);
 using SearchInfoCallback = void (*)(const SearchResult&, void*);
 
 #ifdef CHILO_FUTILITY_SITE_COLLECT

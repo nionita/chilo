@@ -84,28 +84,41 @@ struct SearchNnueState {
     std::vector<NnueAccumulator> frames;
 };
 
-std::atomic<bool> g_stopRequested{false};
-std::chrono::steady_clock::time_point g_deadline;
-bool g_useDeadline = false;
-uint64_t g_nodesSearched = 0;
-uint64_t g_nodeLimit = 0;
-SearchParameters g_searchParameters{};
-bool g_isolateTranspositionTable = false;
+}  // namespace
+
+struct SearchContext::Impl {
+    std::atomic<bool> stopRequested{false};
+    std::chrono::steady_clock::time_point deadline;
+    bool useDeadline = false;
+    uint64_t nodesSearched = 0;
+    uint64_t nodeLimit = 0;
+    SearchParameters searchParameters{};
+    bool isolateTranspositionTable = false;
 #ifdef CHILO_FUTILITY_SITE_COLLECT
-int g_futilitySiteMaxDepth = 0;
-int g_futilitySiteMinBeta = -SEARCH_MATE_SCORE;
-FutilitySiteCallback g_futilitySiteCallback = nullptr;
-void* g_futilitySiteUserData = nullptr;
+    int futilitySiteMaxDepth = 0;
+    int futilitySiteMinBeta = -SEARCH_MATE_SCORE;
+    FutilitySiteCallback futilitySiteCallback = nullptr;
+    void* futilitySiteUserData = nullptr;
 #endif
-std::vector<TTEntry> g_tt(TT_SIZE);
-uint32_t g_ttGeneration = 0;
-Move g_killers[MAX_SEARCH_DEPTH][2];
-int g_history[2][64][64] = {};
-uint64_t g_drawHistory[MAX_DRAW_HISTORY] = {};
-int g_lastIrreversible = 0;
-int g_lastReal = 0;
-int g_lastValid = 0;
-bool g_drawHistoryInitialized = false;
+    std::vector<TTEntry> tt;
+    uint32_t ttGeneration = 0;
+    Move killers[MAX_SEARCH_DEPTH][2]{};
+    int history[2][64][64] = {};
+    std::vector<uint64_t> drawHistory = std::vector<uint64_t>(MAX_DRAW_HISTORY);
+    int lastIrreversible = 0;
+    int lastReal = 0;
+    int lastValid = 0;
+    bool drawHistoryInitialized = false;
+};
+
+namespace {
+SearchContext::Impl defaultSearch;
+thread_local SearchContext::Impl* activeSearch = &defaultSearch;
+struct SearchBinding {
+    SearchContext::Impl* previous;
+    explicit SearchBinding(SearchContext::Impl* context) : previous(activeSearch) { activeSearch = context; }
+    ~SearchBinding() { activeSearch = previous; }
+};
 
 bool movesEqual(const Move& a, const Move& b) {
     return a.from == b.from && a.to == b.to && a.promotion == b.promotion &&
@@ -357,13 +370,13 @@ int captureOrderScore(const Position& pos, const Move& move) {
 }
 
 bool shouldStop() {
-    if (g_stopRequested.load(std::memory_order_relaxed)) return true;
-    if (g_nodeLimit > 0 && g_nodesSearched >= g_nodeLimit) {
-        g_stopRequested.store(true, std::memory_order_relaxed);
+    if (activeSearch->stopRequested.load(std::memory_order_relaxed)) return true;
+    if (activeSearch->nodeLimit > 0 && activeSearch->nodesSearched >= activeSearch->nodeLimit) {
+        activeSearch->stopRequested.store(true, std::memory_order_relaxed);
         return true;
     }
-    if (g_useDeadline && std::chrono::steady_clock::now() >= g_deadline) {
-        g_stopRequested.store(true, std::memory_order_relaxed);
+    if (activeSearch->useDeadline && std::chrono::steady_clock::now() >= activeSearch->deadline) {
+        activeSearch->stopRequested.store(true, std::memory_order_relaxed);
         return true;
     }
     return false;
@@ -371,7 +384,7 @@ bool shouldStop() {
 
 void countNode(uint64_t& iterationNodes) {
     iterationNodes++;
-    if (g_nodeLimit > 0) g_nodesSearched++;
+    if (activeSearch->nodeLimit > 0) activeSearch->nodesSearched++;
 }
 
 bool hasNonPawnMaterial(const Position& pos, Color side) {
@@ -390,23 +403,25 @@ bool moveIsIrreversible(const HistoryMoveInfo& info, uint8_t castlingAfter) {
 }
 
 void appendDrawHistory(uint64_t hashKey, bool irreversible, bool realMove) {
-    assert(g_lastValid + 1 < MAX_DRAW_HISTORY);
-    g_lastValid++;
-    g_drawHistory[g_lastValid] = hashKey;
-    if (realMove) g_lastReal = g_lastValid;
-    if (irreversible) g_lastIrreversible = g_lastValid;
-    g_drawHistoryInitialized = true;
+    if (size_t(activeSearch->lastValid + 1) >= activeSearch->drawHistory.size()) {
+        activeSearch->drawHistory.resize(activeSearch->drawHistory.size() * 2);
+    }
+    activeSearch->lastValid++;
+    activeSearch->drawHistory[activeSearch->lastValid] = hashKey;
+    if (realMove) activeSearch->lastReal = activeSearch->lastValid;
+    if (irreversible) activeSearch->lastIrreversible = activeSearch->lastValid;
+    activeSearch->drawHistoryInitialized = true;
 }
 
 void pushSearchHistory(uint64_t hashKey, bool irreversible, int& savedLastValid, int& savedLastIrreversible) {
-    savedLastValid = g_lastValid;
-    savedLastIrreversible = g_lastIrreversible;
+    savedLastValid = activeSearch->lastValid;
+    savedLastIrreversible = activeSearch->lastIrreversible;
     appendDrawHistory(hashKey, irreversible, false);
 }
 
 void popSearchHistory(int savedLastValid, int savedLastIrreversible) {
-    g_lastValid = savedLastValid;
-    g_lastIrreversible = savedLastIrreversible;
+    activeSearch->lastValid = savedLastValid;
+    activeSearch->lastIrreversible = savedLastIrreversible;
 }
 
 void doNullMove(Position& pos, NullMoveState& state) {
@@ -444,13 +459,13 @@ int scoreFromTT(int score, int ply) {
 }
 
 TTEntry& ttEntry(uint64_t key) {
-    return g_tt[key & (TT_SIZE - 1)];
+    return activeSearch->tt[key & (TT_SIZE - 1)];
 }
 
 bool probeTT(uint64_t key, int depth, int ply, int alpha, int beta, Move& bestMove, int& score) {
     const TTEntry& entry = ttEntry(key);
     if (entry.key != key) return false;
-    if (g_isolateTranspositionTable && entry.generation != g_ttGeneration) return false;
+    if (activeSearch->isolateTranspositionTable && entry.generation != activeSearch->ttGeneration) return false;
     if (isValidMove(entry.bestMove)) bestMove = entry.bestMove;
     if (entry.depth < depth) return false;
 
@@ -466,7 +481,7 @@ void storeTT(uint64_t key, int depth, int ply, int score, TTFlag flag, const Mov
 #if !CHILO_TT_ALWAYS_OVERWRITE
     if (entry.key != key &&
         entry.key != 0 &&
-        entry.generation == g_ttGeneration &&
+        entry.generation == activeSearch->ttGeneration &&
         entry.depth > depth) {
         return;
     }
@@ -477,28 +492,28 @@ void storeTT(uint64_t key, int depth, int ply, int score, TTFlag flag, const Mov
     entry.score = static_cast<int16_t>(scoreToTT(score, ply));
     entry.depth = static_cast<uint8_t>(std::max(depth, 0));
     entry.flag = flag;
-    entry.generation = g_ttGeneration;
+    entry.generation = activeSearch->ttGeneration;
 }
 
 void clearSearchHeuristics() {
     for (int ply = 0; ply < MAX_SEARCH_DEPTH; ply++) {
-        g_killers[ply][0] = Move{};
-        g_killers[ply][1] = Move{};
+        activeSearch->killers[ply][0] = Move{};
+        activeSearch->killers[ply][1] = Move{};
     }
     for (int color = 0; color < 2; color++) {
         for (int from = 0; from < 64; from++) {
-            for (int to = 0; to < 64; to++) g_history[color][from][to] = 0;
+            for (int to = 0; to < 64; to++) activeSearch->history[color][from][to] = 0;
         }
     }
 }
 
 void noteQuietBetaCutoff(Color side, int ply, const Move& move, int depth) {
-    if (ply < MAX_SEARCH_DEPTH && !movesEqual(move, g_killers[ply][0])) {
-        g_killers[ply][1] = g_killers[ply][0];
-        g_killers[ply][0] = move;
+    if (ply < MAX_SEARCH_DEPTH && !movesEqual(move, activeSearch->killers[ply][0])) {
+        activeSearch->killers[ply][1] = activeSearch->killers[ply][0];
+        activeSearch->killers[ply][0] = move;
     }
 
-    int& history = g_history[side][move.from][move.to];
+    int& history = activeSearch->history[side][move.from][move.to];
     history += depth * depth;
     if (history > 1000000) history = 1000000;
 }
@@ -517,13 +532,13 @@ int moveOrderScore(const Position& pos, const Move& move, const Move* preferredM
     if (isCaptureMove(pos, move)) return 100000 + captureOrderScore(pos, move);
 
     if (isQuietMove(pos, move)) {
-        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][0])) return 850000;
-        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, g_killers[ply][1])) return 800000;
+        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, activeSearch->killers[ply][0])) return 850000;
+        if (ply < MAX_SEARCH_DEPTH && movesEqual(move, activeSearch->killers[ply][1])) return 800000;
     }
 
     int score = 200000;
     if (isQuietMove(pos, move)) {
-        score += std::min(g_history[pos.sideToMove][move.from][move.to], 30000);
+        score += std::min(activeSearch->history[pos.sideToMove][move.from][move.to], 30000);
     }
 
     if (move.isCastle) score += 1000;
@@ -696,7 +711,7 @@ CutoffMoveType classifyCutoffMove(const Position& pos, const Move& move, const M
     if (isCaptureMove(pos, move)) return CUTOFF_CAPTURE;
     if (isQuietMove(pos, move)) {
         if (ply < MAX_SEARCH_DEPTH &&
-            (movesEqual(move, g_killers[ply][0]) || movesEqual(move, g_killers[ply][1]))) {
+            (movesEqual(move, activeSearch->killers[ply][0]) || movesEqual(move, activeSearch->killers[ply][1]))) {
             return CUTOFF_KILLER;
         }
         if (move.promotion != EMPTY) return CUTOFF_PROMOTION;
@@ -882,12 +897,12 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
     Move bestMove = moves[0];
     SearchLeaf bestLeaf{};
     int staticEval = 0;
-    bool allowFutility = !isPv && depth <= g_searchParameters.futilityMaxDepth;
+    bool allowFutility = !isPv && depth <= activeSearch->searchParameters.futilityMaxDepth;
     if (allowFutility) staticEval = evaluateSearchPosition(pos, nnueState, nnuePly);
 #ifdef CHILO_FUTILITY_SITE_COLLECT
     const bool allowFutilitySiteCollection =
-        g_futilitySiteCallback != nullptr && ply > 0 && !isPv && !inCheckNow &&
-        depth >= 1 && depth <= g_futilitySiteMaxDepth && beta > g_futilitySiteMinBeta &&
+        activeSearch->futilitySiteCallback != nullptr && ply > 0 && !isPv && !inCheckNow &&
+        depth >= 1 && depth <= activeSearch->futilitySiteMaxDepth && beta > activeSearch->futilitySiteMinBeta &&
         hasNonPawnMaterial(pos, pos.sideToMove);
     bool reportedFutilitySite = false;
 #endif
@@ -919,13 +934,13 @@ int alphaBeta(Position& pos, SearchNnueState& nnueState, int depth, int ply, int
 
 #ifdef CHILO_FUTILITY_SITE_COLLECT
         if (possibleFutilitySite && !givesCheck) {
-            g_futilitySiteCallback(futilitySiteFen, g_futilitySiteUserData);
+            activeSearch->futilitySiteCallback(futilitySiteFen, activeSearch->futilitySiteUserData);
             reportedFutilitySite = true;
         }
 #endif
 
         if (allowFutility && i > 0 && quiet && !givesCheck &&
-            static_cast<int64_t>(staticEval) + g_searchParameters.futilityMargins[depth] <= alpha) {
+            static_cast<int64_t>(staticEval) + activeSearch->searchParameters.futilityMargins[depth] <= alpha) {
             stats.futilityPrunes[depth]++;
             if (inCheckNow) stats.futilityPrunesInCheck[depth]++;
             popSearchHistory(savedLastValid, savedLastIrreversible);
@@ -1065,26 +1080,27 @@ std::vector<MoveOrderingEntry> collectMoveOrderingDiagnostics(
 }
 
 SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
-    g_stopRequested.store(false, std::memory_order_relaxed);
-    g_nodesSearched = 0;
-    g_nodeLimit = limits.nodeLimit;
-    g_searchParameters = limits.parameters;
-    g_isolateTranspositionTable = limits.isolateTranspositionTable;
+    if (activeSearch->tt.empty()) activeSearch->tt.resize(TT_SIZE);
+    activeSearch->stopRequested.store(false, std::memory_order_relaxed);
+    activeSearch->nodesSearched = 0;
+    activeSearch->nodeLimit = limits.nodeLimit;
+    activeSearch->searchParameters = limits.parameters;
+    activeSearch->isolateTranspositionTable = limits.isolateTranspositionTable;
     if (limits.futilityMarginSiteResult != nullptr) *limits.futilityMarginSiteResult = FutilityMarginSiteResult{};
 #ifdef CHILO_FUTILITY_SITE_COLLECT
-    g_futilitySiteMaxDepth = limits.futilitySiteMaxDepth;
-    if (g_futilitySiteMaxDepth < 0) g_futilitySiteMaxDepth = 0;
-    if (g_futilitySiteMaxDepth > MAX_FUTILITY_DEPTH) g_futilitySiteMaxDepth = MAX_FUTILITY_DEPTH;
-    g_futilitySiteMinBeta = limits.futilitySiteMinBeta;
-    g_futilitySiteCallback = limits.futilitySiteCallback;
-    g_futilitySiteUserData = limits.futilitySiteUserData;
+    activeSearch->futilitySiteMaxDepth = limits.futilitySiteMaxDepth;
+    if (activeSearch->futilitySiteMaxDepth < 0) activeSearch->futilitySiteMaxDepth = 0;
+    if (activeSearch->futilitySiteMaxDepth > MAX_FUTILITY_DEPTH) activeSearch->futilitySiteMaxDepth = MAX_FUTILITY_DEPTH;
+    activeSearch->futilitySiteMinBeta = limits.futilitySiteMinBeta;
+    activeSearch->futilitySiteCallback = limits.futilitySiteCallback;
+    activeSearch->futilitySiteUserData = limits.futilitySiteUserData;
 #endif
-    if (g_searchParameters.futilityMaxDepth < 0) g_searchParameters.futilityMaxDepth = 0;
-    if (g_searchParameters.futilityMaxDepth > MAX_FUTILITY_DEPTH) {
-        g_searchParameters.futilityMaxDepth = MAX_FUTILITY_DEPTH;
+    if (activeSearch->searchParameters.futilityMaxDepth < 0) activeSearch->searchParameters.futilityMaxDepth = 0;
+    if (activeSearch->searchParameters.futilityMaxDepth > MAX_FUTILITY_DEPTH) {
+        activeSearch->searchParameters.futilityMaxDepth = MAX_FUTILITY_DEPTH;
     }
-    g_useDeadline = limits.movetimeMs > 0;
-    if (g_useDeadline) g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
+    activeSearch->useDeadline = limits.movetimeMs > 0;
+    if (activeSearch->useDeadline) activeSearch->deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(limits.movetimeMs);
     auto startTime = std::chrono::steady_clock::now();
     const bool collectRootDetails = limits.collectRootMoveResults;
     const bool collectRootScores = limits.collectRootMoveScores || collectRootDetails;
@@ -1092,10 +1108,10 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
                                      limits.sampleCallback != nullptr;
     const std::string rootFen = limits.sampleCallback != nullptr ? positionToFEN(pos) : std::string();
 
-    if (++g_ttGeneration == 0) g_ttGeneration = 1;
+    if (++activeSearch->ttGeneration == 0) activeSearch->ttGeneration = 1;
     clearSearchHeuristics();
-    if (!g_drawHistoryInitialized || g_drawHistory[g_lastReal] != pos.hashKey) resetDrawHistory(pos);
-    g_lastValid = g_lastReal;
+    if (!activeSearch->drawHistoryInitialized || activeSearch->drawHistory[activeSearch->lastReal] != pos.hashKey) resetDrawHistory(pos);
+    activeSearch->lastValid = activeSearch->lastReal;
 
     SearchResult result{};
     result.bestMove = Move{};
@@ -1326,25 +1342,25 @@ SearchResult searchBestMove(Position& pos, const SearchLimits& limits) {
 }
 
 void requestSearchStop() {
-    g_stopRequested.store(true, std::memory_order_relaxed);
+    activeSearch->stopRequested.store(true, std::memory_order_relaxed);
 }
 
 void resetDrawHistory(const Position& pos) {
-    g_drawHistory[0] = pos.hashKey;
-    g_lastIrreversible = 0;
-    g_lastReal = 0;
-    g_lastValid = 0;
-    g_drawHistoryInitialized = true;
+    activeSearch->drawHistory[0] = pos.hashKey;
+    activeSearch->lastIrreversible = 0;
+    activeSearch->lastReal = 0;
+    activeSearch->lastValid = 0;
+    activeSearch->drawHistoryInitialized = true;
 }
 
 void recordRealMoveForDrawHistory(const Position& before, const Move& move, const Position& after) {
-    if (!g_drawHistoryInitialized || g_drawHistory[g_lastReal] != before.hashKey) resetDrawHistory(before);
+    if (!activeSearch->drawHistoryInitialized || activeSearch->drawHistory[activeSearch->lastReal] != before.hashKey) resetDrawHistory(before);
     HistoryMoveInfo moveInfo = historyMoveInfo(before, move);
     appendDrawHistory(after.hashKey, moveIsIrreversible(moveInfo, packCastling(after)), true);
 }
 
 DrawHistoryState getDrawHistoryState() {
-    return {g_lastIrreversible, g_lastReal, g_lastValid};
+    return {activeSearch->lastIrreversible, activeSearch->lastReal, activeSearch->lastValid};
 }
 
 bool isDrawByFiftyMove(const Position& pos) {
@@ -1352,9 +1368,26 @@ bool isDrawByFiftyMove(const Position& pos) {
 }
 
 bool isDrawByRepetition(const Position& pos) {
-    if (!g_drawHistoryInitialized || g_lastValid - g_lastIrreversible < 2) return false;
-    for (int i = g_lastValid - 2; i >= g_lastIrreversible; i -= 2) {
-        if (g_drawHistory[i] == pos.hashKey) return true;
+    if (!activeSearch->drawHistoryInitialized || activeSearch->lastValid - activeSearch->lastIrreversible < 2) return false;
+    for (int i = activeSearch->lastValid - 2; i >= activeSearch->lastIrreversible; i -= 2) {
+        if (activeSearch->drawHistory[i] == pos.hashKey) return true;
     }
     return false;
+}
+
+SearchContext::SearchContext() : impl_(new Impl) {}
+SearchContext::~SearchContext() = default;
+void SearchContext::clearForNewGame() { impl_.reset(new Impl); }
+void SearchContext::requestStop() { impl_->stopRequested.store(true, std::memory_order_relaxed); }
+SearchResult searchBestMove(SearchContext& context, Position& pos, const SearchLimits& limits) {
+    SearchBinding binding(context.impl_.get());
+    return searchBestMove(pos, limits);
+}
+void resetDrawHistory(SearchContext& context, const Position& pos) {
+    SearchBinding binding(context.impl_.get());
+    resetDrawHistory(pos);
+}
+void recordRealMoveForDrawHistory(SearchContext& context, const Position& before, const Move& move, const Position& after) {
+    SearchBinding binding(context.impl_.get());
+    recordRealMoveForDrawHistory(before, move, after);
 }

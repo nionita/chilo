@@ -284,6 +284,38 @@ Important behavior:
 - after that window it returns to normal root PVS and records only the chosen move's evaluated leaf
 - it prints periodic progress lines with games, collected samples, elapsed time, rate, and ETA
 
+### Fixed-node Self-Play Matches
+
+The same executable has a single-worker match mode for two named futility
+profiles using one engine and one explicitly loaded network. Start from
+[`scripts/selfplay_match.example.json`](scripts/selfplay_match.example.json),
+adjust its paths and settings, then run:
+
+```bash
+make selfplay_collect
+build/release/selfplay_collect --match-config match.json --run-dir match-run
+build/release/selfplay_collect --match-config match.json --run-dir match-run --resume
+```
+
+Each opening produces a color-reversed pair. The players have independent
+search contexts and TT reuse between their own moves. Match mode uses normal
+PVS, threefold repetition, fastchess-compatible adjudication and normalized
+pentanomial SPRT. Its default budget is 120k nodes **per move**; there is no
+game-level allocation yet. Results under node budgets need separate timed
+strength confirmation.
+
+`manifest.json` freezes the experiment; `games.jsonl` retains checksummed
+completed games with all moves, scores, depths and nodes. `status.json` shows
+progress and `results.json` records terminal outcomes, including inconclusive
+game limits. To stop after the current pair, create `match-run/STOP` or send
+SIGINT/SIGTERM on Linux. Remove `STOP` before resuming. Interrupted, incomplete
+games replay from their opening; completed first games of pairs are retained.
+Do not change the executable, weights, openings or settings during a run.
+
+See the match-mode section in [futility-tuning.md](futility-tuning.md) for
+the exact contract, defaults and recovery behavior. Run its short tests with
+`make selfplay-match-tests`; the Windows build also includes match mode.
+
 ### Eval CLI
 
 Evaluate one or more FENs directly with the compiled engine:

@@ -1,0 +1,17 @@
+{
+  "schema": "chilo.selfplay_match.v1",
+  "players": [
+    {"name": "candidate", "parameters": {"futility_margins": [0, 35, 158, 553, 754]}},
+    {"name": "spsa150b", "parameters": {"futility_margins": [0, 40, 158, 488, 754]}}
+  ],
+  "weights": "/home/nicu/NNUE/Nets/chilo-g4t1-64x8.bin",
+  "openings": {"file": "/home/nicu/Tune/open-moves/open-moves.fen", "order": "random", "seed": 20261008},
+  "budget": {"mode": "fixed_nodes_per_move", "nodes": 120000},
+  "max_pairs": 26000,
+  "sprt": {"model": "normalized", "elo0": 0, "elo1": 2, "alpha": 0.05, "beta": 0.05},
+  "adjudication": {
+    "resign": {"movecount": 3, "score": 600},
+    "draw": {"movenumber": 34, "movecount": 8, "score": 20},
+    "maxmoves": 200
+  }
+}

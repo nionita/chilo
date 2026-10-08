@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "selfplay_match.h"
 
 #include <cctype>
 #include <algorithm>
@@ -69,6 +70,7 @@ bool movesEqual(const Move& a, const Move& b) {
 void printUsage() {
     std::cout
         << "Usage: selfplay_collect --fen-file <path> --output <path> [options]\n"
+        << "Match mode: selfplay_collect --match-config <json> --run-dir <dir> [--resume]\n"
         << "Options:\n"
         << "  -i, --fen-file <path>          Input FEN file\n"
         << "  -o, --output <path>            Output CSV path\n"
@@ -364,6 +366,9 @@ void printProgress(int completedGames, int totalGames, int totalSamples,
 }  // namespace
 
 int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--match-config") return runSelfplayMatch(argc, argv);
+    }
     Options options;
     if (!parseArgs(argc, argv, options)) {
         if (!options.helpRequested) printUsage();
