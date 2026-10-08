@@ -95,6 +95,20 @@ already SPRT-validated `spsa150b`. The selection table above is the matched
 single-shard view at that time; use the later pooled-selection evidence for
 extended validation.
 
+## Local futility archive layout — 2026-10-08
+
+The extracted legacy shared-budget G3-SR1/SR2/SR3 experiment folders are
+archived in `~/Tune/futility/g3-sr1-sr3-legacy-probes.tgz`. To restore their
+original paths, extract that archive into `~/Tune/futility/`.
+
+The G4 alpha21 D1 rescue analysis folder is archived in
+`~/Tune/futility/margin-analysis/g4-alpha21-d1-rescue.tgz`; extract it into
+`~/Tune/futility/margin-analysis/` to restore the original folder. The expanded
+`futility-populations-v1-linux` staging package was also removed after
+verification; its archive remains at
+`~/Tune/futility/futility-populations-v1-linux.tgz`. The canonical, working
+validation populations remain uncompressed under `~/Tune/futility/validation/`.
+
 ## G3-SR1 Candidate Filter — 2026-08-21
 
 The G3-SR1 filter used:
