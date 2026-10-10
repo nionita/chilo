@@ -354,6 +354,9 @@ logs show quota use, exclusions and fitted length scales.
 verifies a stopped run and creates a fresh config importing all finished matches,
 including repeats; by default it carries over the remaining measurement budget.
 Driver/config changes require this fresh run, not an old-checkpoint resume.
+The follow-up helper accepts `--gp-ard` (or `--no-gp-ard`) and
+`--gp-length-scale-bounds LOW HIGH` to record a model change in the new config
+and receipt while leaving the source run untouched.
 The opponent is never automatically promoted and a fitted recommendation is
 not confirmed timed-play strength. See [futility-tuning.md](futility-tuning.md)
 for the import contract, storage and statistical caveats. Short verification:

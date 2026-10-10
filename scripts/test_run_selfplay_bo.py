@@ -258,6 +258,26 @@ class Runner(unittest.TestCase):
             self.prepare_followup()
         self.assertFalse((self.root / "followup.json").exists())
 
+    def test_followup_model_overrides_preserve_source_and_observations(self):
+        self.execute(max_evaluations=1)
+        original_state = (self.run / "state.json").read_bytes()
+        original_manifest = (self.run / "manifest.json").read_bytes()
+        with self.assertRaises((bo.BOError, ValueError)):
+            self.prepare_followup(gp_length_scale_bounds=[.05, .01])
+        self.assertFalse((self.root / "followup.json").exists())
+        receipt = self.prepare_followup(gp_ard=True, gp_length_scale_bounds=[.05, 10])
+        cfg = bo.load_config(self.root / "followup.json")
+        self.assertTrue(cfg["model"]["gp_ard"])
+        self.assertEqual(cfg["model"]["gp_length_scale_bounds"], [.05, 10])
+        self.assertFalse(receipt["source_model"]["gp_ard"])
+        self.assertEqual(receipt["model"], cfg["model"])
+        self.assertEqual(receipt["config_sha256"], bo.digest(cfg))
+        self.assertEqual(cfg["bootstrap"], [o["path"] for o in self.state()["observations"]])
+        self.assertEqual((self.run / "state.json").read_bytes(), original_state)
+        self.assertEqual((self.run / "manifest.json").read_bytes(), original_manifest)
+        bo.execute(self.root / "followup.json", self.root / "new-run", dry_run=True)
+        self.assertFalse((self.root / "new-run").exists())
+
     def test_cpp_scientific_manifest_import(self):
         c = self.config()
         c["sprt"]["alpha"] = 1e-5

@@ -869,6 +869,24 @@ the config and never starts matches. Do not discard the original run or bootstra
 directories: the new config references them. Re-running identical preparation
 is idempotent; differing output is refused.
 
+**ARD/smoothness follow-up — 2026-10-10:** after stopping the local repeat-limited
+run with one new match complete, prepare `bo-d5-150p-03` from `bo-d5-150p-02`,
+importing 14 completed measurements and retaining 18 new measurements. Use
+`gp_ard=true`, `gp_length_scale_bounds=[0.05,10]`, and a fresh seed `20261014`.
+Keep learned residual noise, kappa 0.5, the pool, repeat policy and frozen match
+conditions unchanged. These scale bounds are smoothness regularization, not
+empirically established optima: a one-unit change to just the first margin has
+about 97% Matérn-5/2 kernel correlation at the new floor, whereas at 0.005 it is
+about 19%; a scale of 10 remains almost flat over an entire normalized axis.
+An offline ARD refit on the preceding 13-match/six-distinct-tuple history hit
+0.005 on all five coordinates too, so changing ARD alone did not resolve the
+collapse. The additional learned noise was negligible beside the supplied
+paired-score mean variances. The new bound is an explicit modeling assumption;
+do not claim calibrated uncertainty or playing-strength improvement from it.
+The helper accepts `--gp-ard`/`--no-gp-ard` and
+`--gp-length-scale-bounds LOW HIGH`, validates the fresh model, and records both
+source and new model settings without editing old manifests/checkpoints.
+
 Editing Python source does not replace functions already loaded by the running
 driver. Thus the old process can finish its current measurement unchanged, but
 strict source fingerprints intentionally prevent resuming that old run with the
