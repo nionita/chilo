@@ -754,8 +754,9 @@ nodes/move, **150 pairs per measurement, 30 new measurements** and normal
 normalized SPRT `[0,2]` with alpha/beta 0.05. SPRT can stop earlier; capped
 inconclusive results are retained. The completed `match120k` (valbo-v1) and
 `barbarossa5-120k` matches bootstrap the example despite their larger caps.
-The earlier 5k-node smoke result is incompatible. No production optimization
-has been started by implementing/testing this controller.
+The earlier 5k-node smoke result is incompatible. The local 30-measurement and
+cloud 24-measurement first experiments were subsequently started with different
+seeds; both were requested to stop after their current match on 2026-10-10.
 
 The target is `y = 0.5 - score` (lower is better), with
 `noise_variance = score_mean_variance`, the variance of the **mean paired
@@ -777,8 +778,41 @@ nonnegative residual noise, LCB `kappa=0.5`, eight coverage fit restarts and
 residual noise; acquisition uses latent uncertainty. `recommend_observed()`
 chooses by fitted mean, not the luckiest individual raw observation. LCB may
 repeatedly choose the same tuple: each repeat is a **new independent match**,
-not a cache lookup or a second import of its old result. More sophisticated
-repeat/new-point information allocation remains future work.
+not a cache lookup or a second import of its old result. LCB is not an explicit
+expected-information-value policy for allocating repeat measurements.
+
+**Repeat allocation correction — 2026-10-10:** replay of the local proposal
+history reproduced the choices exactly; this was not a stale-state bug. At the
+10-completed-match snapshot, six new matches repeated Barbarossa5, and the
+pending eleventh match repeated it again. Together with its bootstrap there
+were 2,400 measured pairs at that tuple. The fitted shared length scale was at
+the normalized lower bound (`0.005`), so nearby points inherited little evidence.
+At the pending proposal, Barbarossa5 had LCB about `-0.00908`, versus `-0.00550`
+for the best unmeasured pool point. Increasing kappa modestly did not guarantee
+a new tuple: it could simply choose another already-measured one.
+
+Branch `selfplay-bo-repeat-limits` adds configurable application-side limits:
+
+```json
+"repeat_policy": {"max_repeat_fraction": 0.25, "max_consecutive_repeats": 1}
+```
+
+At most `floor(measurements * max_repeat_fraction)` **new** measurements may
+repeat any tuple already observed at their proposal time, and the streak limit
+counts consecutive repeat measurements, not consecutive selections of just
+one particular tuple. Bootstrap samples remain model evidence but do not consume
+the new-run quota. A pending match reserves its proposal; it is counted only
+when its verified result commits. When either limit blocks repeats, remove all
+measured tuples from the eligible acquisition pool, without removing observations
+from the fitted model. Quota use, exclusion reasons, eligible pool hash/size and
+compact GP fit diagnostics are recorded; the log prints the fitted length scale.
+An exhausted eligible pool fails explicitly rather than silently overriding
+the policy. Omission preserves the old unrestricted policy (`1.0`, `null`).
+
+The initial correction uses 25% and one consecutive repeat. This guarantees
+allocation to new tuples; it does **not** establish that these limits, the current
+kernel or kappa are optimal. ARD and acquisition tuning are separate experiments;
+neither the frozen engine nor tinibo was changed for this correction.
 
 Configuration describes **actual margin bounds**, separately for the model
 domain and the proposal region. The initial limits by depth are
@@ -825,6 +859,23 @@ versioned binary under `~/Tune/Engines`. Each optimizer run retains
 nested `match/` holds the original manifest, status, results and full journal;
 do not redirect logs into a fresh C++ match directory. To bootstrap a follow-up
 include those nested completed match directories, not the optimizer root.
+`scripts/prepare_selfplay_bo_followup.py` automates this: after the old run stops
+with no pending match, supply its config/root, a new config/root and a fresh seed.
+It checks the run lock, config/manifest/checkpoint, every completed journal and
+seed identity; retains all distinct measurements, including repeat tuples; and
+defaults the new budget to the original budget minus completed measurements.
+The fresh run gets a fresh repeat quota. It writes a provenance receipt next to
+the config and never starts matches. Do not discard the original run or bootstrap
+directories: the new config references them. Re-running identical preparation
+is idempotent; differing output is refused.
+
+Editing Python source does not replace functions already loaded by the running
+driver. Thus the old process can finish its current measurement unchanged, but
+strict source fingerprints intentionally prevent resuming that old run with the
+new driver. Keep the previous cloud package intact. The small repeat-policy
+upgrade binds its external dependencies to that package (Python environment,
+tinibo, frozen executable/net/book and journals), verifies them on setup, and
+writes to a new package-local `run/`; no apt/sudo or duplicate large payload.
 
 `run --config C --run-dir R --dry-run` checks configuration/imports without
 playing games. `run ... --resume` initializes/continues idempotently and

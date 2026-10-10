@@ -12,6 +12,7 @@
   "model_margin_bounds": [[0, 120], [0, 320], [0, 640], [0, 1280], [0, 2560]],
   "proposal_margin_bounds": [[0, 120], [0, 320], [0, 640], [0, 1280], [0, 2560]],
   "pool": {"size": 10000, "local_fraction": 0.8, "radius_fraction": 0.1},
+  "repeat_policy": {"max_repeat_fraction": 0.25, "max_consecutive_repeats": 1},
   "model": {
     "kernel": "matern52", "gp_ard": false, "noise_mode": "learned",
     "acquisition": "ucb", "kappa": 0.5,

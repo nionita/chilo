@@ -346,6 +346,14 @@ Actual-margin model/proposal bounds support narrower follow-up searches while
 retaining broad historical observations. Such a follow-up is a **new run**
 with imported completed match directories, not an edited resume config.
 Repeats launch fresh seeded matches; there is no evaluation-cache shortcut.
+The example limits repeats to `floor(0.25 * measurements)` and at most one
+consecutive repeat; all observations remain in the model. Omitting
+`repeat_policy` preserves unrestricted repeat selection. The report and proposal
+logs show quota use, exclusions and fitted length scales.
+[`scripts/prepare_selfplay_bo_followup.py`](scripts/prepare_selfplay_bo_followup.py)
+verifies a stopped run and creates a fresh config importing all finished matches,
+including repeats; by default it carries over the remaining measurement budget.
+Driver/config changes require this fresh run, not an old-checkpoint resume.
 The opponent is never automatically promoted and a fitted recommendation is
 not confirmed timed-play strength. See [futility-tuning.md](futility-tuning.md)
 for the import contract, storage and statistical caveats. Short verification:

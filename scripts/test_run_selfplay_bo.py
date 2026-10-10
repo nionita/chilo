@@ -14,12 +14,33 @@ import unittest
 from unittest.mock import patch
 
 import run_selfplay_bo as bo
+import prepare_selfplay_bo_followup as followup
 from test_selfplay_match import BIN, ROOT, START, zero_net
 
 TINIBO_ROOT = Path(os.environ.get("CHILO_TINIBO_ROOT", ROOT.parent / "tinibo")).resolve()
 
 
 class Coordinates(unittest.TestCase):
+    def test_repeat_budget_and_streak_exclude_bootstrap(self):
+        c = {"measurements": 50, "repeat_policy": {"max_repeat_fraction": .14,
+                                                 "max_consecutive_repeats": 1}}
+        state = {"completed": 0, "observations": [{"margins": [1]}, {"margins": [1]}]}
+        self.assertEqual(bo.repeat_status(c, state)["budget"], 7)  # exact decimal floor
+        self.assertEqual(bo.repeat_status(c, state)["completed_repeats"], 0)
+        state["observations"].append({"margins": [1]})
+        state["completed"] = 1
+        self.assertEqual(bo.repeat_status(c, state)["blocked_by"], ["consecutive_repeat_limit"])
+        pool, status = bo.eligible_pool(c, state, [[1], [2]])
+        self.assertEqual(pool, [[2]])
+        self.assertEqual(status["excluded_measured_tuples"], 1)
+        state["observations"].append({"margins": [2]})
+        state["completed"] += 1
+        self.assertTrue(bo.repeat_status(c, state)["repeats_allowed"])
+        c["repeat_policy"]["max_repeat_fraction"] = 0
+        self.assertEqual(bo.eligible_pool(c, state, [[1], [2], [3]])[0], [[3]])
+        with self.assertRaisesRegex(bo.BOError, "no eligible new tuples"):
+            bo.eligible_pool(c, state, [[1], [2]])
+
     def test_round_trip_and_depths(self):
         for n in range(1, 8):
             values = list(range(0, n*20, 20))
@@ -130,6 +151,112 @@ class Runner(unittest.TestCase):
         self.assertEqual(o["noise_variance"], 0)
         self.assertEqual(o["result"]["score"], .5)
         self.assertEqual(o["y"], 0)
+
+    def test_repeat_policy_validation_and_default(self):
+        self.assertEqual(self.config()["repeat_policy"], bo.REPEAT_POLICY)
+        for policy in ({"max_repeat_fraction": True}, {"max_repeat_fraction": -1},
+                       {"max_repeat_fraction": 1.1}, {"max_repeat_fraction": float("inf")},
+                       {"max_consecutive_repeats": True}, {"max_consecutive_repeats": -1},
+                       {"unknown": 1}):
+            self.raw["repeat_policy"] = policy
+            with self.assertRaises((bo.BOError, ValueError)):
+                self.save()
+                self.config()
+
+    def test_quota_and_streak_force_new_matches_after_repeat(self):
+        self.raw.update(measurements=4, proposal_margin_bounds=[[10, 11], [20, 21], [30, 31]],
+                        repeat_policy={"max_repeat_fraction": .25, "max_consecutive_repeats": 1})
+        self.save()
+        # Prefer a measured point if the driver permits one, independent of GP fit.
+        from types import SimpleNamespace
+        _, tinibo = bo.libraries(self.config())
+        def ask(opt, candidates, return_info):
+            seen = {tuple(x) for x in opt.get_state()["observations"]["x"]}
+            point = next((p for p in candidates if tuple(p) in seen), candidates[0])
+            return SimpleNamespace(x=point, mean=0, std=1, acquisition_value=-.5,
+                                   diagnostics={"fit": {"length_scale": .005}})
+        with patch.object(tinibo.BayesianOptimizer, "ask", ask):
+            self.execute(max_evaluations=1)
+            self.execute(resume=True)
+        proposals = [bo.read_json(self.run / f"measurements/gamebo-{i:04d}/proposal.json") for i in range(4)]
+        self.assertEqual([p["repeat"] for p in proposals], [True, False, False, False])
+        self.assertIn("repeat_budget_exhausted", proposals[1]["repeat_status"]["blocked_by"])
+        self.assertIn("consecutive_repeat_limit", proposals[1]["repeat_status"]["blocked_by"])
+        self.assertEqual(bo.read_json(self.run / "report.json")["repeat_status"]["completed_repeats"], 1)
+        self.assertEqual(len({o["seed"] for o in self.state()["observations"]}), 5)
+        self.raw["repeat_policy"]["max_repeat_fraction"] = .5
+        self.save()
+        with self.assertRaisesRegex(bo.BOError, "fingerprint mismatch"):
+            self.execute(resume=True)
+
+    def test_no_repeat_finite_region_exhaustion_before_engine(self):
+        self.raw["repeat_policy"] = {"max_repeat_fraction": 0}
+        self.save()
+        with patch.object(bo.subprocess, "Popen", side_effect=AssertionError("must not launch")):
+            with self.assertRaisesRegex(bo.BOError, "no eligible new tuples"):
+                self.execute()
+        self.assertIsNone(self.state()["pending"])
+        self.assertEqual(self.state()["completed"], 0)
+
+    def test_streak_limit_recovers_after_new_match_and_pending_is_not_counted(self):
+        self.raw.update(measurements=4, proposal_margin_bounds=[[10, 11], [20, 21], [30, 31]],
+                        repeat_policy={"max_repeat_fraction": 1, "max_consecutive_repeats": 1})
+        self.save()
+        from types import SimpleNamespace
+        _, tinibo = bo.libraries(self.config())
+        def ask(opt, candidates, return_info):
+            seen = {tuple(x) for x in opt.get_state()["observations"]["x"]}
+            point = next((p for p in candidates if tuple(p) in seen), candidates[0])
+            return SimpleNamespace(x=point, mean=0, std=1, acquisition_value=-.5,
+                                   diagnostics={"fit": {"length_scale": .005}})
+        with patch.object(tinibo.BayesianOptimizer, "ask", ask):
+            with patch.object(bo.subprocess, "Popen", side_effect=OSError("crash")):
+                with self.assertRaises(OSError):
+                    self.execute()
+            self.assertTrue(self.state()["pending"]["repeat"])
+            self.assertEqual(bo.repeat_status(self.config(), self.state())["completed_repeats"], 0)
+            self.execute(resume=True)
+        proposals = [bo.read_json(self.run / f"measurements/gamebo-{i:04d}/proposal.json") for i in range(4)]
+        self.assertEqual([p["repeat"] for p in proposals], [True, False, True, False])
+
+    def prepare_followup(self, **kwargs):
+        return followup.prepare(self.cfg_path, self.run, self.root / "followup.json",
+                                self.root / "new-run", seed=45, **kwargs)
+
+    def test_followup_keeps_replicates_and_remaining_budget(self):
+        self.execute(max_evaluations=1)
+        # Model an older source config whose manifest did not expand repeat_policy.
+        manifest = bo.read_json(self.run / "manifest.json")
+        manifest["config"].pop("repeat_policy")
+        bo.atomic_json(self.run / "manifest.json", manifest)
+        state = self.state()
+        state["fingerprint"] = bo.digest(manifest)
+        bo.atomic_json(self.run / "state.json", state)
+        receipt = self.prepare_followup()
+        cfg = bo.load_config(self.root / "followup.json")
+        self.assertEqual(cfg["measurements"], 1)
+        self.assertEqual(len(cfg["bootstrap"]), 2)
+        self.assertEqual(receipt["repeat_budget"], 0)
+        self.assertEqual(self.prepare_followup(), receipt)  # idempotent
+        bo.execute(self.root / "followup.json", self.root / "new-run", dry_run=True)
+        self.assertFalse((self.root / "new-run").exists())
+        with self.assertRaisesRegex(bo.BOError, "refusing to overwrite"):
+            self.prepare_followup(measurements=10)
+        evidence = self.source / "games.jsonl"
+        evidence.write_bytes(evidence.read_bytes()[:-1])
+        with self.assertRaisesRegex(bo.BOError, "torn"):
+            self.prepare_followup()
+
+    def test_followup_rejects_active_or_pending_source(self):
+        with patch.object(bo.subprocess, "Popen", side_effect=OSError("crash")):
+            with self.assertRaises(OSError):
+                self.execute()
+        with bo.run_lock(self.run / "run.lock"):
+            with self.assertRaisesRegex(bo.BOError, "locked"):
+                self.prepare_followup()
+        with self.assertRaisesRegex(bo.BOError, "pending match"):
+            self.prepare_followup()
+        self.assertFalse((self.root / "followup.json").exists())
 
     def test_cpp_scientific_manifest_import(self):
         c = self.config()

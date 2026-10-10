@@ -3,6 +3,7 @@
 import argparse
 from contextlib import contextmanager, redirect_stdout
 import fcntl
+from fractions import Fraction
 import hashlib
 import io
 import json
@@ -28,6 +29,7 @@ SPRT = dict(model="normalized", elo0=0.0, elo1=2.0, alpha=0.05, beta=0.05)
 ADJ = dict(resign=dict(movecount=3, score=600),
            draw=dict(movenumber=34, movecount=8, score=20), maxmoves=200)
 TERMINAL = {"H0", "H1", "max_pairs", "openings_exhausted"}
+REPEAT_POLICY = dict(max_repeat_fraction=1.0, max_consecutive_repeats=None)
 
 
 class BOError(ValueError):
@@ -187,7 +189,7 @@ def load_config(path):
     keys(raw, ["schema", "executable", "weights", "openings", "base", "nodes",
                "max_pairs", "measurements", "seed", "model_margin_bounds",
                "proposal_margin_bounds", "bootstrap", "tinibo_path", "model",
-               "pool", "sprt", "adjudication"], "config")
+               "pool", "repeat_policy", "sprt", "adjudication"], "config")
     require(raw.get("schema") == SCHEMA, "unsupported BO config schema")
     c = dict(raw)
     for key in ("executable", "weights", "openings"):
@@ -222,6 +224,14 @@ def load_config(path):
     for name in ("local_fraction", "radius_fraction"):
         require(type(c["pool"][name]) in (int, float) and math.isfinite(c["pool"][name]) and
                 0 <= c["pool"][name] <= 1, f"invalid {name}")
+    c["repeat_policy"] = {**REPEAT_POLICY, **raw.get("repeat_policy", {})}
+    keys(c["repeat_policy"], REPEAT_POLICY, "repeat_policy")
+    fraction = c["repeat_policy"]["max_repeat_fraction"]
+    require(type(fraction) in (int, float) and math.isfinite(fraction) and 0 <= fraction <= 1,
+            "invalid max_repeat_fraction")
+    consecutive = c["repeat_policy"]["max_consecutive_repeats"]
+    if consecutive is not None:
+        integer(consecutive, 0, 2**31-1, "max_consecutive_repeats")
     keys(raw.get("sprt", {}), SPRT, "sprt")
     c["sprt"] = {**SPRT, **raw.get("sprt", {})}
     require(c["sprt"]["model"] == "normalized", "only normalized SPRT is supported")
@@ -487,6 +497,47 @@ def tuple_tree(value):
     return tuple(tuple_tree(v) for v in value) if isinstance(value, list) else value
 
 
+def repeat_status(c, state):
+    """Bootstrap informs the model, but only new matches consume repeat quota."""
+    completed, observations = state["completed"], state["observations"]
+    integer(completed, 0, len(observations), "completed measurements")
+    split = len(observations) - completed
+    seen = {tuple(o["margins"]) for o in observations[:split]}
+    repeats = streak = 0
+    for o in observations[split:]:
+        repeated = tuple(o["margins"]) in seen
+        repeats += int(repeated)
+        streak = streak + 1 if repeated else 0
+        seen.add(tuple(o["margins"]))
+    policy = c["repeat_policy"]
+    quota = int(Fraction(str(policy["max_repeat_fraction"])) * c["measurements"])
+    reasons = []
+    if repeats >= quota:
+        reasons.append("repeat_budget_exhausted")
+    if policy["max_consecutive_repeats"] is not None and streak >= policy["max_consecutive_repeats"]:
+        reasons.append("consecutive_repeat_limit")
+    return {"policy": policy, "budget": quota, "completed_repeats": repeats,
+            "consecutive_repeats": streak, "repeats_allowed": not reasons, "blocked_by": reasons}
+
+
+def eligible_pool(c, state, pool):
+    status = repeat_status(c, state)
+    measured = {tuple(o["margins"]) for o in state["observations"]}
+    eligible = pool if status["repeats_allowed"] else [p for p in pool if tuple(p) not in measured]
+    status = status | {"excluded_measured_tuples": len(pool)-len(eligible)}
+    require(eligible, "no eligible new tuples in proposal pool under repeat policy; "
+            "expand the proposal region/pool in a new run")
+    return eligible, status
+
+
+def compact_fit(suggestion):
+    if suggestion is None:
+        return None
+    fit = suggestion.diagnostics["fit"]
+    return {k: fit[k] for k in ("length_scale", "ard", "parameters_at_bounds", "signal_standardized",
+                                "residual_noise_variance", "negative_log_likelihood") if k in fit}
+
+
 def optimizer(c, state=None):
     _, tinibo = libraries(c)
     if state is not None:
@@ -511,7 +562,7 @@ def verify_checkpoint(state, opt):
     require(len({o["id"] for o in observations}) == len(observations), "duplicate measurement identity")
 
 
-def report(root, state, opt):
+def report(root, state, opt, c):
     recommendation = None
     if state["observations"]:
         x, mean = opt.recommend_observed()
@@ -519,6 +570,7 @@ def report(root, state, opt):
                           "scope": "model domain; not independently confirmed strength"}
     atomic_json(root / "report.json", {
         "schema": SCHEMA, "completed": state["completed"], "observations": len(state["observations"]),
+        "repeat_status": repeat_status(c, state),
         "pending": state["pending"], "recommendation": recommendation,
         "measurements": [{k: o[k] for k in ("id", "path", "margins", "seed", "y", "noise_variance", "degenerate")}
                          | {"pairs": o["result"]["pairs"], "status": o["result"]["status"],
@@ -545,6 +597,7 @@ def execute(config_path, root, resume=False, dry_run=False, max_evaluations=None
     if dry_run:
         print(json.dumps({"status": "ok", "bootstrap": len(imported), "fingerprint": digest(fingerprint),
                           "new_measurements": c["measurements"], "max_pairs": c["max_pairs"],
+                          "repeat_status": repeat_status(c, {"completed": 0, "observations": imported}),
                           "delta_bounds": delta_bounds(c["model_margin_bounds"])}, indent=2))
         return
     root = Path(root).resolve()
@@ -596,6 +649,7 @@ def execute(config_path, root, resume=False, dry_run=False, max_evaluations=None
                 if state["pending"] is None:
                     recommended = decode(opt.recommend_observed()[0]) if state["observations"] else None
                     pool = proposal_pool(c, pool_rng, state["observations"], recommended)
+                    pool, policy_status = eligible_pool(c, state, pool)
                     suggestion = opt.ask(candidates=[encode(p) for p in pool], return_info=True) if state["observations"] else None
                     values = decode(suggestion.x) if suggestion else (
                         c["base"]["futility_margins"] if in_region(c["base"]["futility_margins"], c["proposal_margin_bounds"])
@@ -612,12 +666,18 @@ def execute(config_path, root, resume=False, dry_run=False, max_evaluations=None
                         "pool_size": len(pool), "mean": float(suggestion.mean) if suggestion else None,
                         "std": float(suggestion.std) if suggestion else None,
                         "acquisition": float(suggestion.acquisition_value) if suggestion else None,
+                        "repeat_status": policy_status, "fit": compact_fit(suggestion),
                         "repeat": any(o["margins"] == values for o in state["observations"])}
                     # Reserve tuple, seed and all post-ask RNG states before any child writes.
                     save_state(root, state, opt, pool_rng, seed_rng)
                 pending = state["pending"]
                 require(pending["config"] == match_config(c, pending["margins"], pending["seed"], pending["name"]) and
                         in_region(pending["margins"], c["proposal_margin_bounds"]), "invalid reserved proposal")
+                repeated = any(o["margins"] == pending["margins"] for o in state["observations"])
+                policy_status = repeat_status(c, state)
+                require(pending["repeat"] == repeated and
+                        {k: pending["repeat_status"][k] for k in policy_status} == policy_status and
+                        (not repeated or policy_status["repeats_allowed"]), "invalid reserved repeat policy")
                 require(all(identity(c[k]) == contract[k] for k in ("executable", "weights", "openings")),
                         "frozen artifact changed before match launch")
                 directory = root / "measurements" / pending["name"]
@@ -634,6 +694,10 @@ def execute(config_path, root, resume=False, dry_run=False, max_evaluations=None
                     atomic_json(cfg_path, pending["config"])
                 print(f"game BO {state['completed']+1}/{c['measurements']} {pending['name']} "
                       f"margins={','.join(map(str, pending['margins']))} seed={pending['seed']} repeat={pending['repeat']}", flush=True)
+                print(f"repeat policy used={policy_status['completed_repeats']}/{policy_status['budget']} "
+                      f"streak={policy_status['consecutive_repeats']} blocked={','.join(policy_status['blocked_by']) or 'none'} "
+                      f"excluded={pending['repeat_status']['excluded_measured_tuples']} "
+                      f"length_scale={(pending['fit'] or {}).get('length_scale')}", flush=True)
                 # Always let the C++ journal recover/validate, including a completed match
                 # whose result was written just before the driver crashed.
                 cmd = [c["executable"], "--match-config", str(cfg_path), "--run-dir", str(match_root)]
@@ -675,7 +739,7 @@ def execute(config_path, root, resume=False, dry_run=False, max_evaluations=None
                 this_run += 1
                 print(f"game BO measured score={o['result']['score']:.6f} variance={o['noise_variance']:.6g} "
                       f"pairs={o['result']['pairs']} status={o['result']['status']} degenerate={o['degenerate']}", flush=True)
-            report(root, state, opt)
+            report(root, state, opt, c)
             print(f"game BO {'complete' if state['completed'] == c['measurements'] else 'stopped'} "
                   f"completed={state['completed']} pending={state['pending'] is not None}", flush=True)
         finally:
@@ -704,7 +768,10 @@ def main(argv=None):
             print("stop requested; current measurement will finish")
         elif args.command == "status":
             state = read_json(args.run_dir / "state.json")
+            c = read_json(args.run_dir / "manifest.json")["config"]
+            c.setdefault("repeat_policy", REPEAT_POLICY)
             print(json.dumps({"completed": state["completed"], "observations": len(state["observations"]),
+                              "repeat_status": repeat_status(c, state),
                               "pending": state["pending"], "stop_requested": (args.run_dir / "STOP").exists()}, indent=2))
         else:
             require(args.max_evaluations is None or args.max_evaluations > 0, "max-evaluations must be positive")
