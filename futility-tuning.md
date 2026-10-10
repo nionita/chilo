@@ -1448,6 +1448,46 @@ or SPRT was launched for this proposal, and it does not change the production
 loop. Results and the source loop snapshot are backed up under
 `validation/evaluations/validation-bo-offline-v1/`.
 
+#### Subsequent validation-BO checks and loop phase 43 — 2026-10-10
+
+The complete phase-43 batch covers the same 141,099-position selection
+population. `valbo-v2` `[0,35,158,483,754]` measured `0.014102` mean regret,
+`0.002074` mean squared regret and `0.316828` CVaR-1%. The three cycle-25
+development nominees and `valbo-v3` measured as follows:
+
+| Candidate | Margins | Mean regret | Mean squared regret | CVaR-1% |
+|---|---|---:|---:|---:|
+| `bo-0003` | `3,45,196,368,727` | 0.014101 | 0.002072 | 0.316635 |
+| `bo-0014` | `3,44,219,356,558` | 0.014120 | 0.002092 | 0.319412 |
+| `bo-0009` | `2,43,240,397,577` | 0.014187 | 0.002116 | 0.321471 |
+| `valbo-v3` | `33,33,153,551,749` | 0.014163 | 0.002116 | 0.320868 |
+
+The earlier `valbo-v1` `[0,35,158,553,754]` remains best across these three
+metrics (`0.014094`, `0.002066`, `0.316171`). Despite those metrics, it was
+removed from the phase-43 selection frontier by the `winning_mate_missed`
+semantic filter (cutoff 1,208). The sole surviving frontier tuple was
+`[0,0,182,510,774]`, already rejected by SPRT. Thus phase 43 added no pending
+SPRT candidate. This is a concrete example of the hard semantic filter
+overriding a strong aggregate-metric candidate; preserve it when reconsidering
+the selector, rather than treating an empty SPRT queue as lack of promising
+proxy results.
+
+The cloud loop was stopped cleanly after phase 43 (`cycle=25`, `active=null`,
+`next_phase=dev`). The returned archive includes the full batch receipts and
+the loop state, queue and frontier snapshots. It is retained under
+`validation/evaluations/validation-bo-offline-v4/`.
+
+Refitting the separate validation-target BO on 42 compatible full-selection
+labels kept ARD Matérn-5/2 as the selected model. For κ 0 and 0.2 it proposes
+`[30,38,188,552,790]` (predicted mean regret `0.0141668`, standard deviation
+`0.0000413`); κ 0.5 proposes `[46,50,178,786,984]` (mean `0.0141755`, standard
+deviation `0.0000591`). These are proposals from the finite pool of
+development-measured tuples, not new measurements. All estimates remain
+uncertain and adaptive-data cross-validation is descriptive, not a strength
+claim. Keep the values for a later return to validation BO; do not treat them
+as established improvements or SPRT nominees without full validation and the
+existing selection process.
+
 BO uses mean normalized regret on SR4 only. Its initial settings reproduce the
 tested pilot policy: ARD Matérn-5/2, scaled GP with learned noise, LCB
 (`acquisition: "ucb"`, `kappa: 0.5`), eight coverage restarts, a 10,000-point
