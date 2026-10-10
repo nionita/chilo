@@ -1,0 +1,24 @@
+{
+  "schema": "chilo.selfplay_bo.v1",
+  "executable": "../build/release-avx2/selfplay_collect",
+  "tinibo_path": "../../tinibo",
+  "weights": "/home/nicu/NNUE/Nets/chilo-g4t1-64x8.bin",
+  "openings": "/home/nicu/Tune/open-moves/open-moves-unique.fen",
+  "base": {"name": "spsa150b", "futility_margins": [0, 40, 158, 488, 754]},
+  "nodes": 120000,
+  "max_pairs": 150,
+  "measurements": 30,
+  "seed": 20261010,
+  "model_margin_bounds": [[0, 120], [0, 320], [0, 640], [0, 1280], [0, 2560]],
+  "proposal_margin_bounds": [[0, 120], [0, 320], [0, 640], [0, 1280], [0, 2560]],
+  "pool": {"size": 10000, "local_fraction": 0.8, "radius_fraction": 0.1},
+  "model": {
+    "kernel": "matern52", "gp_ard": false, "noise_mode": "learned",
+    "acquisition": "ucb", "kappa": 0.5,
+    "gp_n_restarts": 8, "gp_max_iter": 100
+  },
+  "bootstrap": [
+    "/home/nicu/Tune/search-matches/runs/match120k",
+    "/home/nicu/Tune/search-matches/runs/barbarossa5-120k"
+  ]
+}

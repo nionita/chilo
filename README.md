@@ -316,6 +316,41 @@ See the match-mode section in [futility-tuning.md](futility-tuning.md) for
 the exact contract, defaults and recovery behavior. Run its short tests with
 `make selfplay-match-tests`; the Windows build also includes match mode.
 
+### Game-Outcome Bayesian Optimization
+
+[`scripts/run_selfplay_bo.py`](scripts/run_selfplay_bo.py) orchestrates sequential
+Linux matches against a fixed base, using the sibling tinibo v4 library and
+NumPy. It minimizes `0.5 - paired_score` with each match's supplied
+`score_mean_variance`; capped inconclusive matches are valid observations.
+It is separate from the futility proxy/validation loop.
+
+Start from [`scripts/selfplay_bo.example.json`](scripts/selfplay_bo.example.json).
+The example specifies 30 measurements, 150 pairs each, 120k nodes/move,
+spsa150b as base and two historical bootstrap matches. Preserve the exact
+AVX2 executable used by those matches; rebuilding invalidates their imports.
+Use a versioned frozen binary under `~/Tune/Engines` for a real run. First check
+the config without launching matches:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python scripts/run_selfplay_bo.py run --config scripts/selfplay_bo.example.json --run-dir ~/Tune/search-matches/runs/gamebo-d5-150 --dry-run
+```
+
+Remove `--dry-run` to run. Add `--resume` for cron-safe continuation: it never
+clears a requested stop. `stop --run-dir DIR` finishes the current measurement;
+`resume --config CONFIG --run-dir DIR` explicitly clears that stop.
+`status --run-dir DIR` shows the reserved match; its nested `status.json` and
+`engine.log` show game progress. SIGINT/SIGTERM finish the current pair and
+leave the unfinished measurement pending, not learned as a partial sample.
+
+Actual-margin model/proposal bounds support narrower follow-up searches while
+retaining broad historical observations. Such a follow-up is a **new run**
+with imported completed match directories, not an edited resume config.
+Repeats launch fresh seeded matches; there is no evaluation-cache shortcut.
+The opponent is never automatically promoted and a fitted recommendation is
+not confirmed timed-play strength. See [futility-tuning.md](futility-tuning.md)
+for the import contract, storage and statistical caveats. Short verification:
+`make selfplay-bo-tests` (requires tinibo v4 at the sibling source location).
+
 ### Eval CLI
 
 Evaluate one or more FENs directly with the compiled engine:

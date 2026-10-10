@@ -1,0 +1,391 @@
+"""Small game-outcome BO checks. Requires NumPy, tinibo v4 and the match binary."""
+import copy
+import importlib.util
+import json
+import os
+from pathlib import Path
+import random
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+import run_selfplay_bo as bo
+from test_selfplay_match import BIN, ROOT, START, zero_net
+
+TINIBO_ROOT = Path(os.environ.get("CHILO_TINIBO_ROOT", ROOT.parent / "tinibo")).resolve()
+
+
+class Coordinates(unittest.TestCase):
+    def test_round_trip_and_depths(self):
+        for n in range(1, 8):
+            values = list(range(0, n*20, 20))
+            self.assertEqual(bo.decode(bo.encode(values)), values)
+        for values in ([20, 20], [20, 10], [-1, 5], [1.5, 4], [], [1]*8):
+            with self.assertRaises(bo.BOError):
+                bo.encode(values)
+        with self.assertRaises(bo.BOError):
+            bo.decode([1, 0.5])
+
+    def test_cpp_checksum_float_format_and_strings(self):
+        v = {"alpha": 0.00001, "large": 1e15, "name": "keep-1e-05", "zero": -0.0}
+        expected = '{"alpha":1e-05,"large":1e+15,"name":"keep-1e-05","zero":-0.0}'
+        self.assertEqual(bo.cpp_digest(v), bo.hashlib.sha256(expected.encode()).hexdigest())
+
+    def test_actual_region_not_delta_rectangle(self):
+        bounds = [[0, 20], [40, 80], [100, 180]]
+        self.assertEqual(bo.delta_bounds(bounds), [[0, 20], [20, 80], [20, 140]])
+        self.assertFalse(bo.in_region(bo.decode([20, 80, 140]), bounds))
+        bo.check_bounds(bounds)
+        with self.assertRaises(bo.BOError):
+            bo.check_bounds([[4, 4], [0, 4]])
+
+    def test_mixed_pool_replay_and_repeats(self):
+        c = {"proposal_margin_bounds": [[0, 20], [30, 60], [90, 160]],
+             "base": {"futility_margins": [10, 40, 120]},
+             "pool": {"size": 100, "local_fraction": .8, "radius_fraction": .1}}
+        observations = [{"margins": [10, 40, 120]}, {"margins": [0, 35, 100]}]
+        one = bo.proposal_pool(c, random.Random(42), observations, [10, 40, 120])
+        self.assertEqual(one, bo.proposal_pool(c, random.Random(42), observations, [10, 40, 120]))
+        self.assertEqual(one[:2], [[10, 40, 120], [0, 35, 100]])
+        self.assertEqual(len(one), 100)
+        self.assertEqual(len(one), len(set(map(tuple, one))))
+        self.assertTrue(all(bo.in_region(p, c["proposal_margin_bounds"]) for p in one))
+        self.assertTrue(any(p[2] > 140 for p in one))  # broad component
+
+    def test_finite_pool_and_fixed_proposal(self):
+        c = {"proposal_margin_bounds": [[1, 1], [2, 2]],
+             "base": {"futility_margins": [1, 2]},
+             "pool": {"size": 10, "local_fraction": .8, "radius_fraction": .1}}
+        self.assertEqual(bo.proposal_pool(c, random.Random(3), [], None), [[1, 2]])
+
+    def test_opening_normalization(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "book.fen"
+            path.write_text(START.replace("8/8/8/8", "11111111/8/8/8").replace("KQkq", "qkQK").replace("0 1", "0 0") + "\n")
+            self.assertEqual(bo.opening_fens(path), [START])
+            path.write_text(START + ' ; id "start"; hmvc 3; fmvn 0;\n')
+            # Six-field FEN counters take precedence over following operations.
+            self.assertEqual(bo.opening_fens(path), [START])
+            path.write_text(" ".join(START.split()[:4]) + ' id "start"; hmvc 3; fmvn 0;\n')
+            self.assertEqual(bo.opening_fens(path), [START.replace("0 1", "3 1")])
+
+
+@unittest.skipUnless(BIN.exists(), "build selfplay_collect first")
+@unittest.skipUnless((TINIBO_ROOT / "tinibo/__init__.py").exists() and
+                     importlib.util.find_spec("numpy") is not None,
+                     "game BO integration requires NumPy and sibling tinibo (or CHILO_TINIBO_ROOT)")
+class Runner(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        zero_net(self.root / "net.bin")
+        (self.root / "book.fen").write_text(START + "\n7k/8/5K2/8/8/8/P7/8 b - - 0 1\n")
+        self.raw = {
+            "schema": bo.SCHEMA, "executable": str(BIN), "weights": "net.bin", "openings": "book.fen",
+            "tinibo_path": str(TINIBO_ROOT),
+            "base": {"name": "base", "futility_margins": [10, 20, 30]},
+            "nodes": 300, "max_pairs": 2, "measurements": 2, "seed": 32,
+            "model_margin_bounds": [[0, 40], [1, 80], [2, 120]],
+            "proposal_margin_bounds": [[10, 10], [20, 20], [30, 30]],
+            "pool": {"size": 12}, "model": {"gp_n_restarts": 1, "gp_max_iter": 3},
+            "adjudication": {"maxmoves": 2, "resign": {"movecount": 0}, "draw": {"movecount": 0}}}
+        self.cfg_path = self.root / "bo.json"
+        self.save()
+        c = bo.load_config(self.cfg_path)
+        cfg = bo.match_config(c, [10, 20, 30], 11, "bootstrap")
+        bo.atomic_json(self.root / "bootstrap.json", cfg)
+        self.source = self.root / "bootstrap"
+        subprocess.run([str(BIN), "--match-config", str(self.root / "bootstrap.json"),
+                        "--run-dir", str(self.source)], check=True, capture_output=True, timeout=30)
+        self.raw["bootstrap"] = [str(self.source)]
+        self.save()
+        self.run = self.root / "bo-run"
+
+    def save(self):
+        bo.atomic_json(self.cfg_path, self.raw)
+
+    def config(self):
+        return bo.load_config(self.cfg_path)
+
+    def state(self):
+        return bo.read_json(self.run / "state.json")
+
+    def execute(self, **kwargs):
+        bo.execute(self.cfg_path, self.run, **kwargs)
+
+    def cli(self, command, extra=()):
+        return [sys.executable, str(ROOT / "scripts/run_selfplay_bo.py"), command,
+                "--run-dir", str(self.run)] + ([] if command in {"stop", "status"} else
+                ["--config", str(self.cfg_path)]) + list(extra)
+
+    def test_import_statistics_and_degenerate(self):
+        o = bo.import_match(self.source, self.config())
+        self.assertEqual(o["margins"], [10, 20, 30])
+        self.assertTrue(o["degenerate"])
+        self.assertEqual(o["noise_variance"], 0)
+        self.assertEqual(o["result"]["score"], .5)
+        self.assertEqual(o["y"], 0)
+
+    def test_cpp_scientific_manifest_import(self):
+        c = self.config()
+        c["sprt"]["alpha"] = 1e-5
+        cfg = bo.match_config(c, [10, 20, 30], 12, "name-1e-05")
+        bo.atomic_json(self.root / "scientific.json", cfg)
+        source = self.root / "scientific"
+        subprocess.run([str(BIN), "--match-config", str(self.root / "scientific.json"),
+                        "--run-dir", str(source)], check=True, capture_output=True, timeout=30)
+        self.assertEqual(bo.import_match(source, c)["seed"], 12)
+
+    def test_summary_and_journal_corruption(self):
+        result_path = self.source / "results.json"
+        original = bo.read_json(result_path)
+        for key in ("score", "score_mean_variance", "wins", "elo", "llr", "pentanomial", "status"):
+            changed = copy.deepcopy(original)
+            changed[key] = "bad"
+            bo.atomic_json(result_path, changed)
+            bo.atomic_json(self.source / "status.json", changed)
+            with self.assertRaises((bo.BOError, TypeError)):
+                bo.import_match(self.source, self.config())
+        bo.atomic_json(result_path, original)
+        bo.atomic_json(self.source / "status.json", original)
+        journal_path = self.source / "games.jsonl"
+        original = journal_path.read_bytes()
+        records = original.splitlines(keepends=True)
+        g = json.loads(records[0])
+        g["game"]["a_score"] = 0
+        records[0] = (json.dumps(g) + "\n").encode()
+        journal_path.write_bytes(b"".join(records))
+        with self.assertRaisesRegex(bo.BOError, "checksum"):
+            bo.import_match(self.source, self.config())
+        journal_path.write_bytes(original[:-1])
+        with self.assertRaisesRegex(bo.BOError, "torn"):
+            bo.import_match(self.source, self.config())
+
+    def test_import_contract_rejections(self):
+        for key, value in (("nodes", 5000), ("base", {"name": "base", "futility_margins": [1]})):
+            c = self.config()
+            c[key] = value
+            with self.assertRaisesRegex(bo.BOError, "incompatible"):
+                bo.import_match(self.source, c)
+        c = self.config()
+        (self.root / "wrong-net.bin").write_bytes(b"wrong")
+        c["weights"] = str(self.root / "wrong-net.bin")
+        with self.assertRaisesRegex(bo.BOError, "weights"):
+            bo.import_match(self.source, c)
+        # Paths, names and pair caps are not the compatible-observation identity.
+        c = self.config()
+        c["base"]["name"] = "renamed"
+        c["max_pairs"] = 1500
+        self.assertEqual(bo.import_match(self.source, c)["result"]["pairs"], 2)
+
+    def test_dry_run_dedup_and_no_execution(self):
+        self.raw["bootstrap"] *= 2
+        self.save()
+        with patch.object(bo.subprocess, "Popen", side_effect=AssertionError("must not launch")):
+            self.execute(dry_run=True)
+        self.assertFalse(self.run.exists())
+
+    def test_base_can_disable_futility_or_have_other_depth(self):
+        for values in ([], [0], [30, 0, 10, 20, 0, 5, 0]):
+            self.raw["base"]["futility_margins"] = values
+            self.save()
+            self.assertEqual(self.config()["base"]["futility_margins"], values)
+
+    def test_duplicate_seed_bootstraps_rejected(self):
+        c = self.config()
+        cfg = bo.match_config(c, [11, 21, 31], 11, "second")
+        bo.atomic_json(self.root / "second.json", cfg)
+        source = self.root / "second"
+        subprocess.run([str(BIN), "--match-config", str(self.root / "second.json"),
+                        "--run-dir", str(source)], check=True, capture_output=True, timeout=30)
+        self.raw["bootstrap"].append(str(source))
+        self.save()
+        with self.assertRaisesRegex(bo.BOError, "share a seed"):
+            self.execute(dry_run=True)
+
+    def test_recover_uncommitted_initial_engine_manifest(self):
+        with patch.object(bo.subprocess, "Popen", side_effect=OSError("crash")):
+            with self.assertRaises(OSError):
+                self.execute()
+        match = self.run / "measurements/gamebo-0000/match"
+        match.mkdir()
+        (match / "manifest.json.tmp").write_text('{"contract":')
+        self.execute(resume=True, max_evaluations=1)
+        self.assertEqual(self.state()["completed"], 1)
+
+    def test_real_repeat_resume_and_new_seeds(self):
+        self.execute(max_evaluations=1)
+        one = self.state()
+        self.assertEqual(one["completed"], 1)
+        self.assertEqual(len(one["observations"]), 2)
+        pending_config = bo.read_json(self.run / "measurements/gamebo-0000/match.json")
+        proposal = bo.read_json(self.run / "measurements/gamebo-0000/proposal.json")
+        self.assertTrue(proposal["repeat"])
+        self.assertEqual(proposal["seed"], one["observations"][-1]["seed"])
+        self.assertEqual(len(proposal["pool_sha256"]), 64)
+        self.execute(resume=True)
+        state = self.state()
+        self.assertEqual(state["completed"], 2)
+        self.assertEqual(len(state["observations"]), 3)
+        self.assertEqual(len(set(o["seed"] for o in state["observations"])), 3)
+        self.assertEqual(state["observations"][1]["margins"], state["observations"][2]["margins"])
+        self.assertNotEqual(bo.read_json(self.run / "measurements/gamebo-0001/match.json")["openings"]["seed"],
+                            pending_config["openings"]["seed"])
+        self.execute(resume=True)
+        self.assertEqual(state, self.state())
+        self.assertEqual(bo.read_json(self.run / "report.json")["recommendation"]["margins"], [10, 20, 30])
+
+    def test_crash_before_launch_and_after_result(self):
+        with patch.object(bo.subprocess, "Popen", side_effect=OSError("injected crash before launch")):
+            with self.assertRaisesRegex(OSError, "injected"):
+                self.execute()
+        reserved = self.state()["pending"]
+        self.assertEqual(self.state()["completed"], 0)
+        original = bo.import_match
+
+        def crash_after(path, c, contract=None):
+            o = original(path, c, contract)
+            if Path(path) != self.source:
+                raise bo.BOError("injected crash after result")
+            return o
+
+        with patch.object(bo, "import_match", side_effect=crash_after):
+            with self.assertRaisesRegex(bo.BOError, "injected crash after"):
+                self.execute(resume=True)
+        self.assertEqual(self.state()["pending"], reserved)
+        journal = (self.run / "measurements/gamebo-0000/match/games.jsonl").read_bytes()
+        self.execute(resume=True, max_evaluations=1)
+        self.assertEqual(len(self.state()["observations"]), 2)
+        self.assertEqual(self.state()["observations"][-1]["seed"], reserved["seed"])
+        self.assertEqual(journal, (self.run / "measurements/gamebo-0000/match/games.jsonl").read_bytes())
+
+    def test_atomic_tell_recovery(self):
+        original = bo.atomic_json
+
+        def crash_save(path, value):
+            if Path(path).name == "state.json" and value.get("completed") == 1:
+                raise OSError("injected crash after tell before checkpoint")
+            original(path, value)
+
+        with patch.object(bo, "atomic_json", side_effect=crash_save):
+            with self.assertRaisesRegex(OSError, "injected"):
+                self.execute()
+        self.assertEqual(self.state()["completed"], 0)
+        self.execute(resume=True, max_evaluations=1)
+        self.assertEqual(len(self.state()["observations"]), 2)
+
+    def test_fingerprint_and_checkpoint_rejection(self):
+        self.execute(max_evaluations=1)
+        original = copy.deepcopy(self.raw)
+        for key, value in (("max_pairs", 1500), ("proposal_margin_bounds", [[10, 11], [20, 21], [30, 31]])):
+            self.raw = {**original, key: value}
+            self.save()
+            with self.assertRaisesRegex(bo.BOError, "fingerprint"):
+                self.execute(resume=True)
+        self.raw = original
+        self.save()
+        state = self.state()
+        state["observations"][-1]["y"] = .1
+        bo.atomic_json(self.run / "state.json", state)
+        with self.assertRaisesRegex(bo.BOError, "history mismatch"):
+            self.execute(resume=True)
+
+    def test_stop_cron_and_explicit_resume(self):
+        self.execute(max_evaluations=1)
+        self.assertEqual(bo.main(["stop", "--run-dir", str(self.run)]), 0)
+        self.execute(resume=True)
+        self.assertEqual(self.state()["completed"], 1)
+        self.assertTrue((self.run / "STOP").exists())
+        self.assertEqual(bo.main(["resume", "--config", str(self.cfg_path), "--run-dir", str(self.run)]), 0)
+        self.assertEqual(self.state()["completed"], 2)
+        self.assertFalse((self.run / "STOP").exists())
+
+    def test_lock(self):
+        self.run.mkdir()
+        with bo.run_lock(self.run / "run.lock"):
+            with self.assertRaisesRegex(bo.BOError, "locked"):
+                self.execute()
+
+    def test_soft_stop_finishes_current_measurement(self):
+        original = bo.subprocess.Popen
+
+        def request_stop(*args, **kwargs):
+            bo.atomic_json(self.run / "STOP", {"request": "test"})
+            return original(*args, **kwargs)
+
+        with patch.object(bo.subprocess, "Popen", side_effect=request_stop):
+            self.execute()
+        self.assertEqual(self.state()["completed"], 1)
+        self.assertIsNone(self.state()["pending"])
+
+    def test_new_precision_import_keeps_out_of_proposal_observations(self):
+        self.raw["max_pairs"] = 1500
+        self.raw["proposal_margin_bounds"] = [[11, 11], [21, 21], [31, 31]]
+        self.save()
+        self.execute(max_evaluations=1)
+        self.assertEqual(self.state()["observations"][0]["margins"], [10, 20, 30])
+        self.assertEqual(self.state()["observations"][1]["margins"], [11, 21, 31])
+        self.assertEqual(self.state()["observations"][1]["result"]["status"], "openings_exhausted")
+
+    def test_no_bootstrap_initial_match(self):
+        self.raw["bootstrap"] = []
+        self.save()
+        self.execute(max_evaluations=1)
+        self.assertEqual(len(self.state()["observations"]), 1)
+
+    def test_exact_next_proposal_replay(self):
+        self.raw["proposal_margin_bounds"] = self.raw["model_margin_bounds"]
+        self.save()
+        self.execute(max_evaluations=1)
+        state = self.state()
+        c = self.config()
+
+        def next_proposal():
+            opt = bo.optimizer(c, state["optimizer"])
+            rng = random.Random()
+            rng.setstate(bo.tuple_tree(state["pool_rng"]))
+            pool = bo.proposal_pool(c, rng, state["observations"], bo.decode(opt.recommend_observed()[0]))
+            suggestion = opt.ask(candidates=[bo.encode(p) for p in pool], return_info=True)
+            return bo.decode(suggestion.x), bo.digest(pool), opt.get_state()
+
+        self.assertEqual(next_proposal(), next_proposal())
+
+    def test_sigterm_pair_boundary_and_resume(self):
+        self.raw.update(nodes=3000, max_pairs=2, measurements=1, bootstrap=[])
+        self.raw["adjudication"]["maxmoves"] = 50
+        self.save()
+        process = subprocess.Popen(self.cli("run"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            log = self.run / "measurements/gamebo-0000/engine.log"
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if log.exists() and "match game=1" in log.read_text():
+                    break
+                if process.poll() is not None:
+                    self.fail("driver exited before signal: " + str(process.communicate()))
+                time.sleep(.01)
+            else:
+                self.fail("engine did not start")
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+            self.assertEqual(self.state()["completed"], 0)
+            self.assertIsNotNone(self.state()["pending"])
+            status = bo.read_json(self.run / "measurements/gamebo-0000/match/status.json")
+            self.assertEqual(status["status"], "stopped")
+            self.assertEqual(status["games"] % 2, 0)
+            self.execute(resume=True)
+            self.assertEqual(self.state()["completed"], 1)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                process.communicate(timeout=30)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -91,6 +91,11 @@ selfplay-match-tests: $(RELEASE_DIR)/selfplay_match_tests $(RELEASE_DIR)/selfpla
 	$(RELEASE_DIR)/selfplay_match_tests
 	python3 -m unittest discover -s scripts -p test_selfplay_match.py
 
+.PHONY: selfplay-bo-tests
+selfplay-bo-tests: $(RELEASE_DIR)/selfplay_collect
+	test -f "$${CHILO_TINIBO_ROOT:-../tinibo}/tinibo/__init__.py"
+	OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m unittest discover -s scripts -p test_run_selfplay_bo.py
+
 $(RELEASE_DIR)/selfplay_match_tests: selfplay_match_tests.cpp selfplay_match.cpp match_statistics.cpp $(SELFPLAY_HEADERS) $(ENGINE_OBJ)
 	$(CXX) $(CXXFLAGS) $(EXTRA_CPPFLAGS) -O2 -o $@ selfplay_match_tests.cpp match_statistics.cpp $(ENGINE_OBJ)
 eval_fen: $(RELEASE_DIR)/eval_fen

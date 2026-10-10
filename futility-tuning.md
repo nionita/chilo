@@ -641,11 +641,11 @@ population interfaces without replacing the continuous Pareto loop. BO has
 since been integrated as its development backend; see "BO in the continuous
 loop" for current operation. Neither path requires a new reference run.
 
-### Future: Direct game-outcome BO with sequential matches
+### Direct game-outcome BO with sequential matches
 
-Revisit this after the current 2–3 day BO loop run, alongside its new full
-validation results and the `bo4-p0001` SPRT. This is a design proposal, not an
-implemented backend or authority to launch another expensive experiment.
+The standalone first implementation is described below (2026-10-10). It does
+not replace the proxy loop and does not authorize starting an expensive run.
+The following motivation and deferred qualification work remain applicable.
 
 The objective would be playing strength measured in engine matches, rather
 than score regret or a synthetic combination of mean/tail metrics. Describe
@@ -678,11 +678,11 @@ Early rejection does not guarantee lower total cost than proxy screening.
 - Begin with per-observation variance estimates supplied to the GP, rather
   than a second model learning the noise function over parameter space. Match
   lengths and outcome distributions differ, so one shared observation-noise
-  level is inadequate. Tinibo currently supports shared learned noise; it
-  needs an explicit variance API, correct scaling into standardized target
-  units, replay/checkpoint support, and replacement/aggregation of a tuple's
-  measurement when further game batches arrive. Its current duplicate-ignore
-  behavior cannot silently discard those additional measurements.
+  level is inadequate. Tinibo v4 now supplies known-variance scaling and
+  replay/checkpoints, plus replicate observations and eligible repeat
+  proposals. The initial controller retains independent measurements rather
+  than replacing or aggregating them. Adaptive continuation of the same match
+  is still deferred; never double-count a cumulative match as independent data.
 - Choose the estimation procedure before implementation. Sequential stopping
   and adaptive selection complicate interpreting terminal Elo/error bars;
   do not blindly regard every displayed pair as an unbiased Gaussian sample.
@@ -718,8 +718,8 @@ near-equal comparisons.
 
 The source exposes `SearchLimits.nodeLimit` and runtime `SearchParameters`
 for futility. `chilo.cpp` accepts UCI `go nodes`. The single-process match mode
-described below now implements paired fixed-node matches and SPRT; the BO
-controller over game outcomes remains future work.
+described below implements paired fixed-node matches and SPRT; the standalone
+BO controller now uses that mode without altering engine search behavior.
 
 The lowest-infrastructure prototype is fixed-node fastchess, retaining its
 existing SPRT, paired games, adjudication, logs and recovery. Its engine
@@ -740,6 +740,117 @@ Treat node budgets as distinct experimental conditions; verify speed effects
 and confirm finalists under normal short and longer time controls. This first
 experiment should retain a fixed budget rather than pool results from several
 budgets or time controls as interchangeable labels.
+
+#### Standalone game-outcome BO — 2026-10-10
+
+Branch `selfplay-sprt-bo` adds `scripts/run_selfplay_bo.py` and
+`scripts/selfplay_bo.example.json`. This is a separate one-worker Linux
+controller, not a backend of the development/validation loop. It calls
+`selfplay_collect` in-process match mode; no UCI player processes, new search
+heuristics or per-game node allocation were added.
+
+Initial configured experiment: fixed spsa150b `[0,40,158,488,754]`, 120,000
+nodes/move, **150 pairs per measurement, 30 new measurements** and normal
+normalized SPRT `[0,2]` with alpha/beta 0.05. SPRT can stop earlier; capped
+inconclusive results are retained. The completed `match120k` (valbo-v1) and
+`barbarossa5-120k` matches bootstrap the example despite their larger caps.
+The earlier 5k-node smoke result is incompatible. No production optimization
+has been started by implementing/testing this controller.
+
+The target is `y = 0.5 - score` (lower is better), with
+`noise_variance = score_mean_variance`, the variance of the **mean paired
+score**, not individual-game variance, pair variance, Elo error, LOS or the
+SPRT decision. Zero estimated variance is retained and explicitly marked
+`degenerate`; there is no invented variance floor. Especially for short,
+all-draw or one-sided matches, this plug-in variance can be overconfident.
+Sequential stopping and BO selection further complicate conventional error
+bars. Game outcomes are measured evidence, but an optimizer recommendation
+is not a fresh strength confirmation and does not automatically change the
+fixed opponent. Timed short/long-control SPRT remains the final test.
+
+Tinibo's handback is `~/Sources/tinibo/SPRT_BO_HANDBACK.md`, implementation
+`1d66c0f` (handback/evidence commit `5e5b68e`), schema `tinibo.optimizer.v4`.
+The starting surrogate is scaled shared-length-scale Matérn-5/2, learned
+nonnegative residual noise, LCB `kappa=0.5`, eight coverage fit restarts and
+100 iterations. Both `duplicate_policy=replicate` and
+`pool_observed_policy=allow` are mandatory. Known variances supplement the
+residual noise; acquisition uses latent uncertainty. `recommend_observed()`
+chooses by fitted mean, not the luckiest individual raw observation. LCB may
+repeatedly choose the same tuple: each repeat is a **new independent match**,
+not a cache lookup or a second import of its old result. More sophisticated
+repeat/new-point information allocation remains future work.
+
+Configuration describes **actual margin bounds**, separately for the model
+domain and the proposal region. The initial limits by depth are
+`[0,120], [0,320], [0,640], [0,1280], [0,2560]`. Candidate arrays have 1–7
+entries, fixed length per optimization, with nonnegative first margin and
+strictly increasing subsequent margins. Internal GP coordinates are
+`m1, m2-m1, ..., md-m(d-1)`. Enclosing delta intervals are fixed by the model
+domain, but all proposals/imports are checked against the actual margin
+intervals: a narrow actual-margin box is **not** replaced by an independent
+delta box. The base's runtime margins need not be strictly increasing and
+can have a different maximum depth.
+
+Each ordered pool targets 10,000 tuples, 80% local perturbations (radii 10%
+of proposal interval widths, minimum one) and 20% broad feasible samples.
+Centers include the fitted recommendation and distinct observations in the
+proposal region; a feasible base is the fallback. All eligible previously
+measured tuples are retained as repeat options. Small finite regions can
+produce smaller pools. Broad sampling is sequentially constrained, not a
+claim of uniform sampling over all increasing tuples.
+
+For example, a later 1,500-pair search around `[10,40,140,360,750]` can set
+`proposal_margin_bounds` to `[[0,20],[20,60],[100,180],[280,440],[590,910]]`,
+retain the original model domain, and import **all** compatible earlier
+observations, even those outside this proposal region. Narrowing the model
+domain itself rejects out-of-domain imports; select the import list then.
+Precision/region changes require a new run, not editing an active resume.
+
+Imports are completed C++ match directories. The driver verifies frozen
+manifest and opening-order checksums, every game checksum, color pairing,
+opening FEN/index, node accounting, WDL/pentanomial totals, mean/variance,
+Elo/error/LOS arithmetic and terminal status. Executable/net/book **content
+hashes**, fixed base parameters, node budget, SPRT and adjudication must
+match. Names, recorded paths, opening seed and pair cap may differ. Source
+revision is retained as provenance, not substituted for executable identity.
+Duplicate measurement IDs import once; distinct bootstrap measurements
+sharing a seed are refused. The original bootstrap binary has SHA256
+`7ebbaf09ff199d85eb42d71ed98cfecd7301fe42a9fac0e9579b58cc1d01dc6d`;
+do not rebuild it and expect old matches to remain compatible.
+
+Use `~/Tune/search-matches/{configs,runs,logs}` for operation, and a frozen
+versioned binary under `~/Tune/Engines`. Each optimizer run retains
+`manifest.json`, atomic `state.json`, `report.json` and
+`measurements/gamebo-NNNN/{proposal.json,match.json,engine.log,receipt.json,match/}`. The
+nested `match/` holds the original manifest, status, results and full journal;
+do not redirect logs into a fresh C++ match directory. To bootstrap a follow-up
+include those nested completed match directories, not the optimizer root.
+
+`run --config C --run-dir R --dry-run` checks configuration/imports without
+playing games. `run ... --resume` initializes/continues idempotently and
+respects `R/STOP`, so it is appropriate for cron. `stop --run-dir R` requests
+a stop after the current **whole measurement**; explicit
+`resume --config C --run-dir R` clears it after contract validation.
+SIGINT/SIGTERM finish the current pair and retain the unfinished measurement
+as pending, without learning its partial result. A hard-killed driver's
+orphan child may briefly remain: the engine's own lock prevents another
+writer; retry resume after that child exits. Persistent lock filenames do
+not block recovery by themselves.
+
+Before launch, the driver atomically reserves the tuple, unique fresh seed,
+pool digest, prediction and RNG checkpoints. Observations and tinibo state
+commit together after terminal journal verification. A crash before launch,
+after engine completion or after `tell()` replays without double-counting.
+Strict resume pins driver/tinibo source, Python/NumPy/BLAS/thread environment,
+config, imports and artifacts. Use the same three BLAS/OpenMP thread settings
+(`1`) at every invocation. Old regret v3 checkpoints and proxy/validation
+labels are not imported into this game-score history.
+
+Verification: `make selfplay-bo-tests` runs coordinate/pool/import tests and
+tiny real matches, including repeats, cap/exhaustion, soft stop, SIGTERM,
+locks, mismatches and transactional recovery; `make selfplay-match-tests`
+retains the existing C++/journal/referee safeguards. This confirms plumbing,
+not that the BO settings find stronger play.
 
 #### Implemented match mode — 2026-10-08
 
@@ -805,7 +916,8 @@ an unterminated final journal line after a crash. Corrupt committed records or
 contract changes fail. Reported node/time totals cover committed games, not
 discarded interrupted attempts. Elo errors are conventional pentanomial
 estimates, not a correction for adaptive proposal selection or sequential
-stopping; the future BO noise model still needs qualification.
+stopping; the game-outcome BO noise approximation still needs empirical
+qualification.
 
 An OS-held `run.lock` prevents duplicate writers and releases on process death;
 the lock file itself may remain. Create `match-run/STOP` for a portable graceful
