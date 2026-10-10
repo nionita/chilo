@@ -887,6 +887,37 @@ The helper accepts `--gp-ard`/`--no-gp-ard` and
 `--gp-length-scale-bounds LOW HIGH`, validates the fresh model, and records both
 source and new model settings without editing old manifests/checkpoints.
 
+**Additive evidence collection and fresh experiment preparation — 2026-10-10:**
+`scripts/prepare_selfplay_bo.py` has separate `collect` and `prepare` commands.
+Collection accepts completed match directories, committed observations from BO
+run roots, and other portable evidence stores; its default destination is
+`config parent-parent/evidence` (`~/Tune/search-matches/evidence` locally).
+Collect cloud evidence on the cloud, transfer the entire store, merge it locally,
+and add local observations to the same destination. Matching measurement IDs
+import once; independent repeated tuples remain distinct. Full journals and
+summaries are verified and copied, and incompatible contracts, reused opening
+seeds and corrupt evidence fail rather than being silently ignored. Only four
+required match files per ID and the relative-path index/provenance are retained;
+no old logs/checkpoints or absolute source paths are required after collection.
+
+Preparation uses a machine-local config template, all store observations, a new
+seed and a new explicitly named output config. New budget/pair cap/model settings
+default to the template, with CLI overrides; there is **no** remaining-budget
+subtraction. Shorter pair caps remain compatible imports with their measured
+uncertainties. No old numerical state is restored and no match is started.
+Keep the store because new experiments reference its copied journals. The old
+one-run follow-up helper remains available for the remaining-budget use case.
+README's "Reusable measurement collection and preparation" section documents
+commands, path remapping, artifact overrides, receipts and defaults.
+
+Next proposed procedure, not yet launched: finish both current runs, collect
+additional spread-out random tuples on the two machines (split ad hoc, not a new
+distributed scheduler), combine all compatible measurements, then prepare two
+fresh 150-pair BO experiments with different seeds. Assess coverage and surrogate
+behavior before moving to 1,500-pair measurements. A larger spread-out starting
+set may stabilize hyperparameter fitting, but is not a guarantee against noisy
+labels or a misspecified model.
+
 Editing Python source does not replace functions already loaded by the running
 driver. Thus the old process can finish its current measurement unchanged, but
 strict source fingerprints intentionally prevent resuming that old run with the

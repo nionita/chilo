@@ -362,6 +362,59 @@ not confirmed timed-play strength. See [futility-tuning.md](futility-tuning.md)
 for the import contract, storage and statistical caveats. Short verification:
 `make selfplay-bo-tests` (requires tinibo v4 at the sibling source location).
 
+#### Reusable measurement collection and preparation
+
+[`scripts/prepare_selfplay_bo.py`](scripts/prepare_selfplay_bo.py) separates
+additive evidence collection from preparing a fresh optimizer. It does not
+play games, restore checkpoints or modify source runs. Both commands use
+`--config` as the template for this machine's frozen artifacts and match rules.
+The project skill
+[`chilo-selfplay-bo-preparation`](skills/chilo-selfplay-bo-preparation/SKILL.md)
+documents local/cloud collection, merging, fresh runs and pair-cap transitions.
+
+Collect completed observations from one or more BO run roots, individual match
+directories or previously collected evidence stores:
+
+```bash
+python3 scripts/prepare_selfplay_bo.py collect --config ~/Tune/search-matches/configs/bo-d5-150p-03.json --source ~/Tune/search-matches/runs/bo-d5-150p-01 ~/Tune/search-matches/runs/bo-d5-150p-02
+```
+
+The default store is `config parent-parent/evidence`, normally
+`~/Tune/search-matches/evidence`. Override it with `--store`. Repeating collection
+is safe: measurement IDs deduplicate identical evidence, not margin tuples.
+Independent repeats remain separate; different measurements sharing an opening
+seed are rejected. Active BO sources contribute only their atomic state's
+committed observations, never pending matches. All journals and summaries are
+verified, copied into immutable per-ID folders and indexed under an OS lock.
+The store retains only the four required match files and provenance, not logs
+or old optimizer checkpoints. Interrupted index commits recover copied evidence.
+
+For cloud transfers, collect **on the cloud first**, archive the entire evidence
+store, and merge that copied store locally with `collect --source /copied/store`.
+Then collect local runs into the same destination. The copied records have
+relative paths and do not depend on the cloud folders. Alternatively,
+`--path-map /old/root=/new/root` relocates observation paths in copied BO states.
+`--executable`, `--weights`, `--openings` and `--tinibo-path` override remote
+template paths before validation. Frozen artifact **hashes**, not paths or model
+settings, determine match compatibility; rebuilding the engine is not equivalent.
+
+Prepare a new experiment from the complete evidence store:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python scripts/prepare_selfplay_bo.py prepare --config ~/Tune/search-matches/configs/bo-d5-150p-03.json --output-config ~/Tune/search-matches/configs/bo-d5-next.json --seed 20261020 --measurements 30 --max-pairs 150
+```
+
+The omitted seed defaults to a fresh random 64-bit seed; the omitted new budget,
+pair cap and model settings come from the template (no remaining-budget
+subtraction). `--gp-ard`/`--no-gp-ard` and `--gp-length-scale-bounds LOW HIGH`
+override the fresh model. A later `--max-pairs 1500` may reuse shorter compatible
+measurements with their original uncertainties. Model-domain incompatibilities
+are rejected, not silently filtered. `--run-dir` defaults to
+`output parent-parent/runs/output stem`. Preparation prints that directory and
+writes a `.preparation.json` receipt; it refuses existing outputs/nonempty runs.
+Starting a match remains a separate `run_selfplay_bo.py run` operation. Preserve
+the evidence store because the prepared bootstrap list references it.
+
 ### Eval CLI
 
 Evaluate one or more FENs directly with the compiled engine:

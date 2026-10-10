@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import random
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from unittest.mock import patch
 
 import run_selfplay_bo as bo
 import prepare_selfplay_bo_followup as followup
+import prepare_selfplay_bo as preparation
 from test_selfplay_match import BIN, ROOT, START, zero_net
 
 TINIBO_ROOT = Path(os.environ.get("CHILO_TINIBO_ROOT", ROOT.parent / "tinibo")).resolve()
@@ -277,6 +279,137 @@ class Runner(unittest.TestCase):
         self.assertEqual((self.run / "manifest.json").read_bytes(), original_manifest)
         bo.execute(self.root / "followup.json", self.root / "new-run", dry_run=True)
         self.assertFalse((self.root / "new-run").exists())
+
+    def extra_match(self, seed, values=(10, 20, 30)):
+        path = self.root / f"extra-{seed}"
+        cfg = path.with_suffix(".json")
+        bo.atomic_json(cfg, bo.match_config(self.config(), list(values), seed, path.name))
+        subprocess.run([str(BIN), "--match-config", str(cfg), "--run-dir", str(path)],
+                       check=True, capture_output=True, timeout=30)
+        return path
+
+    def test_evidence_additive_collection_portability_and_new_pair_cap(self):
+        self.execute(max_evaluations=1)
+        store = self.root / "cloud-evidence"
+        first = preparation.collect(self.config(), store, [self.run])
+        self.assertEqual((first["added"], first["total"]), (2, 2))
+        self.assertEqual(preparation.collect(self.config(), store, [self.run])["added"], 0)
+        local = self.root / "local-evidence"
+        shutil.copytree(store, local)
+        self.source.rename(self.root / "removed-source")
+        # Copied evidence must not depend on its former absolute source paths.
+        self.assertEqual(preparation.collect(self.config(), local, [store])["total"], 2)
+        third = self.extra_match(22)
+        self.assertEqual(preparation.collect(self.config(), local, [third])["total"], 3)
+        original = self.cfg_path.read_bytes()
+        output = self.root / "configs/new.json"
+        receipt = preparation.prepare(self.config(), local, output, seed=45, measurements=15,
+                                      max_pairs=1500, gp_ard=True, gp_length_scale_bounds=[.05, 10])
+        cfg = bo.load_config(output)
+        self.assertEqual(len(cfg["bootstrap"]), 3)  # independent repeats retained
+        self.assertEqual((cfg["measurements"], cfg["max_pairs"], cfg["seed"]), (15, 1500, 45))
+        self.assertTrue(cfg["model"]["gp_ard"])
+        self.assertEqual(cfg["model"]["gp_length_scale_bounds"], [.05, 10])
+        self.assertEqual(receipt["config_sha256"], bo.digest(cfg))
+        self.assertEqual(self.cfg_path.read_bytes(), original)
+        self.assertFalse(Path(receipt["run_dir"]).exists())
+        bo.execute(output, Path(receipt["run_dir"]), dry_run=True)
+
+    def test_evidence_duplicate_seeds_rejected_before_index_changes(self):
+        store = self.root / "evidence"
+        preparation.collect(self.config(), store)
+        original = (store / "index.json").read_bytes()
+        another = self.extra_match(11, values=(11, 21, 31))
+        with self.assertRaisesRegex(bo.BOError, "share an opening seed"):
+            preparation.collect(self.config(), store, [self.extra_match(22), another])
+        self.assertEqual((store / "index.json").read_bytes(), original)
+        self.assertEqual(len(list((store / "measurements").iterdir())), 1)
+
+    def test_evidence_tampering_and_contract_mismatch_rejected(self):
+        store = self.root / "evidence"
+        preparation.collect(self.config(), store)
+        c = self.config()
+        c["nodes"] += 1
+        with self.assertRaisesRegex(bo.BOError, "incompatible evidence"):
+            preparation.collect(c, store, [])
+        folder = next((store / "measurements").iterdir())
+        (folder / "games.jsonl").write_bytes(b"corrupt\n")
+        with self.assertRaisesRegex(bo.BOError, "stored evidence changed"):
+            preparation.prepare(self.config(), store, self.root / "new.json")
+        self.assertFalse((self.root / "new.json").exists())
+
+    def test_evidence_collects_only_committed_points_with_pending_match(self):
+        self.execute(max_evaluations=1)
+        with patch.object(bo.subprocess, "Popen", side_effect=OSError("crash")):
+            with self.assertRaises(OSError):
+                self.execute(resume=True)
+        self.assertIsNotNone(self.state()["pending"])
+        result = preparation.collect(self.config(), self.root / "evidence", [self.run])
+        self.assertEqual(result["total"], 2)
+
+    def test_evidence_relocated_bo_paths(self):
+        self.execute(max_evaluations=1)
+        state = self.state()
+        for observed in state["observations"]:
+            observed["path"] = observed["path"].replace(str(self.root), "/cloud/experiment", 1)
+        bo.atomic_json(self.run / "state.json", state)
+        store = self.root / "evidence"
+        with self.assertRaisesRegex(bo.BOError, "use --path-map"):
+            preparation.collect(self.config(), store, [self.run])
+        result = preparation.collect(self.config(), store, [self.run],
+                                     mappings=[(Path("/cloud/experiment"), self.root)])
+        self.assertEqual(result["total"], 2)
+
+    def test_evidence_orphan_recovery_and_relative_paths(self):
+        store = self.root / "evidence"
+        preparation.collect(self.config(), store)
+        index = bo.read_json(store / "index.json")
+        mid = next(iter(index["measurements"]))
+        index["measurements"].pop(mid)
+        bo.atomic_json(store / "index.json", index)  # emulate interrupted index commit
+        self.assertEqual(preparation.collect(self.config(), store)["total"], 1)
+        index = bo.read_json(store / "index.json")
+        index["measurements"][mid]["path"] = "../bootstrap"
+        bo.atomic_json(store / "index.json", index)
+        with self.assertRaisesRegex(bo.BOError, "invalid evidence path"):
+            preparation.collect(self.config(), self.root / "other", [store])
+
+    def test_evidence_preparation_defaults_and_output_guards(self):
+        store = self.root / "evidence"
+        preparation.collect(self.config(), store)
+        with self.assertRaises((bo.BOError, ValueError)):
+            preparation.prepare(self.config(), store, self.root / "bad.json", gp_length_scale_bounds=[10, .05])
+        self.assertFalse((self.root / "bad.json").exists())
+        output = self.root / "configs/prepared.json"
+        receipt = preparation.prepare(self.config(), store, output)
+        self.assertIsInstance(receipt["seed"], int)
+        self.assertEqual(receipt["run_dir"], str(self.root / "runs/prepared"))
+        self.assertEqual(bo.load_config(output)["measurements"], 2)
+        with self.assertRaisesRegex(bo.BOError, "refusing to overwrite"):
+            preparation.prepare(self.config(), store, output)
+        with self.assertRaisesRegex(bo.BOError, "not empty"):
+            preparation.prepare(self.config(), store, self.root / "other.json", run_dir=self.source)
+
+    def test_evidence_cli_machine_overrides_and_collect_without_numpy(self):
+        raw = dict(self.raw)
+        for key in ("executable", "weights", "openings", "tinibo_path"):
+            raw[key] = "/other-machine/missing"
+        remote = self.root / "remote.json"
+        bo.atomic_json(remote, raw)
+        store = self.root / "evidence"
+        common = ["--config", str(remote), "--store", str(store),
+                  "--executable", str(BIN), "--weights", str(self.root / "net.bin"),
+                  "--openings", str(self.root / "book.fen"), "--tinibo-path", str(TINIBO_ROOT)]
+        # -S disables site packages: collection needs only standard-library code.
+        result = subprocess.run([sys.executable, "-S", str(ROOT / "scripts/prepare_selfplay_bo.py"),
+                                 "collect", *common, "--source", str(self.source)],
+                                check=True, capture_output=True, text=True, timeout=30)
+        self.assertIn("total=1", result.stdout)
+        output = self.root / "fresh.json"
+        subprocess.run([sys.executable, str(ROOT / "scripts/prepare_selfplay_bo.py"),
+                        "prepare", *common, "--output-config", str(output), "--seed", "91"],
+                       check=True, capture_output=True, timeout=30)
+        self.assertEqual(bo.load_config(output)["seed"], 91)
 
     def test_cpp_scientific_manifest_import(self):
         c = self.config()

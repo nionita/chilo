@@ -6,8 +6,11 @@ description: Prepare a self-contained, provenance-checked Chilo futility run pac
 # Chilo futility run packaging
 
 Package a run so that another machine can execute it without relying on paths,
-uncommitted source, or unstated artifacts from this workstation. Preparing a
-package does not authorize starting an expensive run.
+uncommitted source, or unstated artifacts from this workstation. For this user's
+cloud/secondary-machine workflow, package preparation includes uploading the
+finished archive through `chilo-ftp-transfer`, unless the user requests local-only
+preparation. Preparing or uploading a package does not authorize starting an
+expensive run or installing a cron entry.
 
 ## Select and stage artifacts
 
@@ -61,14 +64,55 @@ an active phase, use one BO worker, and distinguish compatible observation
 imports from restoring an exact checkpoint. Old engine-contract targets must
 not silently seed a changed probe/net/budget/corpus run.
 
+## Small cloud upgrades and match-based BO
+
+- When a target already has a verified package/runtime/store, prefer a small
+  upgrade bound to its exact artifacts instead of copying binaries, nets,
+  opening books, journals or wheels again. Record every external dependency,
+  package/artifact hash and location in the receipt, and make setup verify them
+  before preparing a fresh run. Never treat a rebuilt executable as identical
+  to a frozen binary solely because the version name matches.
+- For game-outcome BO, read **Standalone game-outcome BO** in
+  `futility-tuning.md` and use `chilo-selfplay-bo-preparation` for additive
+  collection and fresh configs. Do not mix this with regret-proxy observations.
+  Keep all referenced old packages/stores until their evidence and artifacts
+  have verified independent replacements. Respect stopped/pending-match checks;
+  do not edit an old config/checkpoint to bypass resume fingerprints.
+- Reuse the target's pinned Python/NumPy/tinibo environment where possible.
+  Upgrade setup should not invoke apt/sudo or reinstall a working environment.
+  If a genuinely new dependency is needed, make it explicit rather than adding
+  an unexpected privileged installation. Qualify staged setup with compatible
+  fixtures and dry validation without playing real matches.
+- Archive an explicit payload or clean staging tree. Exclude generated
+  qualification runs, workstation-bound configs/runtime receipts, `.venv`,
+  `__pycache__` and logs. If setup generates the real config from remote state,
+  record its template/overrides in the package manifest and write the resolved
+  config hash/provenance receipt on the target.
+
 ## Finish
 
 - Archive Windows packages as `.zip` and Linux packages as `.tgz`.
-- Verify the archive contents and print its SHA-256, unpack/run command, and
-  expected result files.
+- Verify the archive contents, hashes and compression integrity.
 - Keep the package and transferred-result archive in `~/Tune/futility` as
   durable provenance once the run is accepted. Treat `/tmp` only as a transfer
   or inspection area.
+- Read/use `chilo-ftp-transfer` to upload the finished archive to
+  `/PUBLIC/transf`; download it back to a fresh inspection path and compare
+  hashes/bytes. Report transfer failure or skipped local-only transfer honestly;
+  do not report packaging-and-delivery complete merely because a local archive
+  exists. Do not overwrite or delete existing remote archives without approval.
+- For the cloud, assume the operator copies tar archives to `/tmp`. Provide a
+  single-line extraction command such as
+  `tar -xzf /tmp/package.tgz -C /home/ubuntu`, followed by separate setup/start
+  commands using the permanent extracted folder. Check the intended extraction
+  target first when possible; never unpack over an active/previous run. Keep
+  archives in `/tmp`, but run directories, artifacts and evidence in permanent
+  locations. Result-collection instructions should also put the outgoing
+  archive under `/tmp` and include `sha256sum`.
+- Print the local archive path, remote FTP filename, SHA-256 and verification
+  status, cloud extraction/setup/start commands, log path and expected result
+  files. Preparation/setup must not start expensive work implicitly; let the
+  operator execute the separately identified start command.
 
 For current corpus/contract choices and the active experimental state, read
 `futility-tuning.md` before selecting artifacts.
