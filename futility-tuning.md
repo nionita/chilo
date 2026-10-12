@@ -743,6 +743,15 @@ budgets or time controls as interchangeable labels.
 
 #### Standalone game-outcome BO — 2026-10-10
 
+**Compact bootstrap transport — 2026-10-12:** historical journals are not BO
+inputs. `prepare_selfplay_bo.py export-bootstrap` verifies the canonical evidence
+store and exports only the compatible observations, uncertainty, IDs/seeds and
+provenance hashes. `prepare --bootstrap-summary` pins this trusted export in a
+fresh config. Both machines can use all 96 observations without transferring
+historical journals. Full originals stay locally; new matches still journal
+every completed game for restart and later collection. See README's reusable
+preparation section for the trust boundary and additive collection workflow.
+
 Branch `selfplay-sprt-bo` adds `scripts/run_selfplay_bo.py` and
 `scripts/selfplay_bo.example.json`. This is a separate one-worker Linux
 controller, not a backend of the development/validation loop. It calls

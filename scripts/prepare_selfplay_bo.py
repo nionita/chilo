@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Additively collect portable match evidence, or prepare a fresh BO experiment."""
 import argparse
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import re
@@ -24,6 +25,9 @@ def config_from(path, **overrides):
         if key in raw:
             raw[key] = bo.resolve(raw[key], path.parent)
     raw["bootstrap"] = [bo.resolve(p, path.parent) for p in raw.get("bootstrap", [])]
+    if "bootstrap_summary" in raw:
+        raw["bootstrap_summary"] = {**raw["bootstrap_summary"],
+                                    "path": bo.resolve(raw["bootstrap_summary"]["path"], path.parent)}
     for key, value in overrides.items():
         if value is not None:
             raw[key] = str(Path(value).resolve())
@@ -90,7 +94,16 @@ def source_observations(source, config, contract, mappings):
         bo.require(imports == manifest["imports"] and
                    state["completed"] == len(state["observations"]) - len(imports),
                    "source import/count mismatch")
+        compact = {}
+        if "bootstrap_summary" in manifest["config"]:
+            spec = dict(manifest["config"]["bootstrap_summary"])
+            spec["path"] = str(mapped_path(spec["path"], mappings))
+            compact = {o["id"]: o for o in bo.summary_observations(spec, config, contract)}
         for old in state["observations"]:
+            if old["id"] in compact:
+                bo.require(observation_data(old) == observation_data(compact[old["id"]]),
+                           "compact source observation changed")
+                continue  # Already archived on exporter; collect new full match evidence only.
             path = mapped_path(old["path"], mappings)
             bo.require(path.is_dir(), f"missing source match {path}; use --path-map OLD=NEW or collect on its source machine")
             observed = bo.import_match(path, config, contract)
@@ -170,8 +183,26 @@ def collect(config, store, sources=None, mappings=()):
         return {"added": added, "existing": existing, "total": len(entries), "store": str(store)}
 
 
+def export_summary(config, store, output):
+    """Verify full evidence once, then export portable BO-only observations."""
+    output, store = Path(output).resolve(), Path(store).resolve()
+    bo.require(not output.exists(), f"refusing to overwrite {output}")
+    contract = bo.match_contract(config)
+    with bo.run_lock(store / "store.lock"):
+        index = read_store(store, config, contract)
+        observations = [dict(item["observation"]) for item in index["measurements"].values()]
+        for o in observations:
+            o["path"] = "verified-summary:" + o["id"]
+            o["result"] = {k: o["result"][k] for k in
+                           ("status", "pairs", "pentanomial", "elo", "elo_error95")}
+        bo.atomic_json(output, {"schema": "chilo.selfplay_bo_bootstrap.v1", "contract": contract,
+                               "source_index": bo.identity(store / "index.json"),
+                               "observations": observations})
+    return {"path": str(output), "sha256": bo.identity(output)["sha256"]}
+
+
 def prepare(config, store, output_config, run_dir=None, seed=None, measurements=None,
-            max_pairs=None, gp_ard=None, gp_length_scale_bounds=None):
+            max_pairs=None, gp_ard=None, gp_length_scale_bounds=None, bootstrap_summary=None):
     store, output_config = Path(store).resolve(), Path(output_config).resolve()
     run_dir = (Path(run_dir).resolve() if run_dir is not None else
                output_config.parent.parent / "runs" / output_config.stem)
@@ -180,8 +211,14 @@ def prepare(config, store, output_config, run_dir=None, seed=None, measurements=
     receipt_path = output_config.with_name(output_config.name + ".preparation.json")
     bo.require(not receipt_path.exists(), f"refusing to overwrite {receipt_path}")
     contract = bo.match_contract(config)
-    with bo.run_lock(store / "store.lock"):
-        index = read_store(store, config, contract)
+    with bo.run_lock(store / "store.lock") if bootstrap_summary is None else nullcontext():
+        if bootstrap_summary is None:
+            index = read_store(store, config, contract)
+        else:
+            spec = {"path": str(Path(bootstrap_summary).resolve()),
+                    "sha256": bo.identity(bootstrap_summary)["sha256"]}
+            observations = bo.summary_observations(spec, config, contract)
+            index = {"measurements": {o["id"]: o for o in observations}}
         config = dict(config)
         config["model"] = dict(config["model"])
         config["seed"] = secrets.randbits(64) if seed is None else seed
@@ -192,11 +229,16 @@ def prepare(config, store, output_config, run_dir=None, seed=None, measurements=
             config["model"]["gp_ard"] = gp_ard
         if gp_length_scale_bounds is not None:
             config["model"]["gp_length_scale_bounds"] = list(gp_length_scale_bounds)
-        config["bootstrap"] = [str(store / item["path"]) for item in index["measurements"].values()]
+        if bootstrap_summary is None:
+            config.pop("bootstrap_summary", None)
+            config["bootstrap"] = [str(store / item["path"]) for item in index["measurements"].values()]
+        else:
+            config["bootstrap"] = []
+            config["bootstrap_summary"] = spec
         config = validate_config(config)
         bo.optimizer(config)  # New model validation, not old checkpoint restoration.
         receipt = {"schema": "chilo.selfplay_bo_preparation.v1", "contract": contract,
-                   "store": str(store), "index": bo.identity(store / "index.json"),
+                   "store": str(store), "index": bo.identity(store / "index.json") if bootstrap_summary is None else spec,
                    "measurement_ids": list(index["measurements"]), "seed": config["seed"],
                    "run_dir": str(run_dir), "config_sha256": bo.digest(config),
                    "driver": bo.identity(Path(bo.__file__))}
@@ -218,7 +260,7 @@ def path_mapping(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("collect", "prepare"):
+    for name in ("collect", "prepare", "export-bootstrap"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True, help="template with this machine's frozen match artifacts")
         command.add_argument("--store", type=Path, help="default: config parent-parent/evidence")
@@ -229,7 +271,11 @@ def main():
                                  help="match, BO run or evidence store; repeatable; default: template bootstrap")
             command.add_argument("--path-map", type=path_mapping, action="append", default=[],
                                  help="relocate paths in copied BO states: OLD=NEW (repeatable)")
+        elif name == "export-bootstrap":
+            command.add_argument("--output-summary", type=Path, required=True)
         else:
+            command.add_argument("--bootstrap-summary", type=Path,
+                                 help="trusted compact export; no source journals required")
             command.add_argument("--output-config", type=Path, required=True)
             command.add_argument("--run-dir", type=Path, help="default: output parent-parent/runs/output stem")
             command.add_argument("--seed", type=int, help="default: fresh random 64-bit seed")
@@ -246,9 +292,13 @@ def main():
             result = collect(config, store, args.source, args.path_map)
             print(f"evidence collected: added={result['added']} existing={result['existing']} "
                   f"total={result['total']} store={result['store']}")
+        elif args.command == "export-bootstrap":
+            result = export_summary(config, store, args.output_summary)
+            print(bo.canonical(result))
         else:
             result = prepare(config, store, args.output_config, args.run_dir, args.seed,
-                             args.measurements, args.max_pairs, args.gp_ard, args.gp_length_scale_bounds)
+                             args.measurements, args.max_pairs, args.gp_ard, args.gp_length_scale_bounds,
+                             args.bootstrap_summary)
             print(f"experiment prepared: imported={len(result['measurement_ids'])} seed={result['seed']} "
                   f"config={args.output_config.resolve()} run={result['run_dir']}; no match started")
         return 0

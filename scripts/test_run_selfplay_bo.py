@@ -315,6 +315,43 @@ class Runner(unittest.TestCase):
         self.assertFalse(Path(receipt["run_dir"]).exists())
         bo.execute(output, Path(receipt["run_dir"]), dry_run=True)
 
+    def test_compact_bootstrap_without_journals_and_resume(self):
+        store = self.root / "evidence"
+        preparation.collect(self.config(), store)
+        summary = self.root / "bootstrap-summary.json"
+        spec = preparation.export_summary(self.config(), store, summary)
+        output = self.root / "compact-config.json"
+        receipt = preparation.prepare(self.config(), store, output, measurements=2,
+                                      max_pairs=2, bootstrap_summary=summary)
+        shutil.rmtree(store)
+        shutil.rmtree(self.source)
+        self.assertEqual(len(receipt["measurement_ids"]), 1)
+        self.assertEqual(bo.load_config(output)["bootstrap"], [])
+        root = self.root / "compact-run"
+        bo.execute(output, root, max_evaluations=1)
+        bo.execute(output, root, resume=True)
+        self.assertEqual(bo.read_json(root / "state.json")["completed"], 2)
+        # Collection retains new full journals; old compact bootstrap is not duplicated.
+        collected = preparation.collect(bo.load_config(output), self.root / "new-store", [root])
+        self.assertEqual(collected["total"], 2)
+        summary.write_text(summary.read_text() + " ")
+        with self.assertRaisesRegex(bo.BOError, "checksum"):
+            bo.summary_observations(spec, self.config(), bo.match_contract(self.config()))
+
+    def test_compact_bootstrap_contract_seed_and_statistics_checks(self):
+        store = self.root / "evidence"
+        preparation.collect(self.config(), store)
+        path = self.root / "summary.json"
+        preparation.export_summary(self.config(), store, path)
+        original = bo.read_json(path)
+        for change, message in ((lambda d: d["contract"].update(base=[1,2,3]), "contract"),
+                                (lambda d: d["observations"].append(d["observations"][0]), "measurement ID"),
+                                (lambda d: d["observations"][0].update(noise_variance=1), "variance")):
+            data = copy.deepcopy(original); change(data); bo.atomic_json(path, data)
+            with self.assertRaisesRegex(bo.BOError, message):
+                bo.summary_observations({"path": str(path), "sha256": bo.identity(path)["sha256"]},
+                                        self.config(), bo.match_contract(self.config()))
+
     def test_evidence_duplicate_seeds_rejected_before_index_changes(self):
         store = self.root / "evidence"
         preparation.collect(self.config(), store)

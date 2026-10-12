@@ -364,6 +364,25 @@ for the import contract, storage and statistical caveats. Short verification:
 
 #### Reusable measurement collection and preparation
 
+For network transfers used only to bootstrap BO, export a compact summary
+instead of transferring historical game journals:
+
+```bash
+python3 scripts/prepare_selfplay_bo.py export-bootstrap --config config/bo.json --store evidence --output-summary bootstrap.json
+```
+
+The exporter verifies the full local evidence once. `prepare --bootstrap-summary
+bootstrap.json` accepts the trusted export without requiring those journals.
+It pins its SHA-256 in the new config; startup/resume check that hash, the frozen
+match contract, IDs/seeds, domain and paired-score statistics. This checksum
+detects modification, not authenticity: transfer only exports from a trusted
+verified source. Keep original full evidence in the backed-up local store.
+Compact exports preserve independent repeats and their measured variances.
+When collecting a BO run bootstrapped this way, `collect` copies only its new
+full match evidence; the summary-only imports are already archived locally.
+Merge these new records into that original store. New matches still retain
+complete journals and support normal match-level recovery.
+
 [`scripts/prepare_selfplay_bo.py`](scripts/prepare_selfplay_bo.py) separates
 additive evidence collection from preparing a fresh optimizer. It does not
 play games, restore checkpoints or modify source runs. Both commands use

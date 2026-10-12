@@ -189,7 +189,7 @@ def load_config(path):
     keys(raw, ["schema", "executable", "weights", "openings", "base", "nodes",
                "max_pairs", "measurements", "seed", "model_margin_bounds",
                "proposal_margin_bounds", "bootstrap", "tinibo_path", "model",
-               "pool", "repeat_policy", "sprt", "adjudication"], "config")
+               "pool", "repeat_policy", "sprt", "adjudication", "bootstrap_summary"], "config")
     require(raw.get("schema") == SCHEMA, "unsupported BO config schema")
     c = dict(raw)
     for key in ("executable", "weights", "openings"):
@@ -255,7 +255,45 @@ def load_config(path):
             integer(value, low, high, f"{group} {key}")
     require(isinstance(raw.get("bootstrap", []), list), "bootstrap must be a list")
     c["bootstrap"] = [resolve(p, path.parent) for p in raw.get("bootstrap", [])]
+    if "bootstrap_summary" in raw:
+        keys(raw["bootstrap_summary"], ["path", "sha256"], "bootstrap_summary")
+        c["bootstrap_summary"] = {**raw["bootstrap_summary"],
+                                  "path": resolve(raw["bootstrap_summary"]["path"], path.parent)}
     return c
+
+
+def summary_observations(spec, c, contract):
+    """Trusted export of previously verified journals; not a raw-evidence verifier."""
+    path = Path(spec["path"])
+    require(identity(path)["sha256"] == spec["sha256"], "bootstrap summary checksum mismatch")
+    data = read_json(path)
+    require(data.get("schema") == "chilo.selfplay_bo_bootstrap.v1" and
+            data["contract"] == contract, "incompatible bootstrap summary contract")
+    observations = data["observations"]
+    require(isinstance(observations, list), "invalid bootstrap observations")
+    ids, seeds = set(), set()
+    for o in observations:
+        require(re.fullmatch(r"[0-9a-f]{64}", o["id"]) and o["id"] not in ids,
+                "duplicate/invalid bootstrap measurement ID")
+        integer(o["seed"], 0, 2**64-1, "bootstrap seed")
+        require(o["seed"] not in seeds, "bootstrap measurements share a seed")
+        require(in_region(margins(o["margins"]), c["model_margin_bounds"]),
+                "import tuple outside model domain")
+        result = o["result"]
+        require(result["status"] in TERMINAL, "bootstrap measurement is not terminal")
+        bins = result["pentanomial"]
+        require(isinstance(bins, list) and len(bins) == 5, "invalid bootstrap pentanomial")
+        for n in bins:
+            integer(n, 0, 2**31-1, "pentanomial count")
+        pairs = sum(bins)
+        require(pairs > 0 and pairs == result["pairs"], "invalid bootstrap pairs")
+        mean = sum(i*.25*n for i,n in enumerate(bins))/pairs
+        variance = sum((i*.25-mean)**2*n for i,n in enumerate(bins))/pairs
+        near(o["y"], .5-mean, "bootstrap target")
+        near(o["noise_variance"], variance/pairs, "bootstrap noise variance")
+        require(o["degenerate"] == (variance == 0), "bootstrap variance flag mismatch")
+        ids.add(o["id"]); seeds.add(o["seed"])
+    return observations
 
 
 def libraries(c):
@@ -584,6 +622,10 @@ def execute(config_path, root, resume=False, dry_run=False, max_evaluations=None
     opt = optimizer(c)  # Validate numerical settings before creating a run.
     contract = match_contract(c)
     imported, ids, seed_ids = [], set(), set()
+    if "bootstrap_summary" in c:
+        imported = summary_observations(c["bootstrap_summary"], c, contract)
+        ids = {o["id"] for o in imported}
+        seed_ids = {o["seed"] for o in imported}
     for path in c["bootstrap"]:
         o = import_match(path, c, contract)
         if o["id"] in ids:
