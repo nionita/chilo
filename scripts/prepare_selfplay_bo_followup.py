@@ -10,7 +10,7 @@ import run_selfplay_bo as bo
 
 def prepare(source_config, source_run, output_config, output_run, seed,
             max_repeat_fraction=.25, max_consecutive_repeats=1, measurements=None,
-            gp_ard=None, gp_length_scale_bounds=None):
+            gp_ard=None, gp_length_scale_bounds=None, kappa=None):
     source_run, output_config, output_run = map(
         lambda p: Path(p).resolve(), (source_run, output_config, output_run))
     bo.require((source_run / "run.lock").is_file(), "source run has no lock file")
@@ -31,7 +31,11 @@ def prepare(source_config, source_run, output_config, output_run, seed,
         contract = bo.match_contract(config)
         bo.require(contract == manifest["contract"], "source frozen match contract changed")
         bo.verify_checkpoint(state, bo.optimizer(config, state["optimizer"]))
-        observations = [bo.import_match(o["path"], config, contract) for o in state["observations"]]
+        compact = {}
+        if "bootstrap_summary" in config:
+            compact = {o["id"]: o for o in bo.summary_observations(config["bootstrap_summary"], config, contract)}
+        observations = [compact[o["id"]] if o["id"] in compact else
+                        bo.import_match(o["path"], config, contract) for o in state["observations"]]
         bo.require(observations == state["observations"], "source measured evidence changed")
         imports = [{k: o[k] for k in ("id", "manifest_sha256", "journal")}
                    for o in observations[:len(manifest["imports"])]]
@@ -42,7 +46,7 @@ def prepare(source_config, source_run, output_config, output_run, seed,
                    set(state["used_seeds"]) == {o["seed"] for o in observations}, "source seed history mismatch")
         remaining = config["measurements"] - state["completed"]
         config.update(seed=seed, measurements=remaining if measurements is None else measurements,
-                      bootstrap=[o["path"] for o in observations],
+                      bootstrap=[o["path"] for o in observations if o["id"] not in compact],
                       repeat_policy={"max_repeat_fraction": max_repeat_fraction,
                                      "max_consecutive_repeats": max_consecutive_repeats})
         if gp_ard is not None:
@@ -50,6 +54,8 @@ def prepare(source_config, source_run, output_config, output_run, seed,
             config["model"]["gp_ard"] = gp_ard
         if gp_length_scale_bounds is not None:
             config["model"]["gp_length_scale_bounds"] = list(gp_length_scale_bounds)
+        if kappa is not None:
+            config["model"]["kappa"] = kappa
         # Use the full config parser before creating any permanent output.
         with tempfile.TemporaryDirectory() as temp:
             check = Path(temp) / "config.json"
@@ -86,6 +92,7 @@ def main():
                         help="override shared/ARD geometry for the fresh run only")
     parser.add_argument("--gp-length-scale-bounds", nargs=2, type=float, metavar=("LOW", "HIGH"),
                         help="override normalized length-scale bounds for the fresh run only")
+    parser.add_argument("--kappa", type=float, help="future LCB exploration weight; measurements remain valid")
     args = parser.parse_args()
     try:
         receipt = prepare(**vars(args))

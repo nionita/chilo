@@ -329,6 +329,16 @@ class Runner(unittest.TestCase):
         self.assertEqual(bo.load_config(output)["bootstrap"], [])
         root = self.root / "compact-run"
         bo.execute(output, root, max_evaluations=1)
+        next_config = self.root / "compact-followup.json"
+        next_root = self.root / "compact-followup-run"
+        continuation = followup.prepare(output, root, next_config, next_root, seed=987,
+                                        kappa=.1)
+        new = bo.load_config(next_config)
+        self.assertEqual(new["model"]["kappa"], .1)
+        self.assertEqual(new["measurements"], 1)
+        self.assertEqual(len(new["bootstrap"]), 1)
+        self.assertEqual(len(continuation["imported_measurements"]), 2)
+        bo.execute(next_config, next_root, dry_run=True)
         bo.execute(output, root, resume=True)
         self.assertEqual(bo.read_json(root / "state.json")["completed"], 2)
         # Collection retains new full journals; old compact bootstrap is not duplicated.

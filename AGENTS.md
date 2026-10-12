@@ -107,6 +107,31 @@
 - The repo keeps a checked-in generated NNUE export so the engine builds without running Python first.
 - C++ build outputs now live under `build/`, split by mode. Do not put new binaries or object-file targets back in the repo root.
 
+## Experiment Continuation And Minimal Transfers
+
+- Separate **measurement compatibility** from **optimizer replay**. Parameters
+  that only govern future proposals (for example BO `kappa`, acquisition settings,
+  proposal-pool settings or remaining step budget) do not invalidate previously
+  measured observations. Design continuation tools to permit explicit, recorded
+  changes to these settings at safe measurement boundaries, retaining completed
+  measurements and their uncertainties. Refit when required; do not demand an
+  identical optimizer checkpoint merely to reuse compatible data. Keep an
+  already reserved/pending match's tuple, opening seed and match settings fixed.
+  Engine/net/book, fixed opponent, search budget and outcome/adjudication changes
+  require separate compatibility checks; they must not silently reuse old labels.
+  Exact unchanged-run recovery still needs strict checkpoint/runtime validation.
+  This is a design rule, not permission to hand-edit current fingerprinted runs
+  before supported reconfiguration exists.
+- Transfer **only data needed on the destination**. Reuse existing artifacts
+  after content-hash verification instead of resending them. For BO bootstrap,
+  export compact observations, uncertainties, IDs/seeds and compatibility metadata
+  from the verified local evidence; do not send historical game journals merely
+  to repeat verification remotely. Pin the export hash and check its contract and
+  summary statistics. Hashes detect changes, not authenticity: use trusted exports
+  and verify transfer hashes. Retain full originals in the backed-up canonical
+  store, and retain new match journals where needed for recovery/collection.
+  Prefer incremental transfers over duplicated stores when equally safe.
+
 ## Build And Test Shortcuts
 
 - `make` builds release binaries.

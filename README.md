@@ -378,6 +378,11 @@ match contract, IDs/seeds, domain and paired-score statistics. This checksum
 detects modification, not authenticity: transfer only exports from a trusted
 verified source. Keep original full evidence in the backed-up local store.
 Compact exports preserve independent repeats and their measured variances.
+For a stopped-run continuation, `prepare_selfplay_bo_followup.py --kappa 0.1`
+retains the compact bootstrap and finished new matches, records the proposal
+policy change, and defaults to the original remaining measurement budget.
+It refuses a running source or pending match. No historical journals need to
+be transferred again, and no frozen source checkpoint/config is modified.
 When collecting a BO run bootstrapped this way, `collect` copies only its new
 full match evidence; the summary-only imports are already archived locally.
 Merge these new records into that original store. New matches still retain
