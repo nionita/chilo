@@ -318,6 +318,13 @@ the exact contract, defaults and recovery behavior. Run its short tests with
 
 ### Game-Outcome Bayesian Optimization
 
+Futility tuning is **paused as of 2026-10-27**. The accepted best remains
+spsa150b; the latest c07 timed test was game-cap inconclusive, not a promotion.
+See [the closing assessment](futility-tuning.md#closing-assessment--2026-10-27)
+for the full journey, parked candidates, source/version caveats and next steps.
+The reusable tools below remain available; their examples are not instructions
+to restart the completed experiments.
+
 [`scripts/run_selfplay_bo.py`](scripts/run_selfplay_bo.py) orchestrates sequential
 Linux matches against a fixed base, using the sibling tinibo v4 library and
 NumPy. It minimizes `0.5 - paired_score` with each match's supplied

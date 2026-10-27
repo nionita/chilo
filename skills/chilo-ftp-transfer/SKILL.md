@@ -7,6 +7,20 @@ description: Transfer Chilo futility experiment archives and light result bundle
 
 Use this skill when moving experiment packages or results through the shared transfer folder. The FTP endpoint is `10.0.0.6`, account `ftp`, remote directory `/PUBLIC/transf` (also exposed to the operator as a WebDAV drive). Use `scripts/ftp_transfer.py` to list, upload, or download files.
 
+## Minimal payload first
+
+- Match the payload to the task before requesting or creating an archive.
+  Candidate/result analysis normally needs reports, state, config/receipts,
+  manifests and a lightweight runner log, not game journals or full stores.
+  BO bootstrap needs a compact verified observation export. Reuse existing
+  artifacts by hash; transfer missing raw evidence only for an actual archival,
+  recovery or raw-recalculation need. Do not automatically collect full evidence
+  just because a remote run finished. Leave originals in place.
+- Once trusted source verification exists, transfer integrity is a byte/hash
+  comparison, not another game-by-game audit. Do not trigger repeated expensive
+  result revalidation on the source, staging server and destination. State when
+  only a summary was received; do not label it a complete evidence backup.
+
 ## Security and routing
 
 - The helper prompts for the FTP password with input hidden. Never put the password in this skill, a script, a config, a command-line argument, or a log.
@@ -29,13 +43,13 @@ python3 skills/chilo-ftp-transfer/scripts/ftp_transfer.py get archive-results.tg
 
 ## Integrity checks
 
-- The SHA-256 printed by `put` is the **local source** hash, not proof of the remote file's content. After uploading a package, download it to a fresh inspection path with `get` and compare its SHA-256 or bytes with the original. Use `gzip -t` for a `.tgz` as an additional format check, not a substitute for hash equality.
+- The SHA-256 printed by `put` is the **local source** hash, not proof of the remote file's content. Compare with a trustworthy received-file hash; if unavailable, download back once with `get` and compare SHA-256 or bytes. Once equality is established, do not repeat the round trip or semantic validation. `gzip -t` checks format, not source equality, and need not be repeated at every hop after identical bytes are verified.
 - Preserve the known-good source SHA-256 across the Windows/WebDAV and SCP hops. On the cloud, use `sha256sum /tmp/archive.tgz` and `gzip -t /tmp/archive.tgz` before extracting. On Windows, use `Get-FileHash -Algorithm SHA256` on both the received local file and the mapped WebDAV copy. Ask for the source hash when receiving results if it was not supplied; without one, report that end-to-end source equality has not been verified.
 - A prior result transfer had different source and WebDAV hashes even though a file with the expected name was present. A fresh filename for a newly recopied, known-good archive resolved that case. On a mismatch, do not extract/import the archive or relabel its hash as expected. Report the mismatch and request a verified recopy, preferably under a fresh filename; do not silently overwrite files or keep retrying indefinitely.
 
 ## Typical round trip
 
-1. On this workstation, use `list` to confirm the staging folder and `put` to upload the package or result archive. Download it back to a fresh path and verify equality with the source before reporting the upload as verified.
+1. On this workstation, use `list` when needed and `put` to upload. Verify received content against the source hash, using one download-back if a trustworthy remote hash is unavailable.
 2. On Windows, the same `/PUBLIC/transf` contents are available through the operator's WebDAV drive. Copy the file to or from the cloud server's `/tmp` with the usual SSH/SCP workflow, checking against the source SHA-256. The helper does not automate credentials or remote SSH access.
 3. After the cloud task completes, create its result archive under `/tmp`, record its source SHA-256, and copy it to the staging folder. Use `get` here and compare that hash before accepting the results. Transfer only the requested results/evidence, not a broad home directory or runtime environment.
 4. Do not remove staged files as part of a transfer. Clean them up only after confirming that the destination copy is complete and verified.

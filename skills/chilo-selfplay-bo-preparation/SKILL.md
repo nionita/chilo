@@ -19,11 +19,24 @@ determine the artifacts and settings to use.
 
 ## Choose the operation
 
+- **Result analysis / choosing SPRT candidates** needs lightweight results,
+  not evidence-store collection. Return `run/report.json`, `run/state.json`,
+  `run/manifest.json`, config/receipts, package manifest and the main runner log
+  when useful. Include relevant continuation metadata, but omit historical
+  bootstrap journals, new game journals, binaries, nets and opening books.
+  Preserve those on their existing host; do not delete them. A request to look
+  at completed results does not by itself request a full archival merge.
+- **BO bootstrap** uses `export-bootstrap --output-summary bootstrap.json`
+  and `prepare --bootstrap-summary bootstrap.json`. Transfer the compact,
+  hash-pinned export, not full journals. The export contains compatible
+  observations, uncertainties, IDs/seeds and provenance; raw originals remain
+  in the canonical store. Reuse an existing unchanged export when possible.
 - **collect** adds verified completed evidence to a store. `--source` accepts
   BO run roots, individual completed match directories, and other evidence
   stores; accept multiple paths or repeat the option. Without `--source`, it
-  collects only the template's bootstrap list, not every nearby run. When asked
-  to collect all evidence, inventory relevant roots and supply them explicitly.
+  collects only the template's bootstrap list, not every nearby run. Use it for
+  an explicitly needed full-evidence merge/archive, not ordinary result analysis.
+  When asked to collect all evidence, inventory roots and supply them explicitly.
 - **prepare** makes a fresh experiment config and `.preparation.json` receipt
   from the whole store and a machine-local config template. It does not restore
   an old checkpoint, calculate a remaining budget, or start matches.
@@ -56,9 +69,12 @@ runtime and one BLAS/OpenMP thread for preparation and subsequent BO execution.
   state, never the pending match. Recollect after it finishes to add the rest;
   collection does not stop or otherwise mutate that source.
 - The store contains `index.json`, `store.lock`, and
-  `measurements/<id>/{manifest.json,games.jsonl,results.json,status.json}`. Copy
-  or back up the **whole store**, not just its index. Its relative paths are
-  portable; recorded old source paths are provenance, not dependencies.
+  `measurements/<id>/{manifest.json,games.jsonl,results.json,status.json}`. Full
+  disaster-recovery backup needs all these files, not just the index. That is
+  not a requirement to transfer the whole store for analysis/bootstrap. For an
+  archival merge, send only measurements missing at the destination, with their
+  matching index/contract metadata. Relative paths are portable; old source
+  paths are provenance, not dependencies.
 - Collection is additive and repeatable. Its OS lock prevents concurrent
   writers; a persistent lock file is not a stale held lock. A fully copied
   orphan from an interrupted index commit is recovered on recollection. If
@@ -77,10 +93,11 @@ Collect one or several runs into the same store:
 python3 scripts/prepare_selfplay_bo.py collect --config config/bo.json --store evidence --source runs/first runs/second
 ```
 
-For **cloud → local → combined evidence**, collect on the cloud while its old
-paths are valid, then archive/transfer the whole store. Extract into a separate
-incoming folder on this workstation: do not unpack over the existing local
-store. Merge that incoming store and then the local runs into one destination:
+For an explicitly needed **cloud → local full-evidence merge**, collect only
+new/missing measurements on the cloud while its old paths are valid, then
+transfer that incremental store. Compact-bootstrap runs' collection skips
+summary-only imports; their original journals need not travel again. Extract
+into a separate incoming folder, not over the existing local store, and merge:
 
 ```sh
 python3 scripts/prepare_selfplay_bo.py collect --config config/bo.json --store evidence --source incoming/cloud-evidence
@@ -95,9 +112,10 @@ When transfer or packaging is requested, use `chilo-ftp-transfer` or
 `chilo-futility-package` as appropriate; do not infer permission to upload,
 install cron entries, delete sources or start runs from a collection request.
 
-For **two fresh BO runs with pooled evidence**, make the combined store available
-on both machines and prepare each using its own artifact/runtime paths and a
-different seed. Defaults: store at `config parent-parent/evidence`, fresh random
+For **two fresh BO runs with pooled evidence**, make the same compact verified
+bootstrap export available on both machines and prepare each using its own
+artifact/runtime paths and a different seed. Full-store preparation remains
+available locally when appropriate. Defaults: store at `config parent-parent/evidence`, fresh random
 64-bit seed, budget/cap/model from the template, and run directory at
 `output parent-parent/runs/output stem`. Override the store explicitly when
 different package folders should share one permanent collection.
@@ -113,6 +131,18 @@ measurements. Previously collected random-match measurements import through the
 same mechanism; generating or splitting random tuples is separate, ad hoc work,
 not a capability of `collect`/`prepare` or a reason to add a scheduler.
 
+## Avoid repeated audits
+
+Use existing trusted verification receipts and file hashes for unchanged
+artifacts. Full journal replay is for missing/untrusted verification, changed
+content or an explicit audit, not every transfer/copy/analysis stage. Hashes
+detect changes, not authenticity; retain the receipt's source and contract.
+Current `collect` and `export-bootstrap` still perform full journal validation;
+do not claim they have a receipt-only fast path, invoke them just to view
+results, or bypass their checks by hand-editing evidence. If an archival merge
+requires that expensive path, explain the cost once. Optimizing the code is a
+separate implementation task; skill edits alone do not change its behavior.
+
 ## Hand off
 
 Report collection's added/existing/total counts and store location. For
@@ -122,7 +152,7 @@ choose a new experiment name instead of overwriting them. Starting the driver
 is a separate authorized action; a `run_selfplay_bo.py run ... --dry-run` can
 verify the prepared imports without playing games.
 
-Keep the store: prepared configs reference its copied journals. Adding evidence
-to it does not change an already prepared experiment's explicit bootstrap list;
+Keep the referenced store or compact export: prepared configs need it. Adding evidence
+to a store does not change an already prepared experiment's explicit bootstrap list;
 prepare another fresh experiment to include new observations. This workflow
 collects measured evidence, not confirmed strength, and does not promote the base.

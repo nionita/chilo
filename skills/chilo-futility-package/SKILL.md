@@ -14,15 +14,23 @@ expensive run or installing a cron entry.
 
 ## Select and stage artifacts
 
+- Choose the smallest payload for the actual next operation. For BO bootstrap,
+  include a compact verified export, not historical game journals. For returning
+  results for comparison, include summaries/state, config/receipts, manifests
+  and useful lightweight logs; no `collect` step or full journals by default.
+  Full-evidence archival, raw-statistic recalculation and disaster recovery are
+  separate purposes: include only their missing required data when in scope.
+  Keep authoritative raw evidence on its current host until retention is decided.
 - Start from a committed source revision. If the requested behaviour depends on
   uncommitted work, stop and ask whether to commit it or deliberately include a
   recorded patch.
 - Stage a fresh package directory. Never package a broad build tree, `.venv`,
   unrelated old outputs, or an existing run directory by accident.
-- Include the exact executable probe for the target architecture, its Python
-  scripts and configuration, every selected input/reference/anchor artifact,
-  and the runtime weights when the probe needs them. Resolve every config path
-  inside the staged package.
+- Include required scripts/configuration and only execution artifacts missing
+  at the destination. Reuse the exact executable, weights, inputs and references
+  already there after hash verification; bind their external paths/hashes in
+  the receipt. Resolve each dependency either inside the package or to a verified
+  external artifact, rather than resending it to make every path package-local.
 - Include the complete local Python import closure of every packaged entry
   point, including modules imported only by a post-probe analysis step. Before
   archiving, import the staged entry points with `PYTHONPATH` set to the staged
@@ -92,13 +100,17 @@ not silently seed a changed probe/net/budget/corpus run.
 ## Finish
 
 - Archive Windows packages as `.zip` and Linux packages as `.tgz`.
-- Verify the archive contents, hashes and compression integrity.
+- Verify the payload and archive integrity once at creation. After transfer,
+  compare bytes/hashes; do not replay already verified experiment journals or
+  recompute scientific results merely to check a copy.
 - Keep the package and transferred-result archive in `~/Tune/futility` as
   durable provenance once the run is accepted. Treat `/tmp` only as a transfer
   or inspection area.
 - Read/use `chilo-ftp-transfer` to upload the finished archive to
-  `/PUBLIC/transf`; download it back to a fresh inspection path and compare
-  hashes/bytes. Report transfer failure or skipped local-only transfer honestly;
+  `/PUBLIC/transf`; verify the received content against the source SHA-256.
+  If no trustworthy server-side hash is available, download back once to a fresh
+  path and compare hashes/bytes. Do not add repeated download/audit rounds after
+  equality is established. Report failure or skipped local-only transfer honestly;
   do not report packaging-and-delivery complete merely because a local archive
   exists. Do not overwrite or delete existing remote archives without approval.
 - For the cloud, assume the operator copies tar archives to `/tmp`. Provide a

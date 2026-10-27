@@ -5,10 +5,19 @@ description: Analyse Chilo futility-proxy results while preserving corpus, refer
 
 # Chilo futility analysis
 
-Use raw manifests and JSONL as the authority; use `futility-tuning.md` as the
-maintained operator narrative. Copy a newly received archive into a uniquely
-named `/tmp` inspection directory first, validate its contents and manifest,
-then retain the accepted archive under `~/Tune/futility`.
+Use manifests and verified results as the authority; use `futility-tuning.md`
+as the maintained operator narrative. For existing-metric comparisons, start
+with reports, state, config/receipts and manifests. Do not request full JSONL,
+populations or evidence stores unless a new calculation/audit actually needs
+them. Preserve authoritative raw data where it already lives; retaining it does
+not require transferring it for each analysis. Raw recalculation remains the
+authority when summaries are insufficient or inconsistent.
+
+Verify a received archive against its supplied source hash before extraction
+into a unique `/tmp` inspection directory; retain accepted results under
+`~/Tune/futility`. Check compatibility and result scope, not every raw record
+again when trusted verification receipts and unchanged file hashes suffice.
+Clearly distinguish summary-based analysis from a full raw-evidence audit.
 
 ## Comparison boundaries
 

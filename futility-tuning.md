@@ -4,12 +4,186 @@ This is the persistent record for futility-margin experiments. The current
 source defaults remain `120,320,550` through depth three. Proxy tuning only
 selects SPRT candidates; it does not establish playing strength.
 
+## Closing Assessment — 2026-10-27
+
+**Status: futility optimization is paused because of diminishing practical
+returns, not because a global optimum has been proved.** The accepted best
+remains `spsa150b`, margins **`0,40,158,488,754`**, with H1 acceptance against
+f21 at longer control. Do not automatically change engine defaults, promote a
+BO recommendation, or restart a search from the historical plans below.
+Those sections preserve the experiment's development; this assessment governs
+the current next steps.
+
+### What the journey established
+
+| Stage | Durable outcome |
+|---|---|
+| Margin families and initial proxy screens | Produced f01 and f21, with successive timed-SPRT gains; family shape and completed depth were useful diagnostics, not strength objectives. |
+| Reference-root score regret | Replaced the earlier Pareto proxy with a principled move-quality target: transformed best reference-root score minus the score of the selected move. |
+| Reference redesign and mate rescue | Full-window searches under one shared position cap could finish shallower than candidates. Equal per-root caps, a baseline-relative depth gap, explicit rejections and certified mate rescues improved the reference contract. |
+| SPSA, gated hill climb and Pareto searches | Produced spsa150b and later challengers; established that improving finite-sample proxy metrics does not guarantee improved play. |
+| Extended selection and continuous loop | Added pooled, disjoint selection evidence and resumable dev/validation execution; made repeated validation cheaper through compatible raw-probe caching, without making the proxy a strength oracle. |
+| Tinibo and regret-target BO | Improved proposal generation using compatible accumulated measurements and ARD models; surrogate predictions remained hypotheses requiring measured validation. |
+| Fixed-node selfplay BO | Replaced synthetic labels with paired game outcomes and measured uncertainty; delivered additional candidates, but the latest timed test still showed only a small, inconclusive gain. |
+
+The confirmed selection chain is **source -> f01 -> f21 -> spsa150b**.
+This was productive tuning, not a failed project. What is not justified is
+continuing indefinitely on the assumption that better metrics or more BO steps
+must yield another substantial timed-play gain.
+
+### Latest game-outcome search and timed result
+
+After 40 additional space-filling measurements on two machines, both final
+searches used the same 96-measurement bootstrap (76 distinct tuples). Local
+and cloud then completed 10 new measurements each, including the cloud's first
+match before the kappa change: **20 matches / 60,000 games**, all reaching
+1,500 pairs without an SPRT decision. Their combined summaries contain 116
+distinct measurement records; this does not mean all new raw journals have
+been merged into the canonical local evidence store.
+
+Final searches used an ARD Matérn-5/2 surrogate, supplied paired-score mean
+variances plus learned residual noise, length-scale bounds `[0.05,10]` and
+LCB kappa `0.1` (except the first cloud match, already reserved under `0.5`).
+Length scales appeared healthier after the coverage measurements, but this
+is not evidence that uncertainty estimates are calibrated or that the model
+cannot become unstable again.
+
+The final shortlist, measured against the spsa150b tuple at 120k nodes/move:
+
+| Identity | Margins | Fixed-node Elo +/- reported 95% error | Current disposition |
+|---|---|---:|---|
+| `bo1500-l06` | `16,44,125,129,229` | +8.57 +/- 9.79 | Local model recommendation; built, timed SPRT not run; parked. |
+| `bo1500-l08` | `4,55,185,191,243` | +9.04 +/- 9.65 | Highest local point estimate; built, timed SPRT not run; parked. |
+| `bo1500-c07` | `19,68,134,204,249` | +6.37 +/- 9.81 | Cloud model recommendation; timed result below; not promoted. |
+
+Do not rank independent repeats by their best outcome. For example,
+`34,79,81,141,219` scored +9.15 Elo and then -12.63 Elo in two cloud matches;
+the pooled estimate was -1.74 +/- 6.78, not a +9 Elo candidate. Reported
+intervals describe noisy measurements, not selection-adjusted guarantees for
+BO-selected winners.
+
+The c07 timed test finished on October 22 at the 52,000-game cap:
+
+| Measure | Fastchess final report |
+|---|---:|
+| Time control / concurrency | 6+0.1 / 2 |
+| Elo | +2.75 +/- 2.27 |
+| Normalized Elo | +3.62 +/- 2.99 |
+| LOS / draw rate | 99.12% / 36.63% |
+| Wins / losses / draws | 16,151 / 15,739 / 20,110 |
+| Pentanomial bins, 0 through 2 | 2,203 / 5,900 / 9,523 / 6,030 / 2,344 |
+| LLR / acceptance boundary | 2.25 / 2.94 |
+| Hypotheses | normalized `[0,2]`, alpha=beta=0.05 |
+| Runtime | 130h 52m 54s |
+| Outcome | **Game-cap inconclusive; neither H1 nor H0 accepted.** |
+
+This is positive evidence for a small gain, not a successful SPRT promotion.
+The experiment cost about five and a half days. Moreover, the challenger was
+**0.7.6 c07**, built from the BO-measured search framework, whereas the
+opponent was the existing **0.7.5 spsa150b** binary. Consequently the result
+includes framework differences; it cannot attribute +2.75 Elo solely to the
+tuple, or be treated as an exact reproduction of the fixed-node BO comparison.
+
+### Lessons to carry into other pruning work
+
+- **Reference quality matters before optimizer choice.** Root-score regret
+  needs sufficiently strong, comparable root scores. Completed search depth
+  is a useful work diagnostic, but mate-shortened searches show why it cannot
+  alone certify tactical reliability. Preserve rejected-position diagnostics
+  and the mate-rescue reasoning; never mix shared-budget and per-root labels.
+- **Proxy improvements are screening evidence.** Mean regret can improve
+  while rare serious mistakes get worse; squared regret, CVaR, mate and loss
+  diagnostics expose different trade-offs. Neither a tail metric nor a hard
+  semantic gate proved a universal strength predictor. Tiny count differences
+  in finite samples must not be mistaken for definitive safety distinctions.
+  The early f01-relative gates were also the wrong reference for absolute risk;
+  later metrics correctly use the reference-root scores.
+- **More validation reduces sampling uncertainty, not proxy mismatch.** SR4
+  remains development (22,825 trusted positions); the eight pooled selection
+  shards total 141,099 trusted positions. Repeated selection is adaptive and
+  is not a fresh untouched holdout on every cycle. We did not establish a
+  reliable metric-to-Elo conversion or an exchange rate between mean and tail
+  regret. Close SPRTs alone do not identify those trade-offs.
+- **Aggressive margins can work in this engine.** Zero margins mean aggressive
+  pruning, not disabled pruning. The validated spsa150b gains outweigh aesthetic
+  objections to its shape, but do not show that such margins transfer to a
+  stronger/different search. Futility may interact with or compensate for
+  other reductions and move ordering; that remains a hypothesis, not a measured
+  causal explanation. Retune incrementally after substantive search changes.
+- **BO needs coverage and a defensible noise model.** Early short, noisy
+  measurements and tiny fitted length scales concentrated proposals on
+  Barbarossa5. Repeat quotas, ARD/smoothness bounds and broader coverage were
+  useful safeguards, not proofs of a good model. Retain all independent repeats,
+  use fresh paired-opening seeds, and deduplicate measurement IDs rather than
+  tuples. A lucky observation is not an optimum.
+- **Fixed-node play is a useful but different experiment.** Shorter matches
+  can seed longer ones with their original uncertainty. All final 1,500-pair
+  measurements nevertheless hit their cap: assuming weak candidates would
+  usually stop early was optimistic. Fixed nodes omit timed-play allocation
+  and throughput effects; do not interpret their Elo as timed-SPRT Elo.
+- **Freeze the actual measured framework.** A tuple is not independent of its
+  engine, network, opponent and budget. The corrected 0.7.6 UCI candidates use
+  source commit `2679f49004ea3f114cf6b4b3411ba234900e62e6`; reproducing its
+  selfplay executable with the recorded original build revision matched the
+  frozen BO binary byte-for-byte (`7ebbaf09...`). The initial 0.7.5 builds of
+  these tuples were an incorrect source substitution, not measured candidates.
+  Use the corrected 0.7.6 binaries if the parked tests are resumed. To isolate
+  a tuple effect, also match the opponent framework; to compare complete
+  versions, explicitly label the framework difference.
+- **Keep operations cheaper than the experiment.** Summaries/manifests suffice
+  for result comparison; compact trusted exports suffice for BO bootstrap.
+  Preserve authoritative journals for recovery/audits without repeatedly
+  transferring or replaying them. Future-proposal parameters such as kappa
+  can change through a recorded continuation without invalidating old labels;
+  exact checkpoint replay and measurement compatibility are different rules.
+
+### Decision, retained evidence and reopening conditions
+
+Park l06 and l08 without claiming they would fail or can gain at most a few
+Elo. The evidence supports a low expected return on further tuning/testing,
+not a demonstrated upper bound on futility's potential. Preserve the tools,
+measurements and binaries, but do not schedule further futility experiments
+merely to exhaust the candidate queue. No external jobs, queues or configs
+are stopped or changed by this documentation decision.
+
+Relevant retained material:
+
+- Timed c07 log/state: `~/fastchess/logs/c07.log` and
+  `~/fastchess/sprt-runs/c07-spsa150b/`; consolidated SPRT registry:
+  `~/Tune/futility/validation/evaluations/sprt/registry.json`.
+- Local final BO: `~/Tune/search-matches/runs/bo-d5-1500p-compact01/`;
+  cloud ranking summaries:
+  `~/Tune/search-matches/imports/cloud-20261016-bo1500-ranking/`.
+  The accepted lightweight archive is
+  `~/Tune/futility/selfplay-bo1500-cloud-ranking.tgz`, SHA-256
+  `cd91e9defe1ecc01b727cc6bf4fd4b14e7f9fec7adba97d69e5bf4ef060fe03a`.
+  These cloud summaries are **not a full journal backup**; new cloud journals
+  remain on the cloud. The larger hash-mismatched transfer was not imported.
+- Canonical historical match evidence: `~/Tune/search-matches/evidence/`;
+  per-root populations and proxy evaluations: `~/Tune/futility/validation/`.
+- Corrected UCI build manifest/receipt:
+  `~/Tune/futility/bo1500-measured-sprt-variants.json` and
+  `bo1500-measured-sprt-variants.build-receipt.json`; binaries are
+  `~/NNUE/Engines/futility/chilo-0.7.6-bo1500-{l06,l08,c07}-avx2`.
+  Use the same explicit `chilo-g4t1-64x8.bin` network, not a guessed net alias.
+
+Move next to a separately scoped search experiment. LMR is a reasonable
+candidate, but first review the earlier Stockfish-like/quiet-counter LMR and
+history-saturation attempts rather than repeating them blindly. Start with
+reduction/re-search and move-ordering diagnostics, then one focused change
+under a frozen baseline/net and an explicit test budget. The separate
+`history-saturating` branch is not part of the accepted futility result.
+Reopen futility if another search change materially alters its balance, new
+tactical evidence identifies a concrete defect, or a clearly justified
+candidate makes the testing investment worthwhile. Do not generalize the
+optimizer to every reduction before choosing the next concrete technique.
+
 ## Accepted SPRT Basis
 
-`f21` is the established practical control: its 6+0.1 SPRT against `f01`
+`f21` is an established historical control: its 6+0.1 SPRT against `f01`
 accepted H1, and its longer-control SPRT against the source `g4t1-64x8`
 accepted H1. `spsa150b` subsequently accepted H1 against `f21` at 30+0.5 and
-is therefore the strongest directly tested futility tuple. `f01` remains
+is therefore the strongest SPRT-accepted futility tuple. `f01` remains
 frozen as the anchor baseline, baseline-depth measurement, and a stable
 comparison variant. The deep per-root reference, not f01, defines the current
 tail-risk safety gates. Do not replace or overwrite either binary.
@@ -901,8 +1075,10 @@ source and new model settings without editing old manifests/checkpoints.
 Collection accepts completed match directories, committed observations from BO
 run roots, and other portable evidence stores; its default destination is
 `config parent-parent/evidence` (`~/Tune/search-matches/evidence` locally).
-Collect cloud evidence on the cloud, transfer the entire store, merge it locally,
-and add local observations to the same destination. Matching measurement IDs
+For an explicitly needed full-evidence merge, collect only cloud measurements
+missing locally, transfer that incremental store, and add local observations.
+For result comparison use summaries; for bootstrap use the compact export
+described above. Neither operation requires the full store. Matching measurement IDs
 import once; independent repeated tuples remain distinct. Full journals and
 summaries are verified and copied, and incompatible contracts, reused opening
 seeds and corrupt evidence fail rather than being silently ignored. Only four
@@ -919,7 +1095,8 @@ one-run follow-up helper remains available for the remaining-budget use case.
 README's "Reusable measurement collection and preparation" section documents
 commands, path remapping, artifact overrides, receipts and defaults.
 
-Next proposed procedure, not yet launched: finish both current runs, collect
+Historical next-step proposal (subsequently carried out; see the closing
+assessment): finish both current runs, collect
 additional spread-out random tuples on the two machines (split ad hoc, not a new
 distributed scheduler), combine all compatible measurements, then prepare two
 fresh 150-pair BO experiments with different seeds. Assess coverage and surrogate
@@ -2807,6 +2984,11 @@ provenance limitation with the result.
 
 ## Future: General Search-Pruning Optimization
 
+This is the historical proxy-generalization proposal, not a decision to apply
+the same proxy or optimizer blindly to the next technique. The closing
+assessment now recommends choosing a concrete change, reviewing prior trials
+and checking its measurement-to-timed-play relationship before a large sweep.
+
 The score-regret proxy is not inherently a futility-pruning measure. Given a
 fixed high-quality reference-root map, the same candidate node budget, and a
 candidate-selected root move, it measures the quality of any changed search
@@ -2978,14 +3160,16 @@ The machine-readable registry is kept with the backed-up validation archive at
 `~/Tune/futility/validation/evaluations/sprt/registry.json`. The raw game
 evidence remains in `~/fastchess/sprt-runs/`; the registry records each raw-run
 path and the relevant build receipt without duplicating PGNs. It contains the
-completed decisions and explicitly marks interrupted runs as incomplete.
+completed decisions, distinguishes game-cap inconclusive results from H0/H1,
+and explicitly marks genuinely interrupted runs as incomplete.
 
 The registry keeps raw W/L/D counts for every run. Fastchess's displayed
-Elo/error/LOS report was persisted only for `loop1-c01-p0013` in the retained
-wrapper log; its `reported` object contains those exact values. The other
-`reported` objects are intentionally null and must be filled manually from the
-historical Excel record when it is recovered. Do not replace those values with
-new SPRT runs merely to recreate a report.
+Elo/error/LOS report is transcribed from retained wrapper logs when available:
+`loop1-c01-p0013`, the later cycle-4/cycle-6 tests, `bo4-p0001` and c07 now
+have their terminal displayed values. Older missing `reported` objects remain
+intentionally null and can be filled from the historical Excel record when
+recovered. Do not replace those values with new SPRT runs or silently substitute
+recomputed statistics merely to recreate a report.
 
 The tested selection chain is:
 
@@ -2994,8 +3178,9 @@ The tested selection chain is:
 `f01`, `f21`, and `spsa150b` all accepted H1 in their successive comparisons.
 The direct 30+0.5 spsa150b-versus-f21 comparison was run twice; both runs
 accepted H1. `d3-0009` and loop candidate `loop1-c01-p0013` both accepted H0
-against spsa150b. The old f11 test and the current loop c06 test stopped before
-an SPRT boundary and are not strength results. SPRT decisions, not proxy
+against spsa150b. Cycle-4 and `bo4-p0001` also accepted H0. Cycle-6 and c07
+reached their 52,000-game caps without either boundary; neither is an H0/H1
+acceptance. The old f11 test remains incomplete. SPRT decisions, not proxy
 metrics or point scores, establish playing strength.
 
 | Candidate | Opponent | Control | Games | Status |
@@ -3007,7 +3192,10 @@ metrics or point scores, establish playing strength.
 | `d3-0009` | `spsa150b` | 6+0.1 | 9,084 | H0 accepted |
 | `loop1-c01-p0013` | `spsa150b` | 6+0.1 | 34,984 | H0 accepted |
 | `f11` | `f01` | 6+0.1 | 1,680 | incomplete |
-| `loop1-c06-p0012` | `spsa150b` | 6+0.1 | 380 | incomplete |
+| `loop1-c04-p0011` | `spsa150b` | 6+0.1 | 41,422 | H0 accepted; -2.50 +/- 2.53 Elo |
+| `loop1-c06-p0012` | `spsa150b` | 6+0.1 | 52,000 | Game-cap inconclusive; -0.75 +/- 2.27 Elo |
+| `bo4-p0001` | `spsa150b` | 6+0.1 | 38,000 | H0 accepted; -2.83 +/- 2.69 Elo |
+| `0.7.6-bo1500-c07` | `0.7.5-spsa150b` | 6+0.1 | 52,000 | Game-cap inconclusive; +2.75 +/- 2.27 Elo; framework differs |
 
 ## Future: Root-Budget-Adaptive Futility Profiles
 

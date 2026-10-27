@@ -77,6 +77,13 @@
 
 ## Important Specifics
 
+- Futility optimization is paused as of 2026-10-27; read the closing assessment
+  at the top of `futility-tuning.md` before resuming historical plans. The
+  SPRT-accepted best remains spsa150b `[0,40,158,488,754]`. Timed c07 ended
+  game-cap inconclusive at +2.75 +/- 2.27 Elo, with a different engine framework
+  from its opponent; l06/l08 are parked, not rejected. No automatic base/default
+  changes or new tuning runs follow from those results. Review prior LMR/history
+  experiments before selecting the next independently scoped search change.
 - The evaluator is no longer the old handcrafted tapered eval. `eval.cpp` runs inference only. The compiled engine has a built-in fallback net from `generated/generated_nnue_weights.h`, but it can also load a runtime `.bin` weights artifact with a different hidden size.
 - Search now uses per-ply NNUE accumulator frames. Each searched child starts from a capacity-reused copy of the parent accumulator and applies its move delta once, so returning from the child does not need NNUE undo work. Low-piece children at or below `NNUE_REBUILD_PIECE_THRESHOLD` skip accumulator-frame preparation entirely and reuse rebuild eval for the whole subtree. `evaluate(pos)` remains the full-rebuild reference path for tools and tests, and `performance.md` contains the branch-local before/after profiling for these changes.
 - The training/export contract is explicit. Keep `eval.cpp`, `generated/generated_nnue_weights.h`, `generated/generated_nnue_manifest.json`, and `scripts/nnue_contract.json` in sync.
